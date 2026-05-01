@@ -111,7 +111,17 @@ pub fn evolve_bar(bar: &mut Bar, is_last_bar: bool) {
 
 // ── Voice ─────────────────────────────────────────────────────────────────────
 
-pub enum VoiceKind { Kick, Snare, MelodyFm, Accent, SubBass }
+pub enum VoiceKind {
+    FloorTom,   // regular beat 1 of each group
+    Snare,      // off-beats
+    Rimshot,    // turnaround within phrase repeat
+    Crash,      // phrase start (the "1")
+    PhraseChange, // moving to next phrase in sequence
+    MelodyFm,
+    SubBass,
+    #[allow(dead_code)]
+    Accent,     // kept for compatibility
+}
 
 pub struct Voice {
     pub kind:         VoiceKind,
@@ -127,7 +137,8 @@ pub struct Voice {
 }
 
 impl Voice {
-    pub fn kick()                    -> Self { Self::mk(VoiceKind::Kick,    80.0, 0.0) }
+    pub fn floor_tom()               -> Self { Self::mk(VoiceKind::FloorTom, 80.0, 0.0) }
+    pub fn kick()                    -> Self { Self::mk(VoiceKind::FloorTom, 80.0, 0.0) }
     pub fn snare()                   -> Self { Self::mk(VoiceKind::Snare,    0.0, 0.0) }
     pub fn melody(hz: f64, sus: f64) -> Self { Self::mk(VoiceKind::MelodyFm, hz, sus)  }
     pub fn melody_gain(hz: f64, sus: f64, gain: f32) -> Self {
@@ -147,12 +158,44 @@ impl Voice {
         let t  = self.age as f64 * dt;
 
         let (osc, amp, fin): (f32, f32, bool) = match self.kind {
-            VoiceKind::Kick => {
-                let freq = self.freq * (1.0 + 4.0 * (-t * 28.0).exp());
+            VoiceKind::FloorTom => {
+                // Floor tom: low thud, pitch drops slowly, longer sustain than kick
+                let freq = self.freq * (1.0 + 1.8 * (-t * 12.0).exp());
                 self.phase += freq * dt;
-                ((self.phase * std::f64::consts::TAU).sin() as f32,
-                 (-t * 11.0).exp() as f32, t > 0.40)
+                let osc = (self.phase * std::f64::consts::TAU).sin() as f32;
+                let amp = (-t * 7.0).exp() as f32;
+                (osc, amp, t > 0.55)
             }
+            VoiceKind::Rimshot => {
+                // Rimshot: sharp crack — fast noise burst + high pitched ping
+                let ping_freq = self.freq * 8.0;
+                self.phase += ping_freq * dt;
+                let ping  = (self.phase * std::f64::consts::TAU).sin() as f32;
+                let noise = rand_f32();
+                let osc   = ping * 0.4 + noise * 0.6;
+                let amp   = (-t * 45.0).exp() as f32;
+                (osc, amp, t > 0.07)
+            }
+            VoiceKind::Crash => {
+                // Crash: full noise wash, bright shimmer, slow decay
+                let shimmer_freq = self.freq * 10.0;
+                self.phase += shimmer_freq * dt;
+                let shimmer = (self.phase * std::f64::consts::TAU).sin() as f32;
+                let noise   = rand_f32();
+                let osc     = noise * 0.7 + shimmer * 0.3;
+                let amp     = if t < 0.004 { (t / 0.004) as f32 }
+                              else { (-t * 5.0).exp() as f32 };
+                (osc, amp, t > 0.80)
+            }
+            VoiceKind::PhraseChange => {
+                // High tom: mid-high pitch drop, crisp attack, short decay
+                let freq = self.freq * 3.0 * (1.0 + 1.5 * (-t * 20.0).exp());
+                self.phase += freq * dt;
+                let osc = (self.phase * std::f64::consts::TAU).sin() as f32;
+                let amp = (-t * 14.0).exp() as f32;
+                (osc, amp, t > 0.25)
+            }
+
             VoiceKind::Snare => {
                 (rand_f32(), (-t * 28.0).exp() as f32, t > 0.14)
             }
@@ -219,29 +262,75 @@ impl Voice {
         self.age += 1;
         if fin { self.done = true; }
         let gain: f32 = self.gain_override.unwrap_or_else(|| match self.kind {
-            VoiceKind::Kick     => 0.40,
-            VoiceKind::Snare    => 0.16,
-            VoiceKind::MelodyFm => 0.20,
-            VoiceKind::Accent   => 0.35,
-            VoiceKind::SubBass  => 0.30,
+            VoiceKind::FloorTom    => 0.45,
+            VoiceKind::Snare       => 0.18,
+            VoiceKind::Rimshot     => 0.30,
+            VoiceKind::Crash       => 0.28,
+            VoiceKind::PhraseChange=> 0.35,
+
+            VoiceKind::MelodyFm    => 0.20,
+            VoiceKind::Accent      => 0.35,
+            VoiceKind::SubBass     => 0.30,
         });
         (osc * amp * gain).clamp(-1.0, 1.0)
     }
 }
 
-/// Spawn voices for an event; push into the provided vec.
-pub fn spawn_voices(event: SubdivEvent, sustain: f64, voices: &mut Vec<Voice>, turnaround: bool) {
+
+/// Milestone: structural event this subdivision marks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Milestone {
+    None,
+    Turnaround,
+    PhraseStart,
+    PhraseChange,
+}
+
+/// Spawn voices for a subdivision event. Drum varies by milestone.
+pub fn spawn_voices(
+    event:     SubdivEvent,
+    sustain:   f64,
+    voices:    &mut Vec<Voice>,
+    milestone: Milestone,
+) {
     match event {
         SubdivEvent::Kick(hz) => {
-            voices.push(Voice::kick());
-            voices.push(Voice::melody(hz, sustain));
-            if turnaround { voices.push(Voice::accent(hz)); }
+            // Floor tom always plays on every kick — the constant pulse.
+            // Milestone sounds stack on top as additional markers.
+            let mut tom = Voice::mk(VoiceKind::FloorTom, 40.0, 0.0);
+            tom.pan = 0.0;
+            voices.push(tom);
+
+            match milestone {
+                Milestone::Turnaround => {
+                    let mut v = Voice::mk(VoiceKind::Rimshot, 200.0, 0.0);
+                    v.pan = 0.0; voices.push(v);
+                }
+                Milestone::PhraseStart => {
+                    let mut v = Voice::mk(VoiceKind::Crash, 400.0, 0.0);
+                    v.pan = 0.0; voices.push(v);
+                }
+                Milestone::PhraseChange => {
+                    let mut v = Voice::mk(VoiceKind::PhraseChange, 160.0, 0.0);
+                    v.pan = 0.0; voices.push(v);
+                }
+                Milestone::None => {}
+            }
+            voices.push(panned(Voice::melody(hz, sustain)));
+            voices.push(panned(Voice::melody_gain(hz * 1.5, sustain * 0.85, 0.14)));
+            voices.push(panned(Voice::melody_gain(hz * 2.0, sustain * 0.60, 0.08)));
         }
         SubdivEvent::Snare(hz) => {
-            voices.push(Voice::snare());
-            voices.push(Voice::melody(hz, sustain));
+            voices.push(panned(Voice::snare()));
+            voices.push(panned(Voice::melody(hz, sustain)));
+            voices.push(panned(Voice::melody_gain(hz * 1.5, sustain * 0.50, 0.06)));
         }
     }
+}
+
+fn panned(mut v: Voice) -> Voice {
+    v.pan = (rand_f32_01() - 0.5) * 1.8;
+    v
 }
 
 /// Spawn a soft independent arpeggio voice (not tied to a rhythm event).

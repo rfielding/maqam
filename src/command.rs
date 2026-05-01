@@ -45,7 +45,7 @@ pub enum Cmd {
     TogglePause,
     SetVol(f32),
     SetSustain(f64),
-    DeleteBar(usize),
+    DeleteBars(Vec<usize>),
     SetBpm(f64),
     Clear,
     Help,
@@ -124,7 +124,7 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
         };
         let id: usize = id_str.parse()
             .map_err(|_| format!("usage: x<N>  (e.g. x0 x1 x2)"))?;
-        return Ok(Cmd::DeleteBar(id));
+        return Ok(Cmd::DeleteBars(vec![id]));
     }
 
 // ── ADD PHRASE ────────────────────────────────────────────────────────

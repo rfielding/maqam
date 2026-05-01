@@ -4,7 +4,7 @@ use std::io::Write;
 use std::process::Command;
 
 use crate::sequencer::Phrase;
-use crate::synth::{evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Voice};
+use crate::synth::{evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Milestone, Voice};
 
 const SR: f64 = 44100.0;
 
@@ -120,7 +120,7 @@ pub fn record_cycle(
         } else { None };
 
         if let Some(ev) = event {
-            spawn_voices(ev, sustain, &mut voices, false);
+            spawn_voices(ev, sustain, &mut voices, Milestone::None);
         }
 
         // Stereo mix

@@ -9,7 +9,7 @@ use crossbeam_channel::Receiver;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::sequencer::{AudioCmd, Phrase, SubdivEvent};
-use crate::synth::{evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Voice};
+use crate::synth::{evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Milestone, Voice};
 
 // ── Playback state ────────────────────────────────────────────────────────────
 
@@ -102,12 +102,12 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
             for frame in data.chunks_mut(ch) {
 
                 // Tick the sequencer one sample; returns event + flags
-                let (event, phrase_start, turnaround) = tick_sequencer(
+                let (event, milestone) = tick_sequencer(
                     &mut phrases, &mut cur_phrase, bpm, sr, sustain, &mut voices
                 );
 
                 // Level 3: phrase start → long root note (highest melody level)
-                if phrase_start && !paused {
+                if milestone == Milestone::PhraseStart && !paused {
                     if let Some(pp) = phrases.get(cur_phrase) {
                         let root_hz = pp.phrase.bar.root.to_hz();
                         spawn_phrase_start(root_hz, sustain, &mut voices);
@@ -123,7 +123,7 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                 // Level 1 & 2: subdivision event → melody + chord tones
                 if let Some(ev) = event {
                     if !paused {
-                    spawn_voices(ev, sustain, &mut voices, turnaround);
+                        spawn_voices(ev, sustain, &mut voices, milestone);
                     }
                 }
 
@@ -167,8 +167,8 @@ fn tick_sequencer(
     _sr:        f64,
     _sustain:   f64,
     _voices:    &mut Vec<Voice>,
-) -> (Option<SubdivEvent>, bool, bool) {
-    if phrases.is_empty() { return (None, false, false); }
+) -> (Option<SubdivEvent>, Milestone) {
+    if phrases.is_empty() { return (None, Milestone::None); }
     if *cur_phrase >= phrases.len() { *cur_phrase = 0; }
 
     let pp  = &mut phrases[*cur_phrase];
@@ -182,12 +182,17 @@ fn tick_sequencer(
 
     let is_last_play   = pp.plays_done + 1 >= pp.phrase.repeat;
     let is_last_subdiv = curr + 1 >= bar.total_subdivs;
-    let turnaround     = is_last_play && is_last_subdiv;
 
-    let mut phrase_start = false;
+    let mut milestone = Milestone::None;
     let ev = if bs.last_subdiv != Some(curr) {
         bs.last_subdiv = Some(curr);
-        if pp.plays_done == 0 && curr == 0 { phrase_start = true; }
+        if pp.plays_done == 0 && curr == 0 {
+            milestone = Milestone::PhraseStart;
+        } else if is_last_play && is_last_subdiv {
+            milestone = Milestone::Turnaround;
+        }
+        crate::CUR_SUBDIV.store(curr, std::sync::atomic::Ordering::Relaxed);
+        crate::CUR_PLAYS.store(pp.plays_done, std::sync::atomic::Ordering::Relaxed);
         bar.events.get(curr).copied()
     } else {
         None
@@ -201,10 +206,15 @@ fn tick_sequencer(
         pp.plays_done += 1;
         evolve_bar(&mut pp.phrase.bar, true);
         if pp.plays_done >= pp.phrase.repeat {
-            pp.plays_done = 0;
-            *cur_phrase   = (*cur_phrase + 1) % phrases.len();
+            pp.plays_done  = 0;
+            let prev       = *cur_phrase;
+            *cur_phrase    = (*cur_phrase + 1) % phrases.len();
+            crate::CUR_PHRASE.store(*cur_phrase, std::sync::atomic::Ordering::Relaxed);
+            if *cur_phrase != prev && milestone == Milestone::None {
+                milestone = Milestone::PhraseChange;
+            }
         }
     }
 
-    (ev, phrase_start, turnaround)
+    (ev, milestone)
 }

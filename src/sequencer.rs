@@ -93,22 +93,39 @@ pub fn build_phrase(
     //   4. Merge and deduplicate within 4 cents (tighter than syntonic comma).
 
     let mut deduped: Vec<f64> = Vec::new();
+    // The first root is the JI reference for the entire phrase.
+    let first_root_hz = specs[0].root.to_hz();
 
     for (i, spec) in specs.iter().enumerate() {
         let actual_root_hz = if i == 0 {
-            spec.root.to_hz()
+            first_root_hz
         } else {
-            // Snap to nearest already-built frequency
+            // Find the simplest JI ratio p/q (p,q ≤ 16) from the first root
+            // that best approximates the named pitch.
+            // Note names are just rough guides — we always stay in JI from root.
             let nominal = spec.root.to_hz();
-            // Search across octaves: the coincidence might be in any octave.
-            // Compare log2 distances, wrap into single octave for matching.
-            deduped.iter().copied().min_by(|&a, &b| {
-                let da = (nominal / a).log2().abs().min((nominal * 2.0 / a).log2().abs())
-                                                    .min((nominal / (a * 2.0)).log2().abs());
-                let db = (nominal / b).log2().abs().min((nominal * 2.0 / b).log2().abs())
-                                                    .min((nominal / (b * 2.0)).log2().abs());
-                da.partial_cmp(&db).unwrap()
-            }).unwrap_or(nominal)
+            let target_ratio = nominal / first_root_hz;
+
+            let mut best_hz   = first_root_hz;
+            let mut best_dist = f64::MAX;
+
+            for p in 1u32..=16 {
+                for q in 1u32..=16 {
+                    // Try this ratio and octave transpositions of it
+                    let base = first_root_hz * p as f64 / q as f64;
+                    for octave in [-1i32, 0, 1, 2] {
+                        let f = base * 2f64.powi(octave);
+                        if f < 20.0 || f > 8000.0 { continue; }
+                        // Distance in cents from nominal
+                        let dist = (f / nominal).log2().abs();
+                        if dist < best_dist {
+                            best_dist = dist;
+                            best_hz   = f;
+                        }
+                    }
+                }
+            }
+            best_hz
         };
 
         // Build this jins's frequencies from the snapped root

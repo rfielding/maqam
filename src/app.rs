@@ -83,11 +83,14 @@ impl App {
     // ── Commands ──────────────────────────────────────────────────────────
 
     pub fn handle_command(&mut self, raw: &str) {
-        let raw = raw.trim();
-        if raw.is_empty() { return; }
-        match command::parse(raw) {
-            Ok(cmd)  => self.execute(cmd),
-            Err(msg) => self.message = Some(format!("✗ {msg}")),
+        // Semicolons act as line separators — execute each part in order.
+        for part in raw.split(';') {
+            let part = part.trim();
+            if part.is_empty() { continue; }
+            match command::parse(part) {
+                Ok(cmd)  => self.execute(cmd),
+                Err(msg) => { self.message = Some(format!("✗ {msg}")); return; }
+            }
         }
     }
 
@@ -156,16 +159,25 @@ impl App {
                 let _ = self.audio_tx.send(AudioCmd::SetSustain(secs));
                 self.message = Some(format!("sustain → {secs:.2}s"));
             }
-            Cmd::DeleteBar(id) => {
-                // x<N> deletes the phrase whose display ID equals N
-                if self.phrases.iter().any(|p| p.id == id) {
-                    self.phrases.retain(|p| p.id != id);
-                    let _ = self.audio_tx.send(AudioCmd::RemovePhrase(id));
-                    self.message = None;
+
+            Cmd::DeleteBars(ids) => {
+                let mut not_found = Vec::new();
+                for id in &ids {
+                    if self.phrases.iter().any(|p| p.id == *id) {
+                        self.phrases.retain(|p| p.id != *id);
+                        let _ = self.audio_tx.send(AudioCmd::RemovePhrase(*id));
+                    } else {
+                        not_found.push(*id);
+                    }
+                }
+                if !not_found.is_empty() {
+                    let s: Vec<String> = not_found.iter().map(|i| i.to_string()).collect();
+                    self.message = Some(format!("✗ no phrase {}", s.join(" ")));
                 } else {
-                    self.message = Some(format!("✗ no phrase {id}"));
+                    self.message = None;
                 }
             }
+
             Cmd::AddPhrase { specs, repeat } => {
                 if specs.is_empty() {
                     self.message = Some("✗ empty phrase".into());
