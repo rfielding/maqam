@@ -1,0 +1,11 @@
+[package]
+name = "maqam-live"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cpal              = "0.15"
+ratatui           = "0.28"
+crossterm         = "0.28"
+crossbeam-channel = "0.5"
+anyhow            = "1.0"
