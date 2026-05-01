@@ -37,10 +37,12 @@ pub struct JinsSpec {
     pub groups: Option<Vec<u8>>,
 }
 
+#[allow(dead_code)]
 pub enum Cmd {
     AddPhrase { specs: Vec<JinsSpec>, repeat: usize },
     Rotate,
     Record(usize),
+    SetVol(f32),
     SetSustain(f64),
     DeleteBar(usize),
     SetBpm(f64),

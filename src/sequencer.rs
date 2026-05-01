@@ -20,6 +20,7 @@ pub enum SubdivEvent {
 #[derive(Debug, Clone)]
 pub struct Bar {
     pub root:          Pitch,          // first jins root — for phrase_start voice
+    #[allow(dead_code)]
     pub maqam:         Maqam,          // first jins maqam — for display
     pub maqam_names:   Vec<String>,    // all jins names — for display
     pub groups:        Vec<u8>,        // rhythm groups
@@ -210,4 +211,5 @@ pub enum AudioCmd {
     SetBpm(f64),
     SetSustain(f64),
     Clear,
+    SetVol(f32),
 }

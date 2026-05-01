@@ -11,6 +11,7 @@ pub struct App {
     pub message:     Option<String>,
     pub bpm:         f64,
     pub sustain:     f64,
+    pub vol:         f32,
     pub should_quit:    bool,
     pub last_recording: Option<String>,  // persists across commands
     pub history:     Vec<String>,
@@ -29,6 +30,7 @@ impl App {
             message:        Some("<root> <maqam> [groups][,…] [r<N>]  │  bpm s x<N> clear ?".into()),
             bpm:            120.0,
             sustain:        1.25,
+            vol:            1.0,
             should_quit:    false,
             last_recording: None,
             history:        Vec::new(),
@@ -96,6 +98,12 @@ impl App {
                         .into(),
                 );
             }
+            Cmd::SetVol(v) => {
+                self.vol = v;
+                let _ = self.audio_tx.send(AudioCmd::SetVol(v));
+                self.message = Some(format!("vol → {v:.2}"));
+            }
+
             Cmd::Record(reps) => {
                 self.message = Some(format!("rendering {}×…", reps));
                 let phrases = self.phrases.clone();

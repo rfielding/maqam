@@ -118,6 +118,7 @@ pub struct Voice {
     pub age:          usize,
     pub freq:         f64,
     pub phase:        f64,
+    #[allow(dead_code)]
     pub mod_phase:    f64,
     pub sustain_secs: f64,
     pub gain_override: Option<f32>,   // overrides default per-kind gain
@@ -242,11 +243,31 @@ pub fn spawn_phrase_start(hz: f64, sustain: f64, voices: &mut Vec<Voice>) {
     voices.push(Voice::melody_gain(hz * 0.5, sustain * 2.0, 0.14));
 }
 
-/// Spawn a sub-bass voice — pure sine two octaves below root,
-/// sustains for the full phrase duration so it holds the tonic as a pedal tone.
+/// Spawn a chain of sub-bass octaves — each one octave lower than the last,
+/// at decreasing gain, until the frequency is inaudible.
+/// The lowest partials add physical pressure even when below hearing threshold.
 pub fn spawn_sub_bass(root_hz: f64, phrase_secs: f64, voices: &mut Vec<Voice>) {
-    let freq = root_hz / 4.0;   // two octaves below
-    let mut v = Voice::mk(VoiceKind::SubBass, freq, phrase_secs);
-    v.gain_override = Some(0.30);
-    voices.push(v);
+    // Octave chain: 1× down to 1/32×.
+    // Gains peak at /4 (two octaves below root) and taper in both directions.
+    //   root×1  — soft presence in melody range
+    //   root/2  — upper bass
+    //   root/4  — main boom (loudest)
+    //   root/8  — deep sub
+    //   root/16 — infrasonic weight
+    //   root/32 — pressure only
+    let octaves: &[(f64, f32)] = &[
+        (1.0,       0.04),
+        (0.5,       0.10),
+        (0.25,      0.15),   // peak — two octaves below root
+        (0.125,     0.11),
+        (0.0625,    0.06),
+        (0.03125,   0.02),
+    ];
+    for &(factor, gain) in octaves {
+        let freq = root_hz * factor;
+        if freq < 8.0 { break; }   // below useful range even for speakers
+        let mut v = Voice::mk(VoiceKind::SubBass, freq, phrase_secs);
+        v.gain_override = Some(gain);
+        voices.push(v);
+    }
 }

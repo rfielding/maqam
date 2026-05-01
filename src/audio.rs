@@ -65,6 +65,7 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
     let mut cur_phrase: usize              = 0;
     let mut bpm         = 120.0f64;
     let mut sustain     = 1.25f64;
+    let mut vol         = 1.0f32;
 
     let stream = device.build_output_stream(
         &cfg.into(),
@@ -90,6 +91,7 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                         for pp in phrases.iter_mut() { pp.rebuild(sr, bpm); }
                     }
                     AudioCmd::SetSustain(s) => { sustain = s; }
+                    AudioCmd::SetVol(v)     => { vol = v; }
                     AudioCmd::Clear => { phrases.clear(); voices.clear(); cur_phrase = 0; }
                 }
             }
@@ -121,9 +123,9 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                     spawn_voices(ev, sustain, &mut voices, turnaround);
                 }
 
-                let mix: f32 = voices.iter_mut()
+                let mix: f32 = (voices.iter_mut()
                     .map(|v| v.sample(sr))
-                    .sum::<f32>()
+                    .sum::<f32>() * vol)
                     .clamp(-1.0, 1.0);
 
                 for s in frame.iter_mut() { *s = mix; }
