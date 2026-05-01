@@ -123,12 +123,25 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                     spawn_voices(ev, sustain, &mut voices, turnaround);
                 }
 
-                let mix: f32 = (voices.iter_mut()
-                    .map(|v| v.sample(sr))
-                    .sum::<f32>() * vol)
-                    .clamp(-1.0, 1.0);
+                // Stereo mix: equal-power pan law.
+                // Sub-bass and kick stay at pan=0 (center).
+                let (mut left, mut right) = (0f32, 0f32);
+                for v in voices.iter_mut() {
+                    let s    = v.sample(sr);
+                    // angle ∈ [π/8 .. 3π/8] for pan ∈ [-0.5 .. +0.5]
+                    let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
+                    left  += s * angle.cos();
+                    right += s * angle.sin();
+                }
+                left  = (left  * vol).clamp(-1.0, 1.0);
+                right = (right * vol).clamp(-1.0, 1.0);
 
-                for s in frame.iter_mut() { *s = mix; }
+                if frame.len() >= 2 {
+                    frame[0] = left;
+                    frame[1] = right;
+                } else {
+                    frame[0] = (left + right) * 0.5;
+                }
             }
 
             voices.retain(|v| !v.done);

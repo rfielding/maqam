@@ -122,6 +122,7 @@ pub struct Voice {
     pub mod_phase:    f64,
     pub sustain_secs: f64,
     pub gain_override: Option<f32>,   // overrides default per-kind gain
+    pub pan:          f32,             // stereo position: -0.5 left … +0.5 right
     pub done:         bool,
 }
 
@@ -138,7 +139,7 @@ impl Voice {
 
     fn mk(kind: VoiceKind, freq: f64, sustain_secs: f64) -> Self {
         Voice { kind, age: 0, freq, phase: 0.0, mod_phase: 0.0,
-                sustain_secs, gain_override: None, done: false }
+                sustain_secs, gain_override: None, pan: 0.0, done: false }
     }
 
     pub fn sample(&mut self, sr: f64) -> f32 {

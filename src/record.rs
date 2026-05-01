@@ -40,12 +40,13 @@ pub fn record_cycle(
         .sum();
     let cycle_samples = one_cycle * cycle_repeat.max(1);
     let tail_samples  = (SR * (sustain + 0.6)) as usize;
-    let total_samples = cycle_samples + tail_samples;
+    let total_samples = cycle_samples + tail_samples;  // audio frames
+    let total_stereo  = total_samples * 2;              // L+R samples
 
     let mut phrases_v: Vec<Phrase> = phrases.to_vec();
 
     let mut voices:      Vec<Voice>         = Vec::new();
-    let mut buffer:      Vec<f32>           = Vec::with_capacity(total_samples);
+    let mut buffer:      Vec<f32>           = Vec::with_capacity(total_stereo);
     let mut log:         Vec<PhraseMoment>  = Vec::new();
 
     let mut cur_phrase:  usize       = 0;
@@ -122,12 +123,16 @@ pub fn record_cycle(
             spawn_voices(ev, sustain, &mut voices, false);
         }
 
-        let mix: f32 = voices.iter_mut()
-            .map(|v| v.sample(SR))
-            .sum::<f32>()
-            .clamp(-1.0, 1.0);
-
-        buffer.push(mix);
+        // Stereo mix
+        let (mut left, mut right) = (0f32, 0f32);
+        for v in voices.iter_mut() {
+            let s     = v.sample(SR);
+            let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
+            left  += s * angle.cos();
+            right += s * angle.sin();
+        }
+        buffer.push(left.clamp(-1.0, 1.0));
+        buffer.push(right.clamp(-1.0, 1.0));
         voices.retain(|v| !v.done);
     }
 
@@ -140,7 +145,7 @@ pub fn record_cycle(
         .unwrap_or_default().as_secs();
     let mp4_path = format!("{home}/maqam-{ts}.mp4");
 
-    write_wav(wav_path, &buffer)?;
+    write_wav_stereo(wav_path, &buffer)?;
     write_ass(ass_path, &log, &phrases_v, total_samples)?;
 
     // ── ffmpeg ────────────────────────────────────────────────────────────────
@@ -273,17 +278,24 @@ fn ass_time(secs: f64) -> String {
 
 // ── WAV writer ────────────────────────────────────────────────────────────────
 
-fn write_wav(path: &str, samples: &[f32]) -> anyhow::Result<()> {
-    let n  = samples.len() as u32;
-    let sr = SR as u32;
+/// Write interleaved stereo 16-bit PCM WAV.
+fn write_wav_stereo(path: &str, samples: &[f32]) -> anyhow::Result<()> {
+    let n_frames = (samples.len() / 2) as u32;  // L+R pairs
+    let sr       = SR as u32;
+    let channels = 2u16;
+    let data_len = n_frames * 4;  // 2 channels × 2 bytes
     let mut f = std::fs::File::create(path)?;
-    f.write_all(b"RIFF")?; f.write_all(&(36 + n*2).to_le_bytes())?;
+    f.write_all(b"RIFF")?; f.write_all(&(36 + data_len).to_le_bytes())?;
     f.write_all(b"WAVE")?; f.write_all(b"fmt ")?;
-    f.write_all(&16u32.to_le_bytes())?; f.write_all(&1u16.to_le_bytes())?;
-    f.write_all(&1u16.to_le_bytes())?;  f.write_all(&sr.to_le_bytes())?;
-    f.write_all(&(sr*2).to_le_bytes())?; f.write_all(&2u16.to_le_bytes())?;
-    f.write_all(&16u16.to_le_bytes())?; f.write_all(b"data")?;
-    f.write_all(&(n*2).to_le_bytes())?;
+    f.write_all(&16u32.to_le_bytes())?;          // chunk size
+    f.write_all(&1u16.to_le_bytes())?;           // PCM
+    f.write_all(&channels.to_le_bytes())?;       // stereo
+    f.write_all(&sr.to_le_bytes())?;             // sample rate
+    f.write_all(&(sr * 4).to_le_bytes())?;       // byte rate
+    f.write_all(&4u16.to_le_bytes())?;           // block align
+    f.write_all(&16u16.to_le_bytes())?;          // bits/sample
+    f.write_all(b"data")?;
+    f.write_all(&data_len.to_le_bytes())?;
     for &s in samples {
         f.write_all(&((s * 32767.0).clamp(-32768.0, 32767.0) as i16).to_le_bytes())?;
     }
