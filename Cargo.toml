@@ -1,7 +1,9 @@
 [package]
 name = "maqam-live"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
+description = "Live-coding terminal sequencer for Arabic maqam music, built on just intonation"
+license = "MIT"
 
 [dependencies]
 cpal              = "0.15"
