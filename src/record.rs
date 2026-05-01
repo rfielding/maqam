@@ -41,7 +41,7 @@ pub fn record_cycle(
     let cycle_samples = one_cycle * cycle_repeat.max(1);
     let tail_samples  = (SR * (sustain + 0.6)) as usize;
     let total_samples = cycle_samples + tail_samples;  // audio frames
-    let total_stereo  = total_samples * 2;              // L+R samples
+    let total_stereo  = total_samples * 2 + tail_samples * 2; // L+R samples (tail added separately)
 
     let mut phrases_v: Vec<Phrase> = phrases.to_vec();
 
@@ -58,7 +58,7 @@ pub fn record_cycle(
     // Log the very start
     log.push(PhraseMoment { sample: 0, phrase_idx: 0, play_num: 0 });
 
-    for sample_n in 0..total_samples {
+    for sample_n in 0..cycle_samples {
         let event = if sample_n < cycle_samples
                     && cycles_done < cycle_repeat.max(1)
                     && cur_phrase < phrases_v.len()
@@ -137,6 +137,29 @@ pub fn record_cycle(
     }
 
     // ── Write files ───────────────────────────────────────────────────────────
+    // ── Final "1" — root of first phrase, struck once at cycle end ───────────
+    {
+        let root_hz     = phrases_v[0].bar.root.to_hz();
+        let phrase_secs = phrases_v[0].bar.total_subdivs as f64
+                        * subdiv_secs
+                        * phrases_v[0].repeat as f64;
+        spawn_phrase_start(root_hz, sustain, &mut voices);
+        spawn_sub_bass(root_hz, phrase_secs.min(sustain + 0.5), &mut voices);
+    }
+    // Render the tail (voices already spawned above will decay through it)
+    for _ in 0..tail_samples {
+        let (mut left, mut right) = (0f32, 0f32);
+        for v in voices.iter_mut() {
+            let s     = v.sample(SR);
+            let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
+            left  += s * angle.cos();
+            right += s * angle.sin();
+        }
+        buffer.push(left.clamp(-1.0, 1.0));
+        buffer.push(right.clamp(-1.0, 1.0));
+        voices.retain(|v| !v.done);
+    }
+
     let wav_path = "/tmp/maqam-live.wav";
     let ass_path = "/tmp/maqam-live.ass";
     let home     = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
