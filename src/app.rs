@@ -12,6 +12,7 @@ pub struct App {
     pub bpm:         f64,
     pub sustain:     f64,
     pub vol:         f32,
+    pub paused:      bool,
     pub should_quit:    bool,
     pub last_recording: Option<String>,  // persists across commands
     pub history:     Vec<String>,
@@ -31,6 +32,7 @@ impl App {
             bpm:            120.0,
             sustain:        1.25,
             vol:            1.0,
+            paused:         false,
             should_quit:    false,
             last_recording: None,
             history:        Vec::new(),
@@ -98,6 +100,12 @@ impl App {
                         .into(),
                 );
             }
+            Cmd::TogglePause => {
+                self.paused = !self.paused;
+                let _ = self.audio_tx.send(AudioCmd::SetPaused(self.paused));
+                self.message = Some(if self.paused { "⏸ paused".into() } else { "▶ playing".into() });
+            }
+
             Cmd::SetVol(v) => {
                 self.vol = v;
                 let _ = self.audio_tx.send(AudioCmd::SetVol(v));

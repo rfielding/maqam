@@ -117,9 +117,12 @@ pub fn build_phrase(
             .collect();
         jins_freqs.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-        // Merge into deduped (within 4 cents — tighter than syntonic comma)
+        // Merge into deduped.
+        // Threshold = 23 cents — just above the syntonic comma (21.5¢) and
+        // Pythagorean comma (23.5¢).  Notes within this distance are treated
+        // as the same pitch; the first jins's version always wins.
         for f in jins_freqs {
-            if deduped.iter().all(|&prev| (f / prev).log2().abs() > 4.0 / 1200.0) {
+            if deduped.iter().all(|&prev| (f / prev).log2().abs() > 23.0 / 1200.0) {
                 deduped.push(f);
             }
         }
@@ -212,4 +215,5 @@ pub enum AudioCmd {
     SetSustain(f64),
     Clear,
     SetVol(f32),
+    SetPaused(bool),
 }

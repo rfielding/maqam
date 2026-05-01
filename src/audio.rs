@@ -66,6 +66,7 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
     let mut bpm         = 120.0f64;
     let mut sustain     = 1.25f64;
     let mut vol         = 1.0f32;
+    let mut paused      = false;
 
     let stream = device.build_output_stream(
         &cfg.into(),
@@ -92,6 +93,7 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                     }
                     AudioCmd::SetSustain(s) => { sustain = s; }
                     AudioCmd::SetVol(v)     => { vol = v; }
+                    AudioCmd::SetPaused(p)  => { paused = p; }
                     AudioCmd::Clear => { phrases.clear(); voices.clear(); cur_phrase = 0; }
                 }
             }
@@ -105,7 +107,7 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                 );
 
                 // Level 3: phrase start → long root note (highest melody level)
-                if phrase_start {
+                if phrase_start && !paused {
                     if let Some(pp) = phrases.get(cur_phrase) {
                         let root_hz = pp.phrase.bar.root.to_hz();
                         spawn_phrase_start(root_hz, sustain, &mut voices);
@@ -120,7 +122,9 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
 
                 // Level 1 & 2: subdivision event → melody + chord tones
                 if let Some(ev) = event {
+                    if !paused {
                     spawn_voices(ev, sustain, &mut voices, turnaround);
+                    }
                 }
 
                 // Stereo mix: equal-power pan law.

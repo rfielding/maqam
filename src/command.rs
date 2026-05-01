@@ -42,6 +42,7 @@ pub enum Cmd {
     AddPhrase { specs: Vec<JinsSpec>, repeat: usize },
     Rotate,
     Record(usize),
+    TogglePause,
     SetVol(f32),
     SetSustain(f64),
     DeleteBar(usize),
@@ -61,6 +62,7 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
         "clear"         => return Ok(Cmd::Clear),
         "rot"           => return Ok(Cmd::Rotate),
         "m"             => return Ok(Cmd::Record(1)),
+        "z"             => return Ok(Cmd::TogglePause),
 
         _ => {}
     }

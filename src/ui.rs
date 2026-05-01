@@ -147,7 +147,8 @@ fn draw_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Line::from(vec![Span::styled(format!("  {msg}"), Style::default().fg(col))])
     } else {
         Line::from(vec![Span::styled(
-            format!("  BPM:{} sus:{:.1}s vol:{:.2} phrases:{}  [?] help",
+            format!("  {}BPM:{} sus:{:.1}s vol:{:.2} phrases:{}  [?] help  [z] pause",
+                if app.paused { "⏸ PAUSED  " } else { "" },
                 app.bpm, app.sustain, app.vol, app.phrases.len()),
             Style::default().fg(DIM),
         )])

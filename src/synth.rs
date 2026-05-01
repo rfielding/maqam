@@ -157,11 +157,26 @@ impl Voice {
                 (rand_f32(), (-t * 28.0).exp() as f32, t > 0.14)
             }
             VoiceKind::Accent => {
-                // Short high-pitched click — marks the turnaround
-                let freq = self.freq * 2.0;
-                self.phase += freq * dt;
-                let osc = (self.phase * std::f64::consts::TAU).sin() as f32;
-                (osc, (-t * 40.0).exp() as f32, t > 0.08)
+                // Muted crash: noise burst with fast bright attack, mid decay
+                // Layer 1: broadband noise (the "wash")
+                let noise = rand_f32();
+                // Layer 2: high sine shimmer on top (the "ping")
+                let shimmer_freq = self.freq * 6.0;
+                self.phase += shimmer_freq * dt;
+                let shimmer = (self.phase * std::f64::consts::TAU).sin() as f32;
+                let osc = noise * 0.75 + shimmer * 0.25;
+                // Envelope: instant attack, fast initial drop, longer tail
+                let amp = if t < 0.003 {
+                    (t / 0.003) as f32                         // 3ms attack
+                } else if t < 0.04 {
+                    (1.0 - (t - 0.003) / 0.037) as f32 * 0.9 // fast decay to 0.1
+                        + 0.1
+                } else if t < 0.18 {
+                    (0.1 * (1.0 - (t - 0.04) / 0.14)).max(0.0) as f32  // tail
+                } else {
+                    0.0
+                };
+                (osc, amp, t > 0.20)
             }
             VoiceKind::SubBass => {
                 // Pure sine, two octaves below root, slow attack, holds phrase
