@@ -19,7 +19,8 @@ pub enum SubdivEvent {
 
 #[derive(Debug, Clone)]
 pub struct Bar {
-    pub root:          Pitch,          // first jins root — for phrase_start voice
+    pub root:          Pitch,          // original pitch (for display)
+    pub root_hz:       f64,            // actual 5-limit snapped root Hz
     #[allow(dead_code)]
     pub maqam:         Maqam,          // first jins maqam — for display
     pub maqam_names:   Vec<String>,    // all jins names — for display
@@ -47,16 +48,52 @@ impl Bar {
 
 // ── Phrase ────────────────────────────────────────────────────────────────────
 
+/// A jump instruction stored as a sequence entry.
+#[derive(Debug, Clone)]
+pub struct JumpSpec {
+    pub to_pos: usize,
+    pub times:  usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct Phrase {
     pub id:     usize,
     pub src:    String,
-    pub bar:    Bar,     // single bar — the combined scale
+    pub bar:    Bar,
     pub repeat: usize,
+    /// If Some, this is a control-flow entry (no audio).
+    pub jump:   Option<JumpSpec>,
 }
 
 impl Phrase {
     pub fn rhythm_display(&self) -> String { self.bar.rhythm_display() }
+    #[allow(dead_code)]
+    pub fn is_jump(&self) -> bool { self.jump.is_some() }
+}
+
+/// Build a jump-entry phrase (no audio — pure sequencer control flow).
+pub fn build_jump_entry(id: usize, to_pos: usize, times: usize) -> Phrase {
+    use crate::tuning::{Maqam, Pitch};
+    // Empty bar — zero subdivisions, never played
+    let bar = Bar {
+        root: Pitch { letter: 'd', accidental: 0, octave: 4 },
+        root_hz: 293.6648,
+        maqam: Maqam::Nahawand,
+        maqam_names: vec![],
+        groups: vec![],
+        frequencies: vec![],
+        group_degrees: vec![],
+        degrees: vec![],
+        events: vec![],
+        total_subdivs: 0,
+    };
+    Phrase {
+        id,
+        src: format!(">>{to_pos} x{times}"),   // ASCII: >>pos xtimes
+        bar,
+        repeat: 1,
+        jump: Some(JumpSpec { to_pos, times }),
+    }
 }
 
 // ── Builder ───────────────────────────────────────────────────────────────────
@@ -69,6 +106,76 @@ pub struct BarSpec {
     pub groups: Vec<u8>,
 }
 
+fn snap_to_5limit_from_d(nominal: f64) -> f64 {
+    let raw_ratio = nominal / D_REFERENCE_HZ;
+    let octaves   = raw_ratio.log2().floor() as i32;
+    let nom_red   = raw_ratio / 2f64.powi(octaves);
+    let threshold = 25.0f64 / 1200.0;  // one syntonic comma
+
+    // Pass 1: 3-smooth (Pythagorean) — prefer these since oud strings are
+    // tuned in perfect fourths. Notes reachable via 4/3 chains from D
+    // should use Pythagorean tuning to resonate with open strings.
+    let three_sm: Vec<u32> = (1u32..=512).filter(|&n| is_3smooth(n)).collect();
+    let mut best_hz   = nominal;
+    let mut best_dist = f64::MAX;
+    for &p in &three_sm {
+        for &q in &three_sm {
+            if num_gcd(p, q) != 1 { continue; }
+            let ratio   = p as f64 / q as f64;
+            let exp     = ratio.log2().floor() as i32;
+            let reduced = ratio / 2f64.powi(exp);
+            let dist    = (reduced / nom_red).log2().abs();
+            if dist < best_dist {
+                best_dist = dist;
+                best_hz   = D_REFERENCE_HZ * ratio * 2f64.powi(octaves - exp);
+            }
+            if best_dist < 1.0 / 1200.0 { return best_hz; }
+        }
+    }
+    if best_dist < threshold { return best_hz; }  // good Pythagorean match found
+
+    // Pass 2: 5-smooth fallback — for neutral/chromatic intervals that
+    // cannot be expressed simply in Pythagorean tuning.
+    let five_sm: Vec<u32> = (1u32..=64).filter(|&n| is_5smooth(n)).collect();
+    for &p in &five_sm {
+        for &q in &five_sm {
+            if num_gcd(p, q) != 1 { continue; }
+            let ratio   = p as f64 / q as f64;
+            let exp     = ratio.log2().floor() as i32;
+            let reduced = ratio / 2f64.powi(exp);
+            let dist    = (reduced / nom_red).log2().abs();
+            if dist < best_dist {
+                best_dist = dist;
+                best_hz   = D_REFERENCE_HZ * ratio * 2f64.powi(octaves - exp);
+            }
+            if best_dist < 1.0 / 1200.0 { return best_hz; }
+        }
+    }
+    best_hz
+}
+
+fn num_gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { num_gcd(b, a % b) }
+}
+
+/// True if n has no prime factors other than 2, 3 (Pythagorean).
+fn is_3smooth(mut n: u32) -> bool {
+    for p in [2u32, 3] { while n % p == 0 { n /= p; } }
+    n == 1
+}
+
+/// True if n has no prime factors other than 2, 3, 5.
+fn is_5smooth(mut n: u32) -> bool {
+    for p in [2u32, 3, 5] {
+        while n % p == 0 { n /= p; }
+    }
+    n == 1
+}
+
+/// D4 as the universal JI reference pitch.
+/// All notes are expressed as D × (5-limit ratio).
+const D_REFERENCE_HZ: f64 = 293.6648_f64;  // D4 exact ET
+
 pub fn build_phrase(
     phrase_id:   usize,
     src:         String,
@@ -78,75 +185,49 @@ pub fn build_phrase(
 ) -> Phrase {
     assert!(!specs.is_empty());
 
-    // ── Build combined JI scale — snap each jins root to coincidence point ──
+    // ── Tetrachord stacking ───────────────────────────────────────────────
+    // Each jins contributes notes only within its pitch range:
+    //   jins i (0..n-2): notes in [root_i, root_{i+1})
+    //   jins n-1 (last): notes in [root_{n-1}, root_0 * 2]  (the octave)
     //
-    // Maqams stack ajnas at coincidence points: the root of each subsequent
-    // jins must be the SAME frequency as the nearest note already computed in
-    // JI from the first jins.  We cannot use equal-tempered pitch for
-    // subsequent roots — that drifts by up to a syntonic comma (81/80 = 21.5¢).
-    //
-    // Algorithm:
-    //   1. Compute first jins from its stated root (equal-tempered is fine here).
-    //   2. For each subsequent jins, find the note in the already-built scale
-    //      closest to the jins's nominal equal-tempered root.
-    //   3. Use THAT frequency as the actual root — preserving JI coherence.
-    //   4. Merge and deduplicate within 4 cents (tighter than syntonic comma).
+    // This is the traditional maqam model — jins stack by range, not by
+    // merging full octave scales. Prevents chromatic clashes like Eb/E♮.
+    //   d kurd [D,A) + a kurd [A,D'] = D Phrygian ✓
+    //   d nah  [D,A) + a kurd [A,D'] = D natural minor ✓
+
+    let n_specs = specs.len();
+    let roots_hz: Vec<f64> = specs.iter()
+        .map(|s| snap_to_5limit_from_d(s.root.to_hz()))
+        .collect();
+    let upper_bound = roots_hz[0] * 2.0;
 
     let mut deduped: Vec<f64> = Vec::new();
-    // The first root is the JI reference for the entire phrase.
-    let first_root_hz = specs[0].root.to_hz();
-
     for (i, spec) in specs.iter().enumerate() {
-        let actual_root_hz = if i == 0 {
-            first_root_hz
-        } else {
-            // Find the simplest JI ratio p/q (p,q ≤ 16) from the first root
-            // that best approximates the named pitch.
-            // Note names are just rough guides — we always stay in JI from root.
-            let nominal = spec.root.to_hz();
-            let target_ratio = nominal / first_root_hz;
+        let root    = roots_hz[i];
+        let ceiling = if i + 1 < n_specs { roots_hz[i + 1] } else { upper_bound };
+        let eps     = 1.001_f64;
 
-            let mut best_hz   = first_root_hz;
-            let mut best_dist = f64::MAX;
-
-            for p in 1u32..=16 {
-                for q in 1u32..=16 {
-                    // Try this ratio and octave transpositions of it
-                    let base = first_root_hz * p as f64 / q as f64;
-                    for octave in [-1i32, 0, 1, 2] {
-                        let f = base * 2f64.powi(octave);
-                        if f < 20.0 || f > 8000.0 { continue; }
-                        // Distance in cents from nominal
-                        let dist = (f / nominal).log2().abs();
-                        if dist < best_dist {
-                            best_dist = dist;
-                            best_hz   = f;
-                        }
-                    }
-                }
-            }
-            best_hz
-        };
-
-        // Build this jins's frequencies from the snapped root
         let mut jins_freqs: Vec<f64> = spec.maqam.ratios().iter()
-            .map(|&(p, q)| actual_root_hz * p as f64 / q as f64)
+            .map(|&(p, q)| root * p as f64 / q as f64)
             .collect();
         jins_freqs.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-        // Merge into deduped.
-        // Threshold = 23 cents — just above the syntonic comma (21.5¢) and
-        // Pythagorean comma (23.5¢).  Notes within this distance are treated
-        // as the same pitch; the first jins's version always wins.
         for f in jins_freqs {
+            if f > ceiling * eps { continue; }
+            // Dedup within 23 cents — first jins wins
             if deduped.iter().all(|&prev| (f / prev).log2().abs() > 23.0 / 1200.0) {
                 deduped.push(f);
             }
         }
     }
-
     deduped.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
+    // Remove duplicate octave if both root and root*2 ended up in the scale
+    if deduped.len() > 1 {
+        let first = deduped[0];
+        if (deduped.last().unwrap() / first - 2.0).abs() < 0.001 {
+            // Keep the octave — it's a valid note
+        }
+    }
     // ── Use the groups from the last spec that has explicit rhythm ────────
     let groups = specs.last().map(|s| s.groups.clone()).unwrap_or_else(|| vec![4]);
     let n_groups = groups.len();
@@ -164,8 +245,10 @@ pub fn build_phrase(
         .map(|s| s.maqam.name().to_string())
         .collect();
 
+    let root_hz_0 = snap_to_5limit_from_d(specs[0].root.to_hz());
     let bar = Bar {
         root:         specs[0].root,
+        root_hz:      root_hz_0,
         maqam:        specs[0].maqam,
         maqam_names,
         groups,
@@ -176,7 +259,7 @@ pub fn build_phrase(
         total_subdivs,
     };
 
-    Phrase { id: phrase_id, src, bar, repeat }
+    Phrase { id: phrase_id, src, bar, repeat, jump: None }
 }
 
 // ── Event computation ─────────────────────────────────────────────────────────
@@ -233,4 +316,5 @@ pub enum AudioCmd {
     Clear,
     SetVol(f32),
     SetPaused(bool),
+    SetCurPhrase(usize),
 }

@@ -48,20 +48,30 @@ pub fn run(app: &mut App) -> anyhow::Result<()> {
                         let cmd = app.input.clone();
                         app.history_push(&cmd);
                         app.input.clear();
+                        app.cursor_pos = 0;
                         app.handle_command(&cmd);
                     }
                     KeyCode::Up    => { app.history_up(); }
                     KeyCode::Down  => { app.history_down(); }
+                    KeyCode::Left  => { app.cursor_left(); }
+                    KeyCode::Right => { app.cursor_right(); }
+                    KeyCode::Home  => { app.cursor_home(); }
+                    KeyCode::End   => { app.cursor_end(); }
+                    KeyCode::Delete => {
+                        app.history_pos = None;
+                        app.delete_char();
+                    }
                     KeyCode::Backspace => {
                         app.history_pos = None;
-                        app.input.pop();
+                        app.backspace();
                     }
                     KeyCode::Char(c) => {
                         app.history_pos = None;
-                        app.input.push(c);
+                        app.insert_char(c);
                     }
                     KeyCode::Esc => {
                         app.input.clear();
+                        app.cursor_pos  = 0;
                         app.message     = None;
                         app.history_pos = None;
                     }
@@ -90,33 +100,71 @@ fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let items: Vec<ListItem> = app.phrases.iter().map(|phrase| {
-        let id_str  = format!("{:>2}: ", phrase.id);
-        let src_str = format!("{:<28}", phrase.src);
-        let rhythm  = phrase.rhythm_display();
+    let cur = if app.paused { usize::MAX } else {
+        crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let cur_sub   = crate::CUR_SUBDIV.load(std::sync::atomic::Ordering::Relaxed);
+    let cur_plays = crate::CUR_PLAYS.load(std::sync::atomic::Ordering::Relaxed);
+    let n = app.phrases.len().max(1);
+
+    let items: Vec<ListItem> = app.phrases.iter().enumerate().map(|(idx, phrase)| {
+        let playing = !app.paused && idx == cur % n;
+        let id_str  = format!("{:>2}: ", idx);
+        let marker  = if playing { "▶ " } else { "  " };
+
+        // Jump entries render as control-flow markers
+        if phrase.jump.is_some() {
+            let col = if playing { Color::Rgb(220, 190, 80) } else { Color::Rgb(110, 95, 40) };
+            return ListItem::new(Line::from(vec![
+                Span::styled(marker,             Style::default().fg(ACCENT)),
+                Span::styled(id_str,             Style::default().fg(DIM)),
+                Span::styled(phrase.src.clone(), Style::default().fg(col).add_modifier(Modifier::BOLD)),
+            ]));
+        }
+
+        let src_str   = format!("{:<28}", phrase.src);
+        let rhythm    = phrase.rhythm_display();
         let maqam_str = phrase.bar.maqam_names.join("+");
 
+        let (fg_id, fg_src) = if playing {
+            (ACCENT, Color::Rgb(255, 255, 180))
+        } else {
+            (DIM, ACCENT)
+        };
+
         let mut spans = vec![
-            Span::styled(id_str,  Style::default().fg(DIM)),
-            Span::styled(src_str, Style::default().fg(ACCENT)),
+            Span::styled(marker,  Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(id_str,  Style::default().fg(fg_id)),
+            Span::styled(src_str, Style::default().fg(fg_src)),
             Span::raw(" "),
         ];
 
-        for ch in rhythm.chars() {
-            let (g, col) = match ch { 'X' => ('X', KICK), _ => ('.', SNARE) };
-            spans.push(Span::styled(g.to_string(), Style::default().fg(col)));
+        for (si, ch) in rhythm.chars().enumerate() {
+            let is_now = playing && si == cur_sub;
+            let col = if is_now { Color::Rgb(255,255,255) }
+                      else if playing { match ch { 'X' => KICK, _ => SNARE } }
+                      else { match ch { 'X' => Color::Rgb(140,100,50), _ => Color::Rgb(60,80,110) } };
+            let sty = if is_now {
+                Style::default().fg(col).add_modifier(Modifier::BOLD | Modifier::REVERSED)
+            } else { Style::default().fg(col) };
+            spans.push(Span::styled(ch.to_string(), sty));
         }
 
-        if true {
+        if playing && phrase.repeat > 1 {
+            spans.push(Span::styled(
+                format!(" {}/{}", cur_plays + 1, phrase.repeat),
+                Style::default().fg(Color::Rgb(180,180,100)).add_modifier(Modifier::BOLD),
+            ));
+        } else if !playing && phrase.repeat > 1 {
             spans.push(Span::styled(
                 format!("  ×{}", phrase.repeat),
-                Style::default().fg(REPEAT).add_modifier(Modifier::BOLD),
+                Style::default().fg(REPEAT),
             ));
         }
 
         spans.push(Span::styled(
             format!("  {maqam_str}"),
-            Style::default().fg(MAQAM).add_modifier(Modifier::DIM),
+            Style::default().fg(MAQAM).add_modifier(if playing { Modifier::empty() } else { Modifier::DIM }),
         ));
 
         ListItem::new(Line::from(spans))
@@ -132,8 +180,28 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 }
 
 fn draw_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let para = Paragraph::new(format!("> {}_", app.input))
-        .style(Style::default().fg(CMD).bg(BG))
+    // Render with cursor block at cursor_pos
+    let chars: Vec<char> = app.input.chars().collect();
+    let mut spans = vec![Span::styled("> ", Style::default().fg(DIM))];
+    for (i, &ch) in chars.iter().enumerate() {
+        if i == app.cursor_pos {
+            spans.push(Span::styled(
+                ch.to_string(),
+                Style::default().fg(BG).bg(CMD).add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::styled(ch.to_string(), Style::default().fg(CMD)));
+        }
+    }
+    // Cursor at end of input
+    if app.cursor_pos >= chars.len() {
+        spans.push(Span::styled(
+            " ",
+            Style::default().fg(BG).bg(CMD),
+        ));
+    }
+    let para = Paragraph::new(Line::from(spans))
+        .style(Style::default().bg(BG))
         .block(Block::default()
             .borders(Borders::ALL)
             .title(Span::styled(" cmd ", Style::default().fg(DIM)))

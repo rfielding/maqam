@@ -16,6 +16,8 @@ pub static CUR_SUBDIV: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 pub static CUR_PLAYS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+pub static CUR_JUMP_REM: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 use crossbeam_channel::bounded;
 

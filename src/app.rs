@@ -18,6 +18,7 @@ pub struct App {
     pub history:     Vec<String>,
     pub history_pos: Option<usize>,
     pub saved_input: String,
+    pub cursor_pos:  usize,   // char index into input
     next_phrase_id:  usize,
     last_rhythm:     Vec<u8>,
     audio_tx:        Sender<AudioCmd>,
@@ -38,6 +39,7 @@ impl App {
             history:        Vec::new(),
             history_pos:    None,
             saved_input:    String::new(),
+            cursor_pos:     0,
             next_phrase_id: 0,
             last_rhythm:    vec![3, 3, 2],
             audio_tx,
@@ -63,7 +65,10 @@ impl App {
             Some(0) => {}
             Some(i) => { self.history_pos = Some(i - 1); }
         }
-        if let Some(i) = self.history_pos { self.input = self.history[i].clone(); }
+        if let Some(i) = self.history_pos {
+            self.input = self.history[i].clone();
+            self.cursor_pos = self.input.chars().count();
+        }
     }
 
     pub fn history_down(&mut self) {
@@ -72,13 +77,63 @@ impl App {
             Some(i) if i + 1 >= self.history.len() => {
                 self.history_pos = None;
                 self.input       = self.saved_input.clone();
+                self.cursor_pos  = self.input.chars().count();
             }
             Some(i) => {
                 self.history_pos = Some(i + 1);
                 self.input = self.history[i + 1].clone();
+                self.cursor_pos = self.input.chars().count();
             }
         }
     }
+
+    // ── Cursor / line editing ─────────────────────────────────────────────
+
+    pub fn cursor_left(&mut self) {
+        if self.cursor_pos > 0 { self.cursor_pos -= 1; }
+    }
+
+    pub fn cursor_right(&mut self) {
+        let n = self.input.chars().count();
+        if self.cursor_pos < n { self.cursor_pos += 1; }
+    }
+
+    pub fn cursor_home(&mut self) { self.cursor_pos = 0; }
+
+    pub fn cursor_end(&mut self) {
+        self.cursor_pos = self.input.chars().count();
+    }
+
+    pub fn insert_char(&mut self, ch: char) {
+        // Convert char-index to byte-index
+        let byte_pos: usize = self.input.char_indices()
+            .nth(self.cursor_pos)
+            .map(|(b, _)| b)
+            .unwrap_or(self.input.len());
+        self.input.insert(byte_pos, ch);
+        self.cursor_pos += 1;
+    }
+
+    pub fn backspace(&mut self) {
+        if self.cursor_pos == 0 { return; }
+        let byte_pos: usize = self.input.char_indices()
+            .nth(self.cursor_pos - 1)
+            .map(|(b, _)| b)
+            .unwrap_or(self.input.len().saturating_sub(1));
+        self.input.remove(byte_pos);
+        self.cursor_pos -= 1;
+    }
+
+    pub fn delete_char(&mut self) {
+        let n = self.input.chars().count();
+        if self.cursor_pos >= n { return; }
+        let byte_pos: usize = self.input.char_indices()
+            .nth(self.cursor_pos)
+            .map(|(b, _)| b)
+            .unwrap_or(self.input.len());
+        self.input.remove(byte_pos);
+    }
+
 
     // ── Commands ──────────────────────────────────────────────────────────
 
@@ -103,6 +158,47 @@ impl App {
                         .into(),
                 );
             }
+            Cmd::Jump { to, times } => {
+                // Append a jump entry to the sequence list
+                let id = self.next_phrase_id;
+                self.next_phrase_id += 1;
+                let entry = crate::sequencer::build_jump_entry(id, to, times);
+                let _ = self.audio_tx.send(AudioCmd::AddPhrase(entry.clone()));
+                self.phrases.push(entry);
+                self.message = None;
+            }
+
+            Cmd::Insert { before, specs, repeat } => {
+                if specs.is_empty() {
+                    self.message = Some("✗ empty phrase".into());
+                    return;
+                }
+                let resolved = match resolve_rhythms(specs, &self.last_rhythm) {
+                    Ok(r)  => r,
+                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                };
+                if let Some(r) = resolved.last() { self.last_rhythm = r.groups.clone(); }
+
+                let peak = 4usize;
+                let src = resolved.iter().map(|s| s.src.as_str()).collect::<Vec<_>>().join(", ");
+                let id  = self.next_phrase_id;
+                self.next_phrase_id += 1;
+                let phrase = build_phrase(id, src, resolved, peak, repeat.max(1));
+
+                let pos = before.min(self.phrases.len());
+                self.phrases.insert(pos, phrase.clone());
+
+                // Rebuild audio — preserve playing position adjusted for insertion
+                let cur = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
+                let new_cur = if pos <= cur { (cur + 1).min(self.phrases.len().saturating_sub(1)) } else { cur };
+                let _ = self.audio_tx.send(AudioCmd::Clear);
+                for p in &self.phrases {
+                    let _ = self.audio_tx.send(AudioCmd::AddPhrase(p.clone()));
+                }
+                let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(new_cur));
+                self.message = Some(format!("inserted at {pos}"));
+            }
+
             Cmd::TogglePause => {
                 self.paused = !self.paused;
                 let _ = self.audio_tx.send(AudioCmd::SetPaused(self.paused));

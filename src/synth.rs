@@ -131,14 +131,17 @@ pub struct Voice {
     #[allow(dead_code)]
     pub mod_phase:    f64,
     pub sustain_secs: f64,
-    pub gain_override: Option<f32>,   // overrides default per-kind gain
-    pub pan:          f32,             // stereo position: -0.5 left … +0.5 right
-    pub done:         bool,
+    pub gain_override:    Option<f32>,
+    pub pan:              f32,
+    pub release_frames:   Option<usize>,  // if Some, fade to zero over this many samples
+    pub done:             bool,
 }
 
 impl Voice {
-    pub fn floor_tom()               -> Self { Self::mk(VoiceKind::FloorTom, 80.0, 0.0) }
-    pub fn kick()                    -> Self { Self::mk(VoiceKind::FloorTom, 80.0, 0.0) }
+    #[allow(dead_code)]
+    pub fn floor_tom()               -> Self { Self::mk(VoiceKind::FloorTom, 40.0, 0.0) }
+    #[allow(dead_code)]
+    pub fn kick()                    -> Self { Self::mk(VoiceKind::FloorTom, 40.0, 0.0) }
     pub fn snare()                   -> Self { Self::mk(VoiceKind::Snare,    0.0, 0.0) }
     pub fn melody(hz: f64, sus: f64) -> Self { Self::mk(VoiceKind::MelodyFm, hz, sus)  }
     pub fn melody_gain(hz: f64, sus: f64, gain: f32) -> Self {
@@ -146,11 +149,13 @@ impl Voice {
         v.gain_override = Some(gain);
         v
     }
+    #[allow(dead_code)]
     pub fn accent(hz: f64)           -> Self { Self::mk(VoiceKind::Accent,   hz, 0.0)  }
 
     fn mk(kind: VoiceKind, freq: f64, sustain_secs: f64) -> Self {
         Voice { kind, age: 0, freq, phase: 0.0, mod_phase: 0.0,
-                sustain_secs, gain_override: None, pan: 0.0, done: false }
+                sustain_secs, gain_override: None, pan: 0.0,
+                release_frames: None, done: false }
     }
 
     pub fn sample(&mut self, sr: f64) -> f32 {
@@ -222,20 +227,19 @@ impl Voice {
                 (osc, amp, t > 0.20)
             }
             VoiceKind::SubBass => {
-                // Pure sine, two octaves below root, slow attack, holds phrase
                 let sus = self.sustain_secs;
                 self.phase += self.freq * dt;
                 let osc = (self.phase * std::f64::consts::TAU).sin() as f32;
-                let amp = if t < 0.20 {
-                    (t / 0.20) as f32          // 200ms attack
+                let amp = if t < 0.10 {
+                    (t / 0.10) as f32          // 100ms attack
                 } else if t < sus {
                     1.0f32
-                } else if t < sus + 0.80 {
-                    (1.0 - (t - sus) / 0.80).max(0.0) as f32
+                } else if t < sus + 0.20 {
+                    (1.0 - (t - sus) / 0.20).max(0.0) as f32  // 200ms release
                 } else {
                     0.0
                 };
-                (osc, amp, t > sus + 0.85)
+                (osc, amp, t > sus + 0.25)
             }
             VoiceKind::MelodyFm => {
                 let sus = self.sustain_secs;
@@ -261,6 +265,17 @@ impl Voice {
 
         self.age += 1;
         if fin { self.done = true; }
+
+        // Fast release override — fades to zero over release_frames samples
+        let release_gain = if let Some(rf) = self.release_frames {
+            if rf == 0 { self.done = true; 0.0 }
+            else {
+                let g = (rf as f32 / 441.0).min(1.0); // 441 = 10ms at 44100Hz
+                self.release_frames = Some(rf.saturating_sub(1));
+                g
+            }
+        } else { 1.0 };
+
         let gain: f32 = self.gain_override.unwrap_or_else(|| match self.kind {
             VoiceKind::FloorTom    => 0.45,
             VoiceKind::Snare       => 0.18,
@@ -272,7 +287,7 @@ impl Voice {
             VoiceKind::Accent      => 0.35,
             VoiceKind::SubBass     => 0.30,
         });
-        (osc * amp * gain).clamp(-1.0, 1.0)
+        (osc * amp * gain * release_gain).clamp(-1.0, 1.0)
     }
 }
 

@@ -67,6 +67,8 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
     let mut sustain     = 1.25f64;
     let mut vol         = 1.0f32;
     let mut paused      = false;
+    // Per-entry jump counters: phrase.id → remaining jumps
+    let mut jump_counters: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
 
     let stream = device.build_output_stream(
         &cfg.into(),
@@ -94,7 +96,14 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                     AudioCmd::SetSustain(s) => { sustain = s; }
                     AudioCmd::SetVol(v)     => { vol = v; }
                     AudioCmd::SetPaused(p)  => { paused = p; }
-                    AudioCmd::Clear => { phrases.clear(); voices.clear(); cur_phrase = 0; }
+                    AudioCmd::SetCurPhrase(pos) => {
+                        if pos < phrases.len() {
+                            cur_phrase = pos;
+                            jump_counters.clear();
+                            crate::CUR_PHRASE.store(cur_phrase, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                    AudioCmd::Clear => { phrases.clear(); voices.clear(); cur_phrase = 0; jump_counters.clear(); }
                 }
             }
 
@@ -103,19 +112,21 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
 
                 // Tick the sequencer one sample; returns event + flags
                 let (event, milestone) = tick_sequencer(
-                    &mut phrases, &mut cur_phrase, bpm, sr, sustain, &mut voices
+                    &mut phrases, &mut cur_phrase, bpm, sr, sustain, &mut voices,
+                    &mut jump_counters
                 );
 
                 // Level 3: phrase start → long root note (highest melody level)
                 if milestone == Milestone::PhraseStart && !paused {
                     if let Some(pp) = phrases.get(cur_phrase) {
-                        let root_hz = pp.phrase.bar.root.to_hz();
+                        let root_hz = pp.phrase.bar.root_hz;
                         spawn_phrase_start(root_hz, sustain, &mut voices);
                         // Sub-bass: hold the root for the full phrase duration
                         let subdiv_secs  = 60.0 / (bpm * 2.0);
-                        let phrase_secs  = pp.phrase.bar.total_subdivs as f64
+                        let phrase_secs  = (pp.phrase.bar.total_subdivs as f64
                                          * subdiv_secs
-                                         * pp.phrase.repeat as f64;
+                                         * pp.phrase.repeat as f64)
+                                         .min(3.0);  // cap to avoid bleeding into next phrase
                         spawn_sub_bass(root_hz, phrase_secs, &mut voices);
                     }
                 }
@@ -161,16 +172,54 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
 /// Advance the sequencer by one sample.
 /// Returns (Option<event>, phrase_start, turnaround).
 fn tick_sequencer(
-    phrases:    &mut Vec<PlayingPhrase>,
-    cur_phrase: &mut usize,
-    _bpm:       f64,
-    _sr:        f64,
-    _sustain:   f64,
-    _voices:    &mut Vec<Voice>,
+    phrases:       &mut Vec<PlayingPhrase>,
+    cur_phrase:    &mut usize,
+    _bpm:          f64,
+    _sr:           f64,
+    _sustain:      f64,
+    _voices:       &mut Vec<Voice>,
+    jump_counters: &mut std::collections::HashMap<usize, usize>,
 ) -> (Option<SubdivEvent>, Milestone) {
     if phrases.is_empty() { return (None, Milestone::None); }
-    if *cur_phrase >= phrases.len() { *cur_phrase = 0; }
 
+    // Skip over jump entries — execute them immediately
+    let max_iter = phrases.len() + 1;
+    for _ in 0..max_iter {
+        if *cur_phrase >= phrases.len() { *cur_phrase = 0; }
+        let (pid, jump) = {
+            let p = &phrases[*cur_phrase].phrase;
+            (p.id, p.jump.clone())
+        };
+        if let Some(js) = jump {
+            // Counter starts at times-1: phrase already played once before
+            // we reached the jump, so times=3 means 2 more jumps = 3 plays total.
+            let remaining = jump_counters.entry(pid).or_insert(js.times.saturating_sub(1));
+            crate::CUR_JUMP_REM.store(*remaining, std::sync::atomic::Ordering::Relaxed);
+            if *remaining > 0 {
+                *remaining -= 1;
+                let target   = js.to_pos.min(phrases.len() - 1);
+                let jump_pos = *cur_phrase;
+                // Reset only entries strictly BETWEEN target and this jump (inner loops).
+                // Do NOT reset this entry itself — that would reinitialize and loop forever.
+                let ids: Vec<usize> = phrases[target..jump_pos].iter()
+                    .filter_map(|pp| pp.phrase.jump.as_ref().map(|_| pp.phrase.id))
+                    .collect();
+                for id in ids { jump_counters.remove(&id); }
+                *cur_phrase = target;
+                crate::CUR_PHRASE.store(*cur_phrase, std::sync::atomic::Ordering::Relaxed);
+            } else {
+                // Exhausted — fall through, reset counter for next outer loop pass
+                jump_counters.remove(&pid);
+                *cur_phrase += 1;
+                if *cur_phrase >= phrases.len() { *cur_phrase = 0; }
+                crate::CUR_PHRASE.store(*cur_phrase, std::sync::atomic::Ordering::Relaxed);
+            }
+            continue;
+        }
+        break;
+    }
+
+    if *cur_phrase >= phrases.len() { *cur_phrase = 0; }
     let pp  = &mut phrases[*cur_phrase];
     let bar = &pp.phrase.bar;
     let bs  = &mut pp.bar_states[0];
