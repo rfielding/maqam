@@ -159,15 +159,15 @@ impl App {
                 );
             }
             Cmd::Jump { to, times } => {
-                // `to` is a stable phrase.id — find its list position
-                let pos = self.phrases.iter().position(|p| p.id == to);
-                if pos.is_none() {
+                // Verify target id exists
+                if !self.phrases.iter().any(|p| p.id == to) {
                     self.message = Some(format!("✗ no phrase id {to}"));
                     return;
                 }
                 let id = self.next_phrase_id;
                 self.next_phrase_id += 1;
-                let entry = crate::sequencer::build_jump_entry(id, pos.unwrap(), times);
+                // Store target_id directly — audio thread resolves position at runtime
+                let entry = crate::sequencer::build_jump_entry(id, to, times);
                 let _ = self.audio_tx.send(AudioCmd::AddPhrase(entry.clone()));
                 self.phrases.push(entry);
                 self.message = None;
@@ -207,18 +207,17 @@ impl App {
             }
 
             Cmd::InsertJump { before, to, times } => {
-                // Find the position of the target phrase by id
-                let target_pos = match self.phrases.iter().position(|p| p.id == to) {
-                    Some(p) => p,
-                    None    => { self.message = Some(format!("✗ no phrase id {to}")); return; }
-                };
-                // Find the insertion position by id
+                // Verify target exists
+                if !self.phrases.iter().any(|p| p.id == to) {
+                    self.message = Some(format!("✗ no phrase id {to}")); return;
+                }
                 let insert_pos = self.phrases.iter().position(|p| p.id == before)
                     .unwrap_or(self.phrases.len());
 
                 let id    = self.next_phrase_id;
                 self.next_phrase_id += 1;
-                let entry = crate::sequencer::build_jump_entry(id, target_pos, times);
+                // Store target phrase id — audio thread resolves position
+                let entry = crate::sequencer::build_jump_entry(id, to, times);
 
                 self.phrases.insert(insert_pos, entry.clone());
 

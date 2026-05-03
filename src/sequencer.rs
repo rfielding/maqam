@@ -52,8 +52,8 @@ impl Bar {
 /// A jump instruction stored as a sequence entry.
 #[derive(Debug, Clone)]
 pub struct JumpSpec {
-    pub to_pos: usize,
-    pub times:  usize,
+    pub target_id: usize,   // stable phrase id of the jump target
+    pub times:     usize,
 }
 
 #[derive(Debug, Clone)]
@@ -73,7 +73,7 @@ impl Phrase {
 }
 
 /// Build a jump-entry phrase (no audio — pure sequencer control flow).
-pub fn build_jump_entry(id: usize, to_pos: usize, times: usize) -> Phrase {
+pub fn build_jump_entry(id: usize, target_id: usize, times: usize) -> Phrase {
     // Empty bar — zero subdivisions, never played
     let bar = Bar {
         root: Pitch { letter: 'd', accidental: 0, octave: 4 },
@@ -89,10 +89,10 @@ pub fn build_jump_entry(id: usize, to_pos: usize, times: usize) -> Phrase {
     };
     Phrase {
         id,
-        src: format!(">>{to_pos} x{times}"),   // ASCII: >>pos xtimes
+        src: format!(">>{target_id} x{times}"),   // shows stable target id
         bar,
         repeat: 1,
-        jump: Some(JumpSpec { to_pos, times }),
+        jump: Some(JumpSpec { target_id, times }),
     }
 }
 

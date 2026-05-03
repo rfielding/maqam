@@ -201,7 +201,8 @@ fn tick_sequencer(
             crate::CUR_JUMP_REM.store(*remaining, std::sync::atomic::Ordering::Relaxed);
             if *remaining > 0 {
                 *remaining -= 1;
-                let target   = js.to_pos.min(phrases.len() - 1);
+                let target = phrases.iter().position(|p| p.phrase.id == js.target_id)
+                    .unwrap_or(0).min(phrases.len().saturating_sub(1));
                 let jump_pos = *cur_phrase;
                 // Reset only entries strictly BETWEEN target and this jump (inner loops).
                 // Do NOT reset this entry itself — that would reinitialize and loop forever.

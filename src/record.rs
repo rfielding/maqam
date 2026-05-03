@@ -30,7 +30,8 @@ fn expand_one_cycle(phrases: &[Phrase])
             let remaining = jc.entry(pid).or_insert(js.times.saturating_sub(1));
             if *remaining > 0 {
                 *remaining -= 1;
-                let target   = js.to_pos.min(phrases.len().saturating_sub(1));
+                let target = phrases.iter().position(|p| p.id == js.target_id)
+                    .unwrap_or(0).min(phrases.len().saturating_sub(1));
                 let ids: Vec<usize> = phrases[target..cur].iter()
                     .filter_map(|p| p.jump.as_ref().map(|_| p.id)).collect();
                 for id in ids { jc.remove(&id); }
@@ -277,7 +278,7 @@ pub fn record_cycle(
                 let ctr = format!("[{}/{}]", pass, total);
                 lines.push(format!(
                     "   {:>3}: {c_jump}{:<28}  >>{:<3} {ctr}{rst}",
-                    p.id, "", js.to_pos));
+                    p.id, "", js.target_id));
             } else {
                 let active = pi == phrase_idx;
                 let ticks  = p.bar.total_subdivs;
