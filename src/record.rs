@@ -11,8 +11,13 @@ const SR: f64 = 44100.0;
 
 // ── Sequence expansion ────────────────────────────────────────────────────────
 
-fn expand_one_cycle(phrases: &[Phrase]) -> Vec<usize> {
-    let mut out: Vec<usize> = Vec::new();
+/// Returns (phrase_idx_list, jump_counter_snapshots).
+/// jump_counter_snapshots[i] maps jump phrase_id → (pass 1-based, total).
+fn expand_one_cycle(phrases: &[Phrase])
+    -> (Vec<usize>, Vec<HashMap<usize, (usize, usize)>>)
+{
+    let mut out:       Vec<usize> = Vec::new();
+    let mut snapshots: Vec<HashMap<usize, (usize, usize)>> = Vec::new();
     let mut cur: usize = 0;
     let mut jc: HashMap<usize, usize> = HashMap::new();
     let max_items = phrases.len() * 512 + 1;
@@ -36,11 +41,20 @@ fn expand_one_cycle(phrases: &[Phrase]) -> Vec<usize> {
             }
             continue;
         }
+        // Snapshot current jump counters: id → (pass, total)
+        let snap: HashMap<usize, (usize, usize)> = phrases.iter()
+            .filter_map(|p| p.jump.as_ref().map(|js| {
+                let remaining = jc.get(&p.id).copied().unwrap_or(js.times.saturating_sub(1));
+                let pass = js.times.saturating_sub(remaining);
+                (p.id, (pass, js.times))
+            }))
+            .collect();
         out.push(cur);
+        snapshots.push(snap);
         cur += 1;
         if cur >= phrases.len() { break; }
     }
-    out
+    (out, snapshots)
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -62,7 +76,8 @@ pub fn record_cycle(
         ((subdiv_samples * phrases[idx].bar.total_subdivs as f64).round() as usize).max(1)
     };
 
-    let one_cycle_seq = expand_one_cycle(phrases);
+    let (one_cycle_seq, one_cycle_snaps) = expand_one_cycle(phrases);
+    let _ = &one_cycle_snaps; // used in subtitle loop
     if one_cycle_seq.is_empty() {
         return Err(anyhow::anyhow!("no musical phrases to render"));
     }
@@ -70,12 +85,12 @@ pub fn record_cycle(
     let cycles       = cycle_repeat.max(1);
     let tail_samples = (SR * (sustain + 1.0)) as usize;
 
-    // Build flat play sequence: (phrase_idx, play_num)
-    let mut full_seq: Vec<(usize, usize)> = Vec::new();
+    // Build flat play sequence: (phrase_idx, play_num, snap_idx)
+    let mut full_seq: Vec<(usize, usize, usize)> = Vec::new();
     for _ in 0..cycles {
-        for &idx in &one_cycle_seq {
+        for (si, &idx) in one_cycle_seq.iter().enumerate() {
             for play in 0..phrases[idx].repeat.max(1) {
-                full_seq.push((idx, play));
+                full_seq.push((idx, play, si));
             }
         }
     }
@@ -86,7 +101,7 @@ pub fn record_cycle(
     let mut left_buf:  Vec<f32> = Vec::new();
     let mut right_buf: Vec<f32> = Vec::new();
 
-    for (seq_pos, &(phrase_idx, play_num)) in full_seq.iter().enumerate() {
+    for (seq_pos, &(phrase_idx, play_num, _snap_idx)) in full_seq.iter().enumerate() {
         let bs       = bar_samples_for(phrase_idx);
         let is_first = play_num == 0;
         let repeats  = phrases_v[phrase_idx].repeat.max(1);
@@ -141,7 +156,7 @@ pub fn record_cycle(
     }
 
     // Final "1"
-    if let Some(&(first_idx, _)) = full_seq.first() {
+    if let Some(&(first_idx, _, _)) = full_seq.first() {
         let root_hz = phrases_v[first_idx].bar.root_hz;
         spawn_phrase_start(root_hz, sustain, &mut voices);
         spawn_sub_bass(root_hz, sustain.min(2.0), &mut voices);
@@ -213,7 +228,7 @@ pub fn record_cycle(
         writeln!(f, "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text")?;
 
         let mut sample: usize = 0;
-        for (i, &(phrase_idx, play_num)) in full_seq.iter().enumerate() {
+        for (i, &(phrase_idx, play_num, snap_idx)) in full_seq.iter().enumerate() {
             let bs      = bar_samples_for(phrase_idx);
             let start_s = sample as f64 / SR;
             let end_s   = if i + 1 < full_seq.len() {
@@ -228,43 +243,69 @@ pub fn record_cycle(
             format!("  cycle {}/{}", cycle_num + 1, cycles)
         } else { String::new() };
 
+        // ── Build subtitle text ──────────────────────────────────────────────
+        // Fixed columns (Courier New monospace):
+        //  [0..3 ] marker: ">  " or "   " — same width always
+        //  [3..7 ] id:     " 0: "
+        //  [7..35] src:    28 chars left-aligned
+        //  [35..39] ticks: " 8t"
+        //  [39.. ] ctr:    "[2/4]" or "[1/3]"
+        let c_active = "{\\c&H00E8FFB4&\\b1}";
+        let c_jump   = "{\\c&H909090&}";
+        let c_dim    = "{\\c&H606060&}";
+        let c_hdr    = "{\\c&H505050&\\i1}";
+        let rst      = "{\\r}";
+
         let mut lines: Vec<String> = Vec::new();
-        // Header line: shows overall position
-        let tag_hdr = "{\\c&H606060&\\i1}";
-        let tag_rst = "{\\r}";
-        lines.push(format!("{tag_hdr}bpm:{} sus:{:.1}s{}{tag_rst}",
+
+        // Header
+        lines.push(format!("{c_hdr}   bpm:{:<4} sus:{:.1}s{}{rst}",
             (60.0 / (subdiv_secs * 2.0)) as u32, sustain, cycle_disp));
+
         for (pi, p) in phrases.iter().enumerate() {
-                if let Some(js) = &p.jump {
-                    let tag = "{\\c&H707070&}";
-                    lines.push(format!("{tag}  {:>2}: >>{}  x{}", p.id, js.to_pos, js.times));
+            // All lines use the SAME fixed-width prefix before any color tags:
+            //   col 0: marker 3 chars  ">  " or "   "
+            //   col 3: id     5 chars  " 00: "
+            //   col 8: src   28 chars
+            //   col 36: ticks 4 chars  " 8t "
+            //   col 40: ctr   7 chars  "[2/4]  "
+            // Color tags go AFTER the fixed prefix so they don't affect width.
+            if let Some(js) = &p.jump {
+                let snap = one_cycle_snaps.get(snap_idx % one_cycle_snaps.len().max(1));
+                let (pass, total) = snap.and_then(|s| s.get(&p.id)).copied()
+                    .unwrap_or((0, js.times));
+                let ctr = format!("[{}/{}]", pass, total);
+                lines.push(format!(
+                    "   {:>3}: {c_jump}{:<28}  >>{:<3} {ctr}{rst}",
+                    p.id, "", js.to_pos));
+            } else {
+                let active = pi == phrase_idx;
+                let ticks  = p.bar.total_subdivs;
+                let ctr    = format!("[{}/{}]", play_num + 1, p.repeat.max(1));
+                if active {
+                    lines.push(format!(
+                        ">  {:>3}: {c_active}{:<28} {:>3}t {ctr}{rst}",
+                        p.id, p.src, ticks));
                 } else {
-                    let active = pi == phrase_idx;
-                    if active {
-                        let ctr = if p.repeat > 1 {
-                            format!("  [{}/{}]", play_num + 1, p.repeat)
-                        } else { String::new() };
-                        let tag_on  = "{\\c&H00E8FFB4&\\b1}";
-                        let tag_off = "{\\r}";
-                        lines.push(format!("{tag_on}> {:>2}: {}{ctr}{tag_off}", p.id, p.src, ctr=ctr));
-                    } else {
-                        let tag = "{\\c&H909090&}";
-                        lines.push(format!("{tag}  {:>2}: {}", p.id, p.src));
-                    }
+                    lines.push(format!(
+                        "   {:>3}: {c_dim}{:<28} {:>3}t{rst}",
+                        p.id, p.src, ticks));
                 }
             }
-            let text = lines.join("\\N");
-            let h  = |s: f64| -> String {
-                let hh = (s/3600.0) as u32;
-                let mm = ((s%3600.0)/60.0) as u32;
-                let ss = (s%60.0) as u32;
-                let cs = ((s%1.0)*100.0) as u32;
-                format!("{hh}:{mm:02}:{ss:02}.{cs:02}")
-            };
-            writeln!(f, "Dialogue: 0,{},{},Default,,0,0,0,,{}", h(start_s), h(end_s), text)?;
-            sample += bs;
         }
-        f.flush()?;
+
+        let text = lines.join("\\N");
+        let h = |s: f64| -> String {
+            let hh = (s/3600.0) as u32;
+            let mm = ((s%3600.0)/60.0) as u32;
+            let ss = (s%60.0) as u32;
+            let cs = ((s%1.0)*100.0) as u32;
+            format!("{hh}:{mm:02}:{ss:02}.{cs:02}")
+        };
+        writeln!(f, "Dialogue: 0,{},{},Default,,0,0,0,,{}", h(start_s), h(end_s), text)?;
+        sample += bs;
+    }
+    f.flush()?;
     }
 
     // ── ffmpeg ────────────────────────────────────────────────────────────────
