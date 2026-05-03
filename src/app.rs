@@ -206,6 +206,35 @@ impl App {
                 self.message = Some(format!("inserted at {pos}"));
             }
 
+            Cmd::InsertJump { before, to, times } => {
+                // Find the position of the target phrase by id
+                let target_pos = match self.phrases.iter().position(|p| p.id == to) {
+                    Some(p) => p,
+                    None    => { self.message = Some(format!("✗ no phrase id {to}")); return; }
+                };
+                // Find the insertion position by id
+                let insert_pos = self.phrases.iter().position(|p| p.id == before)
+                    .unwrap_or(self.phrases.len());
+
+                let id    = self.next_phrase_id;
+                self.next_phrase_id += 1;
+                let entry = crate::sequencer::build_jump_entry(id, target_pos, times);
+
+                self.phrases.insert(insert_pos, entry.clone());
+
+                // Rebuild audio preserving position
+                let cur     = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
+                let new_cur = if insert_pos <= cur {
+                    (cur + 1).min(self.phrases.len().saturating_sub(1))
+                } else { cur };
+                let _ = self.audio_tx.send(AudioCmd::Clear);
+                for p in &self.phrases {
+                    let _ = self.audio_tx.send(AudioCmd::AddPhrase(p.clone()));
+                }
+                let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(new_cur));
+                self.message = None;
+            }
+
             Cmd::TogglePause => {
                 self.paused = !self.paused;
                 let _ = self.audio_tx.send(AudioCmd::SetPaused(self.paused));

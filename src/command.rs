@@ -38,6 +38,7 @@ pub enum Cmd {
     AddPhrase { specs: Vec<JinsSpec>, repeat: usize },
     Jump   { to: usize, times: usize },
     Insert { before: usize, specs: Vec<JinsSpec>, repeat: usize },
+    InsertJump { before: usize, to: usize, times: usize },
     DeleteBars(Vec<usize>),
     Rotate,
     SetBpm(f64),
@@ -108,16 +109,26 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
         let before: usize;
         let rest: &str;
         if !digits.is_empty() {
-            before = digits.parse().map_err(|_| "usage: i<pos> <phrase>")?;
+            before = digits.parse().map_err(|_| "usage: i<pos> <phrase|j target times>")?;
             rest   = input[first.len()..].trim();
         } else {
             let mut toks = input.splitn(3, char::is_whitespace);
             toks.next();
             before = toks.next().and_then(|s| s.parse().ok())
-                .ok_or("usage: i <pos> <phrase>")?;
+                .ok_or("usage: i <pos> <phrase|j target times>")?;
             rest   = toks.next().unwrap_or("").trim();
         }
-        if rest.is_empty() { return Err("usage: i <pos> <phrase>".into()); }
+        if rest.is_empty() { return Err("usage: i <pos> <phrase|j target times>".into()); }
+
+        // i <before> j <target> [<times>]  — insert a jump entry
+        let rest_toks: Vec<&str> = rest.split_whitespace().collect();
+        if rest_toks.first().map(|s| s.eq_ignore_ascii_case("j")).unwrap_or(false) {
+            let to: usize = rest_toks.get(1).and_then(|s| s.parse().ok())
+                .ok_or("usage: i <pos> j <target_id> [times]")?;
+            let times: usize = rest_toks.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
+            return Ok(Cmd::InsertJump { before, to, times: times.max(1) });
+        }
+
         let (phrase_part, repeat) = strip_repeat(rest);
         let specs: Result<Vec<JinsSpec>, String> = phrase_part
             .split(',').map(|p| parse_jins_spec(p.trim())).collect();
