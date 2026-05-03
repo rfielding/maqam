@@ -196,48 +196,132 @@ pub fn record_cycle(
         f.sync_all()?;
     }
 
+    // ── ASS subtitle file ─────────────────────────────────────────────────────
+    let ass_path = "/tmp/maqam-live.ass";
+    {
+        let total_secs = left_buf.len() as f64 / SR;
+        let mut f      = std::fs::File::create(ass_path)?;
+        writeln!(f, "[Script Info]")?;
+        writeln!(f, "ScriptType: v4.00+")?;
+        writeln!(f, "PlayResX: 1280")?;
+        writeln!(f, "PlayResY: 720")?;
+        writeln!(f, "WrapStyle: 0")?;
+        writeln!(f, "[V4+ Styles]")?;
+        writeln!(f, "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,Strikeout,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding")?;
+        writeln!(f, "Style: Default,Courier New,22,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,1,0,7,20,20,10,1")?;
+        writeln!(f, "[Events]")?;
+        writeln!(f, "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text")?;
+
+        let mut sample: usize = 0;
+        for (i, &(phrase_idx, play_num)) in full_seq.iter().enumerate() {
+            let bs      = bar_samples_for(phrase_idx);
+            let start_s = sample as f64 / SR;
+            let end_s   = if i + 1 < full_seq.len() {
+                (sample + bs) as f64 / SR
+            } else { total_secs };
+
+            // Cycle counter: which pass through the full sequence are we on
+        let one_len: usize = one_cycle_seq.iter()
+            .map(|&idx| phrases[idx].repeat.max(1)).sum();
+        let cycle_num  = if one_len > 0 { i / one_len } else { 0 };
+        let cycle_disp = if cycles > 1 {
+            format!("  cycle {}/{}", cycle_num + 1, cycles)
+        } else { String::new() };
+
+        let mut lines: Vec<String> = Vec::new();
+        // Header line: shows overall position
+        let tag_hdr = "{\\c&H606060&\\i1}";
+        let tag_rst = "{\\r}";
+        lines.push(format!("{tag_hdr}bpm:{} sus:{:.1}s{}{tag_rst}",
+            (60.0 / (subdiv_secs * 2.0)) as u32, sustain, cycle_disp));
+        for (pi, p) in phrases.iter().enumerate() {
+                if let Some(js) = &p.jump {
+                    let tag = "{\\c&H707070&}";
+                    lines.push(format!("{tag}  {:>2}: >>{}  x{}", p.id, js.to_pos, js.times));
+                } else {
+                    let active = pi == phrase_idx;
+                    if active {
+                        let ctr = if p.repeat > 1 {
+                            format!("  [{}/{}]", play_num + 1, p.repeat)
+                        } else { String::new() };
+                        let tag_on  = "{\\c&H00E8FFB4&\\b1}";
+                        let tag_off = "{\\r}";
+                        lines.push(format!("{tag_on}> {:>2}: {}{ctr}{tag_off}", p.id, p.src, ctr=ctr));
+                    } else {
+                        let tag = "{\\c&H909090&}";
+                        lines.push(format!("{tag}  {:>2}: {}", p.id, p.src));
+                    }
+                }
+            }
+            let text = lines.join("\\N");
+            let h  = |s: f64| -> String {
+                let hh = (s/3600.0) as u32;
+                let mm = ((s%3600.0)/60.0) as u32;
+                let ss = (s%60.0) as u32;
+                let cs = ((s%1.0)*100.0) as u32;
+                format!("{hh}:{mm:02}:{ss:02}.{cs:02}")
+            };
+            writeln!(f, "Dialogue: 0,{},{},Default,,0,0,0,,{}", h(start_s), h(end_s), text)?;
+            sample += bs;
+        }
+        f.flush()?;
+    }
+
     // ── ffmpeg ────────────────────────────────────────────────────────────────
     let ts  = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let out = format!("{}/maqam-{ts}.mp4",
         std::env::var("HOME").unwrap_or_else(|_| ".".into()));
 
-    // Write a shell script and run it — avoids any arg-passing ambiguity
     let sh_path = "/tmp/maqam-render.sh";
-    let sh = format!(
-        "#!/bin/sh\nffmpeg -y -i '{}' \
-         -filter_complex '[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=white[v]' \
-         -map '[v]' -map '0:a' \
-         -c:v libx264 -crf 18 -c:a aac -b:a 256k \
-         -r 30 '{}' > /tmp/maqam-ffmpeg.log 2>&1\n",
-        wav_path, out
-    );
+
+    // Primary: waveform + subtitle overlay
+    let sh = format!(concat!(
+        "#!/bin/sh
+",
+        "ffmpeg -y -i '{wav}' \
+",
+        "  -filter_complex '[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=white[wv];",
+                             "[wv]subtitles={ass}[v]' \
+",
+        "  -map '[v]' -map '0:a' \
+",
+        "  -c:v libx264 -crf 18 -c:a aac -b:a 256k -r 30 '{out}' \
+",
+        "  > /tmp/maqam-ffmpeg.log 2>&1
+"
+    ), wav=wav_path, ass=ass_path, out=out);
+
     std::fs::write(sh_path, &sh)?;
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(sh_path, std::fs::Permissions::from_mode(0o755))?;
     }
 
-    let status = Command::new("sh")
-        .arg(sh_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
+    let ok = Command::new("sh").arg(sh_path)
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false);
 
-    if !status.success() {
-        let log = std::fs::read_to_string("/tmp/maqam-ffmpeg.log")
-            .unwrap_or_else(|_| "no log".into());
-        let tail: String = log.lines().rev().take(5)
-            .collect::<Vec<_>>().into_iter().rev()
-            .collect::<Vec<_>>().join(" | ");
-        // Fall back to audio-only
-        Command::new("sh")
-            .arg("-c")
-            .arg(format!("ffmpeg -y -i '{}' -c:a aac -b:a 256k '{}' >> /tmp/maqam-ffmpeg.log 2>&1",
-                wav_path, out))
+    if !ok {
+        // Fallback: waveform only (no subtitles)
+        let sh2 = format!(concat!(
+            "#!/bin/sh
+",
+            "ffmpeg -y -i '{wav}' \
+",
+            "  -filter_complex '[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=white[v]' \
+",
+            "  -map '[v]' -map '0:a' \
+",
+            "  -c:v libx264 -crf 18 -c:a aac -b:a 256k -r 30 '{out}' \
+",
+            "  >> /tmp/maqam-ffmpeg.log 2>&1
+"
+        ), wav=wav_path, out=out);
+        std::fs::write(sh_path, &sh2)?;
+        Command::new("sh").arg(sh_path)
             .stdout(Stdio::null()).stderr(Stdio::null())
             .status()?;
-        let _ = tail;
     }
 
     Ok(out)
