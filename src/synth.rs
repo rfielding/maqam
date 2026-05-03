@@ -277,11 +277,11 @@ impl Voice {
         } else { 1.0 };
 
         let gain: f32 = self.gain_override.unwrap_or_else(|| match self.kind {
-            VoiceKind::FloorTom    => 0.45,
-            VoiceKind::Snare       => 0.18,
-            VoiceKind::Rimshot     => 0.30,
-            VoiceKind::Crash       => 0.28,
-            VoiceKind::PhraseChange=> 0.35,
+            VoiceKind::FloorTom    => 0.65,
+            VoiceKind::Snare       => 0.28,
+            VoiceKind::Rimshot     => 0.45,
+            VoiceKind::Crash       => 0.42,
+            VoiceKind::PhraseChange=> 0.50,
 
             VoiceKind::MelodyFm    => 0.20,
             VoiceKind::Accent      => 0.35,
@@ -302,16 +302,34 @@ pub enum Milestone {
 }
 
 /// Spawn voices for a subdivision event. Drum varies by milestone.
+/// Snap hz to the nearest frequency in the scale (any octave).
+fn snap_to_scale(hz: f64, scale: &[f64]) -> f64 {
+    if scale.is_empty() { return hz; }
+    // Search across octaves ±2 of the target
+    let mut best = hz;
+    let mut best_dist = f64::MAX;
+    for &f in scale {
+        for octave in -2i32..=2 {
+            let candidate = f * 2f64.powi(octave);
+            let dist = (candidate / hz).log2().abs();
+            if dist < best_dist {
+                best_dist = dist;
+                best = candidate;
+            }
+        }
+    }
+    best
+}
+
 pub fn spawn_voices(
     event:     SubdivEvent,
     sustain:   f64,
     voices:    &mut Vec<Voice>,
     milestone: Milestone,
+    scale:     &[f64],   // all frequencies in the current scale
 ) {
     match event {
         SubdivEvent::Kick(hz) => {
-            // Floor tom always plays on every kick — the constant pulse.
-            // Milestone sounds stack on top as additional markers.
             let mut tom = Voice::mk(VoiceKind::FloorTom, 40.0, 0.0);
             tom.pan = 0.0;
             voices.push(tom);
@@ -331,14 +349,19 @@ pub fn spawn_voices(
                 }
                 Milestone::None => {}
             }
+            // Melody note — always from scale
             voices.push(panned(Voice::melody(hz, sustain)));
-            voices.push(panned(Voice::melody_gain(hz * 1.5, sustain * 0.85, 0.14)));
-            voices.push(panned(Voice::melody_gain(hz * 2.0, sustain * 0.60, 0.08)));
+            // Chord tones snapped to nearest scale note — nothing outside maqam
+            let fifth  = snap_to_scale(hz * 1.5, scale);
+            let octave = snap_to_scale(hz * 2.0, scale);
+            voices.push(panned(Voice::melody_gain(fifth,  sustain * 0.85, 0.14)));
+            voices.push(panned(Voice::melody_gain(octave, sustain * 0.60, 0.08)));
         }
         SubdivEvent::Snare(hz) => {
             voices.push(panned(Voice::snare()));
             voices.push(panned(Voice::melody(hz, sustain)));
-            voices.push(panned(Voice::melody_gain(hz * 1.5, sustain * 0.50, 0.06)));
+            let fifth = snap_to_scale(hz * 1.5, scale);
+            voices.push(panned(Voice::melody_gain(fifth, sustain * 0.50, 0.06)));
         }
     }
 }

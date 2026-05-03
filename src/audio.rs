@@ -134,7 +134,10 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                 // Level 1 & 2: subdivision event → melody + chord tones
                 if let Some(ev) = event {
                     if !paused {
-                        spawn_voices(ev, sustain, &mut voices, milestone);
+                        let scale = phrases.get(cur_phrase)
+                        .map(|pp| pp.phrase.bar.frequencies.clone())
+                        .unwrap_or_default();
+                    spawn_voices(ev, sustain, &mut voices, milestone, &scale);
                     }
                 }
 

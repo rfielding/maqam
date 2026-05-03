@@ -1,6 +1,120 @@
-// tuning.rs — just intonation pitch classes and maqam scales
+// tuning.rs — just intonation tuning for oud-based maqam
 
-pub const A4_HZ: f64 = 440.0;
+// ── Oud reference pitch ───────────────────────────────────────────────────────
+//
+// The oud open strings are a pure-fourth chain rooted on D:
+//   A = D × 3/4   (220.249 Hz — a fourth below D)
+//   D = 293.6648  (matches electronic tuner D)
+//   G = D × 4/3   (391.553 Hz)
+//   C = D × 16/9  (522.071 Hz — two fourths above D)
+//
+// All pitches in the system are expressed as ratios from D_HZ.
+// Rule: prefer 3-smooth (Pythagorean) ratios; use 5-smooth or 12/11 only when
+// the note cannot be reached by a 4/3 chain.
+
+pub const D_HZ: f64 = 293.6648_f64;
+
+// ── Chromatic pitch table (all ratios from D, reduced to [1,2)) ───────────────
+//
+// These are the ONLY valid root frequencies. Every maqam root snaps to one
+// of these values × 2^n for the appropriate octave.
+//
+//  Note   Ratio    Cents   Source
+//  D      1/1        0     open string
+//  D#/Eb  256/243   90     Pythagorean minor 2nd
+//  E¾     12/11    151     11-limit neutral 2nd (Bayati, Saba characteristic)
+//  E      9/8      204     Pythagorean major 2nd
+//  F      32/27    294     Pythagorean minor 3rd (= C×4/3, i.e. (4/3)^3 from D)
+//  F#     81/64    408     Pythagorean major 3rd
+//  G      4/3      498     open string
+//  Ab     1024/729 588     Pythagorean diminished 5th
+//  A      3/2      702     open string (A above D; open A string is D×3/4)
+//  Bb     128/81   792     Pythagorean minor 6th
+//  B      27/16    906     Pythagorean major 6th
+//  C      16/9     996     open string ((4/3)^2)
+
+const PITCH_TABLE: &[(&str, u32, u32)] = &[
+    ("d",   1,   1),
+    ("d+",  256, 243),  // D# / Eb
+    ("e-",  256, 243),  // Eb = D+
+    ("e¾",  12,  11),   // neutral E (internal use for maqam intervals)
+    ("e",   9,   8),
+    ("f",   32,  27),
+    ("f+",  81,  64),   // F#
+    ("g-",  81,  64),   // Gb = F#
+    ("g",   4,   3),
+    ("g+",  1024,729),  // G#/Ab
+    ("a-",  1024,729),
+    ("a",   3,   2),
+    ("a+",  128, 81),   // A# / Bb — same as Bb
+    ("b-",  128, 81),   // Bb
+    ("b",   27,  16),
+    ("c-",  27,  16),   // Cb = B (rare)
+    ("c",   16,  9),
+    ("c+",  1,   1),    // C# ≈ D (rare; wraps to octave above)
+];
+
+/// Return the D-based ratio (p, q) for a pitch letter + accidental.
+/// The ratio is reduced to [1, 2) so it lives in the D4 register.
+fn pitch_ratio(letter: char, accidental: i8) -> (u32, u32) {
+    let key: String = match accidental {
+        1  => format!("{}+", letter),
+        -1 => format!("{}-", letter),
+        _  => letter.to_string(),
+    };
+    for (name, p, q) in PITCH_TABLE {
+        if *name == key.as_str() { return (*p, *q); }
+    }
+    // Default: treat as natural
+    for (name, p, q) in PITCH_TABLE {
+        if name.chars().next() == Some(letter) && name.len() == 1 {
+            return (*p, *q);
+        }
+    }
+    (1, 1)
+}
+
+/// Convert a Pitch to its exact JI frequency in Hz.
+///
+/// The octave field specifies which octave: 4 = D4 register [D4, D5).
+/// Note: C is at 16/9 from D, so C4 here = D4×16/9 = 522 Hz (C5 in concert).
+/// This is intentional — we use the oud's natural register.
+pub fn pitch_to_hz(letter: char, accidental: i8, octave: u8) -> f64 {
+    let (p, q) = pitch_ratio(letter, accidental);
+    let base   = D_HZ * p as f64 / q as f64;
+    // Octave 4 = same register as D4.
+    // Since ratio is in [1,2), base is already in [D4, 2×D4).
+    // Octave offset: 4 = reference.
+    base * 2f64.powi(octave as i32 - 4)
+}
+
+/// Snap any Hz value to the nearest entry in our pitch table,
+/// returning the result in the SAME register as D_HZ (i.e. [D_HZ, D_HZ×2)).
+///
+/// This is the ONLY way notes enter the system — always expressed as
+/// an exact D-based ratio.
+pub fn snap_to_oud_lattice(nominal_hz: f64) -> f64 {
+    // Reduce nominal to same register as D4: [D_HZ, D_HZ×2)
+    let mut hz = nominal_hz;
+    while hz < D_HZ       { hz *= 2.0; }
+    while hz >= D_HZ * 2.0 { hz /= 2.0; }
+
+    let ratio = hz / D_HZ; // in [1, 2)
+
+    let mut best_hz   = hz;
+    let mut best_dist = f64::MAX;
+
+    for &(_, p, q) in PITCH_TABLE {
+        let r = p as f64 / q as f64;
+        // Each entry is already in [1,2) by construction
+        let dist = (r / ratio).log2().abs();
+        if dist < best_dist {
+            best_dist = dist;
+            best_hz   = D_HZ * r;
+        }
+    }
+    best_hz
+}
 
 // ── Maqam ────────────────────────────────────────────────────────────────────
 
@@ -16,8 +130,6 @@ pub enum Maqam {
 }
 
 impl Maqam {
-    /// Parse a prefix-ambiguous token, e.g. "nah" → Nahawand, "bay" → Bayati.
-    /// Minimum 2 chars required to avoid single-letter collisions.
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.to_ascii_lowercase();
         if s.len() < 2 { return None; }
@@ -31,9 +143,7 @@ impl Maqam {
             ("ajam",     Maqam::Ajam),
         ];
         for (name, kind) in candidates {
-            if name.starts_with(s.as_str()) {
-                return Some(*kind);
-            }
+            if name.starts_with(s.as_str()) { return Some(*kind); }
         }
         None
     }
@@ -50,50 +160,64 @@ impl Maqam {
         }
     }
 
-    /// JI ratios for scale degrees 0‥7 (degree 7 = octave = 2/1).
+    /// JI ratios for scale degrees 0..7.
+    /// All intervals are exact — computed against the jins root.
+    /// Combined scales use tetrachord stacking (each jins contributes
+    /// notes only within its range), so interval clashes are impossible.
     pub fn ratios(self) -> [(u32, u32); 8] {
         match self {
-            // 1  9/8  6/5  4/3  3/2  8/5  9/5  2
-            // Nahawand: Pythagorean minor — matches oud open string fourths
+            // Nahawand: Pythagorean natural minor
+            // D E F G A Bb C D  →  0,204,294,498,702,792,996,1200¢
             Maqam::Nahawand => [(1,1),(9,8),(32,27),(4,3),(3,2),(128,81),(16,9),(2,1)],
-            // 1  12/11  27/22  4/3  3/2  18/11  16/9  2   (bayati quarter-tone 2nd ≈ 12/11)
+
+            // Bayati: neutral 2nd (12/11), characteristic of Arabic music
+            // D E¾ F G A Bb C D  →  0,151,355,498,702,853,996,1200¢
+            // Note: 27/22 = 9/8 × 3/11... but more naturally expressed as
+            // two 12/11 stacked: (12/11)^2 = 144/121 ≈ 299¢, close to 32/27=294¢
+            // We use 27/22 for the authentic sound.
             Maqam::Bayati   => [(1,1),(12,11),(27,22),(4,3),(3,2),(18,11),(16,9),(2,1)],
-            // 1  16/15  5/4  4/3  3/2  8/5  15/8  2
-            Maqam::Hijaz    => [(1,1),(16,15),(5,4),(4,3),(3,2),(8,5),(15,8),(2,1)],
-            // 1  9/8  27/22  4/3  3/2  27/16  18/11  2
+
+            // Hijaz: augmented 2nd between degrees 2 and 3
+            // D Eb F# G A Bb B D  →  0,90,408,498,702,792,1088,1200¢
+            // Note: using Pythagorean Eb (256/243) and F# (81/64) for oud resonance
+            Maqam::Hijaz    => [(1,1),(256,243),(81,64),(4,3),(3,2),(128,81),(243,128),(2,1)],
+
+            // Rast: neutral 3rd (27/22), whole tone 2nd
+            // D E F# G A B Bb D  →  0,204,355,498,702,906,996,1200¢
+            // (Pythagorean 6th: 27/16)
             Maqam::Rast     => [(1,1),(9,8),(27,22),(4,3),(3,2),(27,16),(16,9),(2,1)],
-            // 1  12/11  32/27  4/3  3/2  128/81  16/9  2
-            // Kurd: Pythagorean minor with neutral 2nd (characteristic oud interval)
-            // Kurd: Pythagorean Phrygian — low minor 2nd (256/243=90¢), matches oud fourths
+
+            // Kurd: Pythagorean Phrygian — flat 2nd (256/243)
+            // D Eb F G A Bb C D  →  0,90,294,498,702,792,996,1200¢
             Maqam::Kurd     => [(1,1),(256,243),(32,27),(4,3),(3,2),(128,81),(16,9),(2,1)],
-            // 1  12/11  7/6  11/8  3/2  128/81  16/9  2
+
+            // Saba: distinctive diminished 4th (11/8)
+            // D E¾ F- (11/8) A Bb C D  →  0,151,267,551,702,792,996,1200¢
             Maqam::Saba     => [(1,1),(12,11),(7,6),(11,8),(3,2),(128,81),(16,9),(2,1)],
-            // Ajam: major scale in JI — 1 9/8 5/4 4/3 3/2 5/3 15/8 2
+
+            // Ajam: 5-limit major scale
+            // D E F# G A B C# D  →  0,204,386,498,702,884,1088,1200¢
             Maqam::Ajam     => [(1,1),(9,8),(5,4),(4,3),(3,2),(5,3),(15,8),(2,1)],
         }
     }
 
-    /// Frequency for a scale degree (0=root, 4=dominant, 7=octave).
-#[allow(dead_code)]
+    #[allow(dead_code)]
     pub fn degree_hz(self, root_hz: f64, degree: usize) -> f64 {
         let (p, q) = self.ratios()[degree.min(7)];
         root_hz * p as f64 / q as f64
     }
 }
 
-// ── Pitch class ──────────────────────────────────────────────────────────────
+// ── Pitch ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy)]
 pub struct Pitch {
-    pub letter:     char, // c d e f g a b
-    pub accidental: i8,   // +1=sharp, -1=flat, 0=natural
+    pub letter:     char,
+    pub accidental: i8,
     pub octave:     u8,
 }
 
 impl Pitch {
-    /// Parse a pitch token.  Default octave = 4.
-    ///   Sharp: d+  d+4   (also # accepted)
-    ///   Flat:  d-  d-4   (b is pitch B, not flat)
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.to_ascii_lowercase();
         let mut it = s.chars().peekable();
@@ -113,16 +237,11 @@ impl Pitch {
         Some(Pitch { letter, accidental, octave })
     }
 
-    /// Equal-tempered Hz (for kick-drum root etc.).  JI offsets are applied
-    /// separately via Maqam::degree_hz.
+    /// Exact JI Hz — always from the oud lattice.
     pub fn to_hz(self) -> f64 {
-        let st: i32 = match self.letter {
-            'c' => -9, 'd' => -7, 'e' => -5, 'f' => -4,
-            'g' => -2, 'a' =>  0, 'b' =>  2, _   =>  0,
-        } + self.accidental as i32
-          + (self.octave as i32 - 4) * 12;
-        A4_HZ * 2f64.powf(st as f64 / 12.0)
+        pitch_to_hz(self.letter, self.accidental, self.octave)
     }
+
     #[allow(dead_code)]
     pub fn display(self) -> String {
         let mut s = self.letter.to_ascii_uppercase().to_string();

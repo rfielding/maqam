@@ -120,7 +120,7 @@ pub fn record_cycle(
         } else { None };
 
         if let Some(ev) = event {
-            spawn_voices(ev, sustain, &mut voices, Milestone::None);
+            spawn_voices(ev, sustain, &mut voices, Milestone::None, &phrases_v[cur_phrase].bar.frequencies);
         }
 
         // Stereo mix

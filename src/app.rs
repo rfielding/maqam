@@ -159,10 +159,15 @@ impl App {
                 );
             }
             Cmd::Jump { to, times } => {
-                // Append a jump entry to the sequence list
+                // `to` is a stable phrase.id — find its list position
+                let pos = self.phrases.iter().position(|p| p.id == to);
+                if pos.is_none() {
+                    self.message = Some(format!("✗ no phrase id {to}"));
+                    return;
+                }
                 let id = self.next_phrase_id;
                 self.next_phrase_id += 1;
-                let entry = crate::sequencer::build_jump_entry(id, to, times);
+                let entry = crate::sequencer::build_jump_entry(id, pos.unwrap(), times);
                 let _ = self.audio_tx.send(AudioCmd::AddPhrase(entry.clone()));
                 self.phrases.push(entry);
                 self.message = None;
@@ -185,7 +190,9 @@ impl App {
                 self.next_phrase_id += 1;
                 let phrase = build_phrase(id, src, resolved, peak, repeat.max(1));
 
-                let pos = before.min(self.phrases.len());
+                // `before` is a stable phrase.id — find its list position
+                let pos = self.phrases.iter().position(|p| p.id == before)
+                    .unwrap_or(self.phrases.len());
                 self.phrases.insert(pos, phrase.clone());
 
                 // Rebuild audio — preserve playing position adjusted for insertion
@@ -257,18 +264,19 @@ impl App {
             }
 
             Cmd::DeleteBars(ids) => {
+                // Delete by stable phrase.id (what the TUI shows)
                 let mut not_found = Vec::new();
                 for id in &ids {
-                    if self.phrases.iter().any(|p| p.id == *id) {
-                        self.phrases.retain(|p| p.id != *id);
-                        let _ = self.audio_tx.send(AudioCmd::RemovePhrase(*id));
+                    if let Some(pos) = self.phrases.iter().position(|p| p.id == *id) {
+                        let removed = self.phrases.remove(pos);
+                        let _ = self.audio_tx.send(AudioCmd::RemovePhrase(removed.id));
                     } else {
                         not_found.push(*id);
                     }
                 }
                 if !not_found.is_empty() {
                     let s: Vec<String> = not_found.iter().map(|i| i.to_string()).collect();
-                    self.message = Some(format!("✗ no phrase {}", s.join(" ")));
+                    self.message = Some(format!("✗ no id {}", s.join(" ")));
                 } else {
                     self.message = None;
                 }

@@ -3,7 +3,7 @@
 // Comma-separated ajnas form ONE combined scale (stacked, not sequential).
 // The melody walks through all frequencies of all ajnas together.
 
-use crate::tuning::{Maqam, Pitch};
+use crate::tuning::{snap_to_oud_lattice, Maqam, Pitch};
 use crate::synth::{expand_degrees, zigzag_walk};
 
 // ── Bar event ─────────────────────────────────────────────────────────────────
@@ -73,7 +73,6 @@ impl Phrase {
 
 /// Build a jump-entry phrase (no audio — pure sequencer control flow).
 pub fn build_jump_entry(id: usize, to_pos: usize, times: usize) -> Phrase {
-    use crate::tuning::{Maqam, Pitch};
     // Empty bar — zero subdivisions, never played
     let bar = Bar {
         root: Pitch { letter: 'd', accidental: 0, octave: 4 },
@@ -106,75 +105,15 @@ pub struct BarSpec {
     pub groups: Vec<u8>,
 }
 
-fn snap_to_5limit_from_d(nominal: f64) -> f64 {
-    let raw_ratio = nominal / D_REFERENCE_HZ;
-    let octaves   = raw_ratio.log2().floor() as i32;
-    let nom_red   = raw_ratio / 2f64.powi(octaves);
-    let threshold = 25.0f64 / 1200.0;  // one syntonic comma
+// snap_to_oud_lattice moved to tuning.rs
 
-    // Pass 1: 3-smooth (Pythagorean) — prefer these since oud strings are
-    // tuned in perfect fourths. Notes reachable via 4/3 chains from D
-    // should use Pythagorean tuning to resonate with open strings.
-    let three_sm: Vec<u32> = (1u32..=512).filter(|&n| is_3smooth(n)).collect();
-    let mut best_hz   = nominal;
-    let mut best_dist = f64::MAX;
-    for &p in &three_sm {
-        for &q in &three_sm {
-            if num_gcd(p, q) != 1 { continue; }
-            let ratio   = p as f64 / q as f64;
-            let exp     = ratio.log2().floor() as i32;
-            let reduced = ratio / 2f64.powi(exp);
-            let dist    = (reduced / nom_red).log2().abs();
-            if dist < best_dist {
-                best_dist = dist;
-                best_hz   = D_REFERENCE_HZ * ratio * 2f64.powi(octaves - exp);
-            }
-            if best_dist < 1.0 / 1200.0 { return best_hz; }
-        }
-    }
-    if best_dist < threshold { return best_hz; }  // good Pythagorean match found
 
-    // Pass 2: 5-smooth fallback — for neutral/chromatic intervals that
-    // cannot be expressed simply in Pythagorean tuning.
-    let five_sm: Vec<u32> = (1u32..=64).filter(|&n| is_5smooth(n)).collect();
-    for &p in &five_sm {
-        for &q in &five_sm {
-            if num_gcd(p, q) != 1 { continue; }
-            let ratio   = p as f64 / q as f64;
-            let exp     = ratio.log2().floor() as i32;
-            let reduced = ratio / 2f64.powi(exp);
-            let dist    = (reduced / nom_red).log2().abs();
-            if dist < best_dist {
-                best_dist = dist;
-                best_hz   = D_REFERENCE_HZ * ratio * 2f64.powi(octaves - exp);
-            }
-            if best_dist < 1.0 / 1200.0 { return best_hz; }
-        }
-    }
-    best_hz
-}
 
-fn num_gcd(a: u32, b: u32) -> u32 {
-    if b == 0 { a } else { num_gcd(b, a % b) }
-}
 
-/// True if n has no prime factors other than 2, 3 (Pythagorean).
-fn is_3smooth(mut n: u32) -> bool {
-    for p in [2u32, 3] { while n % p == 0 { n /= p; } }
-    n == 1
-}
 
-/// True if n has no prime factors other than 2, 3, 5.
-fn is_5smooth(mut n: u32) -> bool {
-    for p in [2u32, 3, 5] {
-        while n % p == 0 { n /= p; }
-    }
-    n == 1
-}
 
 /// D4 as the universal JI reference pitch.
 /// All notes are expressed as D × (5-limit ratio).
-const D_REFERENCE_HZ: f64 = 293.6648_f64;  // D4 exact ET
 
 pub fn build_phrase(
     phrase_id:   usize,
@@ -195,39 +134,61 @@ pub fn build_phrase(
     //   d kurd [D,A) + a kurd [A,D'] = D Phrygian ✓
     //   d nah  [D,A) + a kurd [A,D'] = D natural minor ✓
 
+    // ── Build combined scale from tetrachord stacking ───────────────────────
+    //
+    // Rule: when combining N jins with commas, each jins is a TETRACHORD —
+    // it contributes exactly its first 4 scale degrees (root + 3 intervals).
+    // The last jins contributes all notes up to the octave of the first root.
+    //
+    // This mirrors Arabic maqam practice: each jins name describes a specific
+    // 4-note colour; you stack colours to build a full scale.
+    //
+    // Single jins (no comma): all 8 degrees as usual.
+    //
+    // Dedup at 50 cents: if two jins contribute notes within a quarter-tone of
+    // each other, the earlier-jins note wins. This prevents micro-intervals
+    // (e.g. D×11/8=403 and G=391 are 54¢ apart — if both land in range, keep
+    // the one from the earlier jins).
+
     let n_specs = specs.len();
     let roots_hz: Vec<f64> = specs.iter()
-        .map(|s| snap_to_5limit_from_d(s.root.to_hz()))
+        .map(|s| snap_to_oud_lattice(s.root.to_hz()))
         .collect();
     let upper_bound = roots_hz[0] * 2.0;
 
-    let mut deduped: Vec<f64> = Vec::new();
-    for (i, spec) in specs.iter().enumerate() {
-        let root    = roots_hz[i];
-        let ceiling = if i + 1 < n_specs { roots_hz[i + 1] } else { upper_bound };
-        let eps     = 1.001_f64;
+    let dedup_thresh = if n_specs > 1 { 50.0_f64 / 1200.0 } else { 23.0_f64 / 1200.0 };
 
-        let mut jins_freqs: Vec<f64> = spec.maqam.ratios().iter()
+    let mut deduped: Vec<f64> = Vec::new();
+
+    for (i, spec) in specs.iter().enumerate() {
+        let root      = roots_hz[i];
+        let is_last   = i + 1 == n_specs;
+        let n_degrees = if n_specs == 1 { 8 } else if is_last { 8 } else { 4 };
+
+        let next_root = if i + 1 < n_specs { Some(roots_hz[i + 1]) } else { None };
+
+        let jins_freqs: Vec<f64> = spec.maqam.ratios()[..n_degrees]
+            .iter()
             .map(|&(p, q)| root * p as f64 / q as f64)
+            .filter(|&f| {
+                if f > upper_bound * 1.001 { return false; }
+                // Drop notes within 70 cents of the next jins's root —
+                // they would create micro-interval clashes at the jins boundary.
+                if let Some(nr) = next_root {
+                    if (f / nr).log2().abs() < 70.0 / 1200.0 { return false; }
+                }
+                true
+            })
             .collect();
-        jins_freqs.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
         for f in jins_freqs {
-            if f > ceiling * eps { continue; }
-            // Dedup within 23 cents — first jins wins
-            if deduped.iter().all(|&prev| (f / prev).log2().abs() > 23.0 / 1200.0) {
+            if deduped.iter().all(|&prev| (f / prev).log2().abs() > dedup_thresh) {
                 deduped.push(f);
             }
         }
     }
+
     deduped.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    // Remove duplicate octave if both root and root*2 ended up in the scale
-    if deduped.len() > 1 {
-        let first = deduped[0];
-        if (deduped.last().unwrap() / first - 2.0).abs() < 0.001 {
-            // Keep the octave — it's a valid note
-        }
-    }
     // ── Use the groups from the last spec that has explicit rhythm ────────
     let groups = specs.last().map(|s| s.groups.clone()).unwrap_or_else(|| vec![4]);
     let n_groups = groups.len();
@@ -245,7 +206,7 @@ pub fn build_phrase(
         .map(|s| s.maqam.name().to_string())
         .collect();
 
-    let root_hz_0 = snap_to_5limit_from_d(specs[0].root.to_hz());
+    let root_hz_0 = snap_to_oud_lattice(specs[0].root.to_hz());
     let bar = Bar {
         root:         specs[0].root,
         root_hz:      root_hz_0,
@@ -276,7 +237,17 @@ pub fn events_from_freqs(
     for &g in groups {
         for i in 0..g as usize {
             let hz = frequencies[degrees[pos].min(n - 1)];
-            events.push(if i == 0 { SubdivEvent::Kick(hz) } else { SubdivEvent::Snare(hz) });
+            // A group of length 1 is a pickup or accent — use snare, not kick.
+            // A lone eighth note in e.g. 84421 would sound like a click as a kick;
+            // a snare pop is much more musical.
+            let ev = if g == 1 {
+                SubdivEvent::Snare(hz)
+            } else if i == 0 {
+                SubdivEvent::Kick(hz)
+            } else {
+                SubdivEvent::Snare(hz)
+            };
+            events.push(ev);
             pos += 1;
         }
     }

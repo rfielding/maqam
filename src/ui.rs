@@ -109,7 +109,7 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     let items: Vec<ListItem> = app.phrases.iter().enumerate().map(|(idx, phrase)| {
         let playing = !app.paused && idx == cur % n;
-        let id_str  = format!("{:>2}: ", idx);
+        let id_str  = format!("{:>2}: ", phrase.id);
         let marker  = if playing { "▶ " } else { "  " };
 
         // Jump entries render as control-flow markers
