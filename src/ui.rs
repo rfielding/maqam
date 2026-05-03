@@ -112,13 +112,32 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         let id_str  = format!("{:>2}: ", phrase.id);
         let marker  = if playing { "▶ " } else { "  " };
 
-        // Jump entries render as control-flow markers
-        if phrase.jump.is_some() {
-            let col = if playing { Color::Rgb(220, 190, 80) } else { Color::Rgb(110, 95, 40) };
+        // Jump entries — show live counter for every jump, not just the playing one
+        if let Some(ref js) = phrase.jump {
+            // Read counter from the shared map (written by audio thread)
+            let remaining = crate::jump_counters().lock()
+                .ok()
+                .and_then(|jc| jc.get(&phrase.id).copied())
+                .unwrap_or(js.times.saturating_sub(1));
+            let pass    = js.times.saturating_sub(remaining);  // 1-based current pass
+            let total   = js.times;
+            let counter = format!("  [{}/{}]", pass, total);
+
+            let col_src = if playing {
+                Color::Rgb(255, 210, 80)   // bright amber when active
+            } else {
+                Color::Rgb(110, 95, 40)    // dim amber otherwise
+            };
+            let col_ctr = if playing {
+                Color::Rgb(255, 255, 150)  // bright counter when active
+            } else {
+                Color::Rgb(160, 140, 70)   // visible but subdued when inactive
+            };
             return ListItem::new(Line::from(vec![
-                Span::styled(marker,             Style::default().fg(ACCENT)),
+                Span::styled(marker,             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
                 Span::styled(id_str,             Style::default().fg(DIM)),
-                Span::styled(phrase.src.clone(), Style::default().fg(col).add_modifier(Modifier::BOLD)),
+                Span::styled(phrase.src.clone(), Style::default().fg(col_src).add_modifier(Modifier::BOLD)),
+                Span::styled(counter,            Style::default().fg(col_ctr).add_modifier(Modifier::BOLD)),
             ]));
         }
 

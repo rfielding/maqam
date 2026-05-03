@@ -103,7 +103,8 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                             crate::CUR_PHRASE.store(cur_phrase, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
-                    AudioCmd::Clear => { phrases.clear(); voices.clear(); cur_phrase = 0; jump_counters.clear(); }
+                    AudioCmd::Clear => { phrases.clear(); voices.clear(); cur_phrase = 0; jump_counters.clear();
+                        if let Ok(mut jc) = crate::jump_counters().try_lock() { jc.clear(); } }
                 }
             }
 
@@ -216,6 +217,10 @@ fn tick_sequencer(
                 *cur_phrase += 1;
                 if *cur_phrase >= phrases.len() { *cur_phrase = 0; }
                 crate::CUR_PHRASE.store(*cur_phrase, std::sync::atomic::Ordering::Relaxed);
+            }
+            // Publish updated counters to UI after jump state changes
+            if let Ok(mut jc) = crate::jump_counters().try_lock() {
+                *jc = jump_counters.clone();
             }
             continue;
         }

@@ -19,6 +19,16 @@ pub static CUR_PLAYS: std::sync::atomic::AtomicUsize =
 pub static CUR_JUMP_REM: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// Jump counters visible to TUI: phrase_id → remaining jumps.
+/// Written by audio thread on every jump state change.
+pub static JUMP_COUNTERS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<usize, usize>>
+> = std::sync::OnceLock::new();
+
+pub fn jump_counters() -> &'static std::sync::Mutex<std::collections::HashMap<usize, usize>> {
+    JUMP_COUNTERS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
 use crossbeam_channel::bounded;
 
 fn main() -> anyhow::Result<()> {
