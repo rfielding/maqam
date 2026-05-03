@@ -19,6 +19,7 @@ pub enum SubdivEvent {
 
 #[derive(Debug, Clone)]
 pub struct Bar {
+    #[allow(dead_code)]
     pub root:          Pitch,          // original pitch (for display)
     pub root_hz:       f64,            // actual 5-limit snapped root Hz
     #[allow(dead_code)]
