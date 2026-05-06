@@ -9,6 +9,13 @@ use crate::synth::{evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices,
 
 const SR: f64 = 44100.0;
 
+fn temp_path(name: &str) -> String {
+    let mut p = std::env::temp_dir();
+    p.push(name);
+    // Use forward slashes everywhere — ffmpeg requires them even on Windows
+    p.to_string_lossy().replace('\\', "/")
+}
+
 // ── Sequence expansion ────────────────────────────────────────────────────────
 
 /// Returns (phrase_idx_list, jump_counter_snapshots).
@@ -32,8 +39,10 @@ fn expand_one_cycle(phrases: &[Phrase])
                 *remaining -= 1;
                 let target = phrases.iter().position(|p| p.id == js.target_id)
                     .unwrap_or(0).min(phrases.len().saturating_sub(1));
-                let ids: Vec<usize> = phrases[target..cur].iter()
-                    .filter_map(|p| p.jump.as_ref().map(|_| p.id)).collect();
+                let ids: Vec<usize> = if target < cur {
+                    phrases[target..cur].iter()
+                        .filter_map(|p| p.jump.as_ref().map(|_| p.id)).collect()
+                } else { vec![] };
                 for id in ids { jc.remove(&id); }
                 cur = target;
             } else {
@@ -181,7 +190,8 @@ pub fn record_cycle(
         .map(|s| s.abs()).fold(0f32, f32::max);
     let gain = if peak > 0.001 { 0.9 / peak } else { 1.0 };
 
-    let wav_path = "/tmp/maqam-live.wav";
+    let wav_path = temp_path("maqam-live.wav");
+    let wav_path = wav_path.as_str();
     {
         let n     = left_buf.len() as u32;
         let sr    = SR as u32;
@@ -213,7 +223,8 @@ pub fn record_cycle(
     }
 
     // ── ASS subtitle file ─────────────────────────────────────────────────────
-    let ass_path = "/tmp/maqam-live.ass";
+    let ass_path_s = temp_path("maqam-live.ass");
+    let ass_path = ass_path_s.as_str();
     {
         let total_secs = left_buf.len() as f64 / SR;
         let mut f      = std::fs::File::create(ass_path)?;
@@ -251,10 +262,10 @@ pub fn record_cycle(
         //  [7..35] src:    28 chars left-aligned
         //  [35..39] ticks: " 8t"
         //  [39.. ] ctr:    "[2/4]" or "[1/3]"
-        let c_active = "{\\c&H00E8FFB4&\\b1}";
-        let c_jump   = "{\\c&H909090&}";
-        let c_dim    = "{\\c&H606060&}";
-        let c_hdr    = "{\\c&H505050&\\i1}";
+        let c_active = "{\\c&H00FFFFFF&\\b1}";
+        let c_jump   = "{\\c&H0000FFFF&}";
+        let c_dim    = "{\\c&H00C0C0C0&}";
+        let c_hdr    = "{\\c&H00FFFF80&\\i1}";
         let rst      = "{\\r}";
 
         let mut lines: Vec<String> = Vec::new();
@@ -264,33 +275,33 @@ pub fn record_cycle(
             (60.0 / (subdiv_secs * 2.0)) as u32, sustain, cycle_disp));
 
         for (pi, p) in phrases.iter().enumerate() {
-            // All lines use the SAME fixed-width prefix before any color tags:
-            //   col 0: marker 3 chars  ">  " or "   "
-            //   col 3: id     5 chars  " 00: "
-            //   col 8: src   28 chars
-            //   col 36: ticks 4 chars  " 8t "
-            //   col 40: ctr   7 chars  "[2/4]  "
-            // Color tags go AFTER the fixed prefix so they don't affect width.
+            // Prefix: exactly 8 visible characters, no color tags.
+            // "  NNN: " (7 chars) for inactive — marker is a space
+            // "> NNN: " (7 chars) for active   — marker is >
+            // Both strings are identical length so text never shifts.
+            let active = p.jump.is_none() && pi == phrase_idx;
+            let prefix = if active {
+                format!("> {:>3}: ", p.id)
+            } else {
+                format!("  {:>3}: ", p.id)
+            };
+
             if let Some(js) = &p.jump {
                 let snap = one_cycle_snaps.get(snap_idx % one_cycle_snaps.len().max(1));
                 let (pass, total) = snap.and_then(|s| s.get(&p.id)).copied()
                     .unwrap_or((0, js.times));
                 let ctr = format!("[{}/{}]", pass, total);
-                lines.push(format!(
-                    "   {:>3}: {c_jump}{:<28}  >>{:<3} {ctr}{rst}",
-                    p.id, "", js.target_id));
+                lines.push(format!("{prefix}{c_jump}{:<28}  >>{} {}{rst}",
+                    "", js.target_id, ctr));
             } else {
-                let active = pi == phrase_idx;
-                let ticks  = p.bar.total_subdivs;
-                let ctr    = format!("[{}/{}]", play_num + 1, p.repeat.max(1));
+                let ticks = p.bar.total_subdivs;
+                let ctr   = format!("[{}/{}]", play_num + 1, p.repeat.max(1));
                 if active {
-                    lines.push(format!(
-                        ">  {:>3}: {c_active}{:<28} {:>3}t {ctr}{rst}",
-                        p.id, p.src, ticks));
+                    lines.push(format!("{prefix}{c_active}{:<28} {:>3}t {}{rst}",
+                        p.src, ticks, ctr));
                 } else {
-                    lines.push(format!(
-                        "   {:>3}: {c_dim}{:<28} {:>3}t{rst}",
-                        p.id, p.src, ticks));
+                    lines.push(format!("{prefix}{c_dim}{:<28} {:>3}t{rst}",
+                        p.src, ticks));
                 }
             }
         }
@@ -312,57 +323,45 @@ pub fn record_cycle(
     // ── ffmpeg ────────────────────────────────────────────────────────────────
     let ts  = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    let out = format!("{}/maqam-{ts}.mp4",
-        std::env::var("HOME").unwrap_or_else(|_| ".".into()));
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".into());
+    let out = format!("{home}/maqam-{ts}.mp4");
 
-    let sh_path = "/tmp/maqam-render.sh";
+    // Run ffmpeg directly — no shell script needed, works on Windows/macOS/Linux.
+    let filter_subs = format!(
+        "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=white[wv];[wv]subtitles={}[v]",
+        ass_path
+    );
+    let filter_plain =
+        "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=white[v]".to_string();
 
-    // Primary: waveform + subtitle overlay
-    let sh = format!(concat!(
-        "#!/bin/sh
-",
-        "ffmpeg -y -i '{wav}' \
-",
-        "  -filter_complex '[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=white[wv];",
-                             "[wv]subtitles={ass}[v]' \
-",
-        "  -map '[v]' -map '0:a' \
-",
-        "  -c:v libx264 -crf 18 -c:a aac -b:a 256k -r 30 '{out}' \
-",
-        "  > /tmp/maqam-ffmpeg.log 2>&1
-"
-    ), wav=wav_path, ass=ass_path, out=out);
+    let log_path = temp_path("maqam-ffmpeg.log");
 
-    std::fs::write(sh_path, &sh)?;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(sh_path, std::fs::Permissions::from_mode(0o755))?;
-    }
-
-    let ok = Command::new("sh").arg(sh_path)
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false);
+    let ok = Command::new("ffmpeg")
+        .args(["-y", "-i", wav_path,
+               "-filter_complex", &filter_subs,
+               "-map", "[v]", "-map", "0:a",
+               "-c:v", "libx264", "-crf", "18",
+               "-c:a", "aac", "-b:a", "256k",
+               "-r", "30", &out])
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&log_path).map(Stdio::from)
+            .unwrap_or(Stdio::null()))
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
 
     if !ok {
-        // Fallback: waveform only (no subtitles)
-        let sh2 = format!(concat!(
-            "#!/bin/sh
-",
-            "ffmpeg -y -i '{wav}' \
-",
-            "  -filter_complex '[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=white[v]' \
-",
-            "  -map '[v]' -map '0:a' \
-",
-            "  -c:v libx264 -crf 18 -c:a aac -b:a 256k -r 30 '{out}' \
-",
-            "  >> /tmp/maqam-ffmpeg.log 2>&1
-"
-        ), wav=wav_path, out=out);
-        std::fs::write(sh_path, &sh2)?;
-        Command::new("sh").arg(sh_path)
-            .stdout(Stdio::null()).stderr(Stdio::null())
+        Command::new("ffmpeg")
+            .args(["-y", "-i", wav_path,
+                   "-filter_complex", &filter_plain,
+                   "-map", "[v]", "-map", "0:a",
+                   "-c:v", "libx264", "-crf", "18",
+                   "-c:a", "aac", "-b:a", "256k",
+                   "-r", "30", &out])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()?;
     }
 

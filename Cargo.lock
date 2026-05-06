@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "maqam-live"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "cpal",

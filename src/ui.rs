@@ -16,16 +16,16 @@ use ratatui::{
 };
 use crate::app::App;
 
-const BG:       Color = Color::Rgb(18, 18, 22);
-const BORDER:   Color = Color::Rgb(55, 55, 70);
-const ACCENT:   Color = Color::Rgb(100, 200, 170);
-const DIM:      Color = Color::Rgb(90, 90, 110);
-const KICK:     Color = Color::Rgb(220, 160, 80);
-const SNARE:    Color = Color::Rgb(100, 140, 200);
-const CMD:      Color = Color::Rgb(200, 200, 100);
-const ERR:      Color = Color::Rgb(200, 80, 80);
-const MAQAM:    Color = Color::Rgb(150, 220, 150);
-const REPEAT:   Color = Color::Rgb(180, 120, 220);
+const BG:       Color = Color::Rgb(0, 0, 0);
+const BORDER:   Color = Color::Rgb(0, 255, 0);
+const ACCENT:   Color = Color::Rgb(0, 255, 0);
+const DIM:      Color = Color::Rgb(0, 180, 0);
+const KICK:     Color = Color::Rgb(0, 255, 0);
+const SNARE:    Color = Color::Rgb(0, 200, 0);
+const CMD:      Color = Color::Rgb(0, 255, 0);
+const ERR:      Color = Color::Rgb(255, 80, 80);
+const MAQAM:    Color = Color::Rgb(0, 200, 0);
+const REPEAT:   Color = Color::Rgb(0, 255, 0);
 
 pub fn run(app: &mut App) -> anyhow::Result<()> {
     enable_raw_mode()?;
@@ -89,6 +89,12 @@ pub fn run(app: &mut App) -> anyhow::Result<()> {
 
 fn draw(f: &mut Frame, app: &App) {
     let area   = f.area();
+    // Fill entire frame with dark background — overrides terminal transparency
+    f.render_widget(ratatui::widgets::Clear, area);
+    f.render_widget(
+        ratatui::widgets::Block::default().style(Style::default().bg(BG)),
+        area,
+    );
     let chunks = Layout::default()
         .direction(Direction::Vertical)
 .constraints([Constraint::Min(3), Constraint::Length(3), Constraint::Length(1), Constraint::Length(1)])
@@ -134,10 +140,10 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 Color::Rgb(160, 140, 70)   // visible but subdued when inactive
             };
             return ListItem::new(Line::from(vec![
-                Span::styled(marker,             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-                Span::styled(id_str,             Style::default().fg(DIM)),
-                Span::styled(phrase.src.clone(), Style::default().fg(col_src).add_modifier(Modifier::BOLD)),
-                Span::styled(counter,            Style::default().fg(col_ctr).add_modifier(Modifier::BOLD)),
+                Span::styled(marker,             Style::default().fg(ACCENT).bg(BG).add_modifier(Modifier::BOLD)),
+                Span::styled(id_str,             Style::default().fg(DIM).bg(BG)),
+                Span::styled(phrase.src.clone(), Style::default().fg(col_src).bg(BG).add_modifier(Modifier::BOLD)),
+                Span::styled(counter,            Style::default().fg(col_ctr).bg(BG).add_modifier(Modifier::BOLD)),
             ]));
         }
 
@@ -152,9 +158,9 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         };
 
         let mut spans = vec![
-            Span::styled(marker,  Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-            Span::styled(id_str,  Style::default().fg(fg_id)),
-            Span::styled(src_str, Style::default().fg(fg_src)),
+            Span::styled(marker,  Style::default().fg(ACCENT).bg(BG).add_modifier(Modifier::BOLD)),
+            Span::styled(id_str,  Style::default().fg(fg_id).bg(BG)),
+            Span::styled(src_str, Style::default().fg(fg_src).bg(BG)),
             Span::raw(" "),
         ];
 
@@ -164,26 +170,26 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                       else if playing { match ch { 'X' => KICK, _ => SNARE } }
                       else { match ch { 'X' => Color::Rgb(140,100,50), _ => Color::Rgb(60,80,110) } };
             let sty = if is_now {
-                Style::default().fg(col).add_modifier(Modifier::BOLD | Modifier::REVERSED)
-            } else { Style::default().fg(col) };
+                Style::default().fg(col).bg(BG).add_modifier(Modifier::BOLD | Modifier::REVERSED)
+            } else { Style::default().fg(col).bg(BG) };
             spans.push(Span::styled(ch.to_string(), sty));
         }
 
         if playing && phrase.repeat > 1 {
             spans.push(Span::styled(
                 format!(" {}/{}", cur_plays + 1, phrase.repeat),
-                Style::default().fg(Color::Rgb(180,180,100)).add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Rgb(180,180,100)).bg(BG).add_modifier(Modifier::BOLD),
             ));
         } else if !playing && phrase.repeat > 1 {
             spans.push(Span::styled(
                 format!("  ×{}", phrase.repeat),
-                Style::default().fg(REPEAT),
+                Style::default().fg(REPEAT).bg(BG),
             ));
         }
 
         spans.push(Span::styled(
             format!("  {maqam_str}"),
-            Style::default().fg(MAQAM).add_modifier(if playing { Modifier::empty() } else { Modifier::DIM }),
+            Style::default().fg(MAQAM).bg(BG).add_modifier(if playing { Modifier::empty() } else { Modifier::DIM }),
         ));
 
         ListItem::new(Line::from(spans))
@@ -192,8 +198,8 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let list = List::new(items)
         .block(Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(" maqam-live ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)))
-            .border_style(Style::default().fg(BORDER))
+            .title(Span::styled(" maqam-live ", Style::default().fg(ACCENT).bg(BG).add_modifier(Modifier::BOLD)))
+            .border_style(Style::default().fg(BORDER).bg(BG))
             .style(Style::default().bg(BG)));
     f.render_widget(list, area);
 }
@@ -201,7 +207,7 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 fn draw_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     // Render with cursor block at cursor_pos
     let chars: Vec<char> = app.input.chars().collect();
-    let mut spans = vec![Span::styled("> ", Style::default().fg(DIM))];
+    let mut spans = vec![Span::styled("> ", Style::default().fg(DIM).bg(BG))];
     for (i, &ch) in chars.iter().enumerate() {
         if i == app.cursor_pos {
             spans.push(Span::styled(
@@ -209,7 +215,7 @@ fn draw_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 Style::default().fg(BG).bg(CMD).add_modifier(Modifier::BOLD),
             ));
         } else {
-            spans.push(Span::styled(ch.to_string(), Style::default().fg(CMD)));
+            spans.push(Span::styled(ch.to_string(), Style::default().fg(CMD).bg(BG)));
         }
     }
     // Cursor at end of input
@@ -223,21 +229,21 @@ fn draw_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .style(Style::default().bg(BG))
         .block(Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(" cmd ", Style::default().fg(DIM)))
-            .border_style(Style::default().fg(BORDER)));
+            .title(Span::styled(" cmd ", Style::default().fg(DIM).bg(BG)))
+            .border_style(Style::default().fg(BORDER).bg(BG)));
     f.render_widget(para, area);
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let text = if let Some(msg) = &app.message {
         let col = if msg.starts_with('✗') { ERR } else { DIM };
-        Line::from(vec![Span::styled(format!("  {msg}"), Style::default().fg(col))])
+        Line::from(vec![Span::styled(format!("  {msg}"), Style::default().fg(col).bg(BG))])
     } else {
         Line::from(vec![Span::styled(
             format!("  {}BPM:{} sus:{:.1}s vol:{:.2} phrases:{}  [?] help  [z] pause",
                 if app.paused { "⏸ PAUSED  " } else { "" },
                 app.bpm, app.sustain, app.vol, app.phrases.len()),
-            Style::default().fg(DIM),
+            Style::default().fg(DIM).bg(BG),
         )])
     };
     f.render_widget(Paragraph::new(text).style(Style::default().bg(BG)), area);

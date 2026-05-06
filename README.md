@@ -51,6 +51,22 @@ cargo run --release
 No extra audio dependencies needed on macOS — cpal uses CoreAudio, which is
 built in. `pkg-config` is not required.
 
+### Windows
+
+1. Install [ffmpeg](https://ffmpeg.org/download.html) and add it to PATH
+2. Install [Rust](https://rustup.rs/)
+3. Open a terminal (Windows Terminal recommended):
+
+```powershell
+tar -xzf maqam-live.tar.gz
+cd maqam-live
+cargo build --release
+cargo run --release
+```
+
+cpal uses WASAPI on Windows — no extra audio dependencies needed.
+Recordings are saved to `%USERPROFILE%\maqam-<timestamp>.mp4`.
+
 The `rust-toolchain.toml` pins to Rust 1.85.0. `rustup` will download it
 automatically on first build.
 

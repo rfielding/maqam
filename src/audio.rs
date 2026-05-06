@@ -206,9 +206,12 @@ fn tick_sequencer(
                 let jump_pos = *cur_phrase;
                 // Reset only entries strictly BETWEEN target and this jump (inner loops).
                 // Do NOT reset this entry itself — that would reinitialize and loop forever.
-                let ids: Vec<usize> = phrases[target..jump_pos].iter()
-                    .filter_map(|pp| pp.phrase.jump.as_ref().map(|_| pp.phrase.id))
-                    .collect();
+                // Guard: target may be >= jump_pos after rot/insert rearrangement
+                let ids: Vec<usize> = if target < jump_pos {
+                    phrases[target..jump_pos].iter()
+                        .filter_map(|pp| pp.phrase.jump.as_ref().map(|_| pp.phrase.id))
+                        .collect()
+                } else { vec![] };
                 for id in ids { jump_counters.remove(&id); }
                 *cur_phrase = target;
                 crate::CUR_PHRASE.store(*cur_phrase, std::sync::atomic::Ordering::Relaxed);
