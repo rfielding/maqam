@@ -256,7 +256,7 @@ fn draw_recording(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::styled(path.as_str(), Style::default().fg(Color::Rgb(160, 160, 180))),
         ]),
         None => Line::from(vec![
-            Span::styled("  m → record cycle to $HOME/maqam-<ts>.mp4",
+            Span::styled("  m → record cycle to ~/maqam-<ts>.mp4",
                 Style::default().fg(Color::Rgb(55, 55, 70))),
         ]),
     };
