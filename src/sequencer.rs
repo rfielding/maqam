@@ -89,7 +89,7 @@ pub fn build_jump_entry(id: usize, target_id: usize, times: usize) -> Phrase {
     };
     Phrase {
         id,
-        src: format!(">>{target_id} x{times}"),   // shows stable target id
+        src: format!("j {target_id} {times}"),    // shows as typed
         bar,
         repeat: 1,
         jump: Some(JumpSpec { target_id, times }),

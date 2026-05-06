@@ -69,6 +69,7 @@ fn expand_one_cycle(phrases: &[Phrase])
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+#[allow(unused_variables)]
 pub fn record_cycle(
     phrases:      &[Phrase],
     bpm:          f64,
@@ -223,6 +224,7 @@ pub fn record_cycle(
     }
 
     // ── ASS subtitle file ─────────────────────────────────────────────────────
+    #[allow(unused_variables)]
     let ass_path_s = temp_path("maqam-live.ass");
     let ass_path = ass_path_s.as_str();
     {
@@ -235,9 +237,21 @@ pub fn record_cycle(
         writeln!(f, "WrapStyle: 0")?;
         writeln!(f, "[V4+ Styles]")?;
         writeln!(f, "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,Strikeout,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding")?;
-        writeln!(f, "Style: Default,Courier New,22,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,1,0,7,20,20,10,1")?;
+        // Line: top-left (alignment 7), green, monospace
+        writeln!(f, "Style: Line,Courier New,20,&H0000FF00,&H0000FF00,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,7,20,20,10,1")?;
+        // URL: bottom-left (alignment 1), green, smaller
+        writeln!(f, "Style: URL,Courier New,18,&H0000FF00,&H0000FF00,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,1,20,20,100,1")?;
         writeln!(f, "[Events]")?;
         writeln!(f, "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text")?;
+
+        let one_len: usize = one_cycle_seq.iter()
+            .map(|&idx| phrases[idx].repeat.max(1)).sum();
+
+        let fmt_t = |s: f64| -> String {
+            let hh=(s/3600.0) as u32; let mm=((s%3600.0)/60.0) as u32;
+            let ss=(s%60.0) as u32;   let cs=((s%1.0)*100.0) as u32;
+            format!("{hh}:{mm:02}:{ss:02}.{cs:02}")
+        };
 
         let mut sample: usize = 0;
         for (i, &(phrase_idx, play_num, snap_idx)) in full_seq.iter().enumerate() {
@@ -246,78 +260,55 @@ pub fn record_cycle(
             let end_s   = if i + 1 < full_seq.len() {
                 (sample + bs) as f64 / SR
             } else { total_secs };
+            let t0 = fmt_t(start_s);
+            let t1 = fmt_t(end_s);
 
-            // Cycle counter: which pass through the full sequence are we on
-        let one_len: usize = one_cycle_seq.iter()
-            .map(|&idx| phrases[idx].repeat.max(1)).sum();
-        let cycle_num  = if one_len > 0 { i / one_len } else { 0 };
-        let cycle_disp = if cycles > 1 {
-            format!("  cycle {}/{}", cycle_num + 1, cycles)
-        } else { String::new() };
+            let cycle_num  = if one_len > 0 { i / one_len } else { 0 };
+            let cycle_disp = if cycles > 1 {
+                format!("  cycle {}/{}", cycle_num + 1, cycles)
+            } else { String::new() };
 
-        // ── Build subtitle text ──────────────────────────────────────────────
-        // Fixed columns (Courier New monospace):
-        //  [0..3 ] marker: ">  " or "   " — same width always
-        //  [3..7 ] id:     " 0: "
-        //  [7..35] src:    28 chars left-aligned
-        //  [35..39] ticks: " 8t"
-        //  [39.. ] ctr:    "[2/4]" or "[1/3]"
-        let c_active = "{\\c&H00FFFFFF&\\b1}";
-        let c_jump   = "{\\c&H0000FFFF&}";
-        let c_dim    = "{\\c&H00C0C0C0&}";
-        let c_hdr    = "{\\c&H00FFFF80&\\i1}";
-        let rst      = "{\\r}";
+            // Header line
+            let hdr = format!("   bpm:{:<4} sus:{:.1}s{}",
+                (60.0 / (subdiv_secs * 2.0)) as u32, sustain, cycle_disp);
+            writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,0,,{hdr}")?;
 
-        let mut lines: Vec<String> = Vec::new();
+            // Repo URL — bottom left, permanent per segment
+            writeln!(f, "Dialogue: 0,{t0},{t1},URL,,0,0,0,,https://github.com/rfielding/maqam")?;
 
-        // Header
-        lines.push(format!("{c_hdr}   bpm:{:<4} sus:{:.1}s{}{rst}",
-            (60.0 / (subdiv_secs * 2.0)) as u32, sustain, cycle_disp));
+            // One Dialogue per phrase, stacked by MarginV
+            let line_h: usize = 26;
+            let mut margin_v: usize = 30;
+            for (pi, p) in phrases.iter().enumerate() {
+                let active = p.jump.is_none() && pi == phrase_idx;
+                let m   = if active { '>' } else { '-' };
+                let id  = format!("{:>3}", p.id);
 
-        for (pi, p) in phrases.iter().enumerate() {
-            // Prefix: exactly 8 visible characters, no color tags.
-            // "  NNN: " (7 chars) for inactive — marker is a space
-            // "> NNN: " (7 chars) for active   — marker is >
-            // Both strings are identical length so text never shifts.
-            let active = p.jump.is_none() && pi == phrase_idx;
-            let prefix = if active {
-                format!("> {:>3}: ", p.id)
-            } else {
-                format!("  {:>3}: ", p.id)
-            };
-
-            if let Some(js) = &p.jump {
-                let snap = one_cycle_snaps.get(snap_idx % one_cycle_snaps.len().max(1));
-                let (pass, total) = snap.and_then(|s| s.get(&p.id)).copied()
-                    .unwrap_or((0, js.times));
-                let ctr = format!("[{}/{}]", pass, total);
-                lines.push(format!("{prefix}{c_jump}{:<28}  >>{} {}{rst}",
-                    "", js.target_id, ctr));
-            } else {
-                let ticks = p.bar.total_subdivs;
-                let ctr   = format!("[{}/{}]", play_num + 1, p.repeat.max(1));
-                if active {
-                    lines.push(format!("{prefix}{c_active}{:<28} {:>3}t {}{rst}",
-                        p.src, ticks, ctr));
+                let body = if let Some(js) = &p.jump {
+                    let snap = one_cycle_snaps.get(snap_idx % one_cycle_snaps.len().max(1));
+                    let (pass, total) = snap.and_then(|s| s.get(&p.id)).copied()
+                        .unwrap_or((0, js.times));
+                    format!("j {} [{}/{}]", js.target_id, pass, total)
                 } else {
-                    lines.push(format!("{prefix}{c_dim}{:<28} {:>3}t{rst}",
-                        p.src, ticks));
-                }
+                    let rhythm    = p.bar.rhythm_display();
+                    let maqam_str = p.bar.maqam_names.join("+");
+                    if active {
+                        let ctr = format!("[{}/{}]", play_num + 1, p.repeat.max(1));
+                        format!("{:<20} {:<10} {:<16} {}",
+                            p.src, rhythm, maqam_str, ctr)
+                    } else {
+                        format!("{:<20} {:<10} {:<16}",
+                            p.src, rhythm, maqam_str)
+                    }
+                };
+                let text = format!("{m} {id}: {body}");
+                writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,{margin_v},,{text}")?;
+                margin_v += line_h;
             }
-        }
 
-        let text = lines.join("\\N");
-        let h = |s: f64| -> String {
-            let hh = (s/3600.0) as u32;
-            let mm = ((s%3600.0)/60.0) as u32;
-            let ss = (s%60.0) as u32;
-            let cs = ((s%1.0)*100.0) as u32;
-            format!("{hh}:{mm:02}:{ss:02}.{cs:02}")
-        };
-        writeln!(f, "Dialogue: 0,{},{},Default,,0,0,0,,{}", h(start_s), h(end_s), text)?;
-        sample += bs;
-    }
-    f.flush()?;
+            sample += bs;
+        }
+        f.flush()?;
     }
 
     // ── ffmpeg ────────────────────────────────────────────────────────────────
