@@ -103,6 +103,40 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                             crate::CUR_PHRASE.store(cur_phrase, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
+                    AudioCmd::ReplacePhrase(p) => {
+                        // Swap bar and src in-place — id, plays_done, bar_state preserved
+                        if let Some(pp) = phrases.iter_mut().find(|pp| pp.phrase.id == p.id) {
+                            pp.phrase.src    = p.src;
+                            pp.phrase.bar    = p.bar;
+                            pp.phrase.repeat = p.repeat;
+                            pp.rebuild(sr, bpm);
+                        }
+                    }
+                    AudioCmd::InsertPhrase { pos, phrase } => {
+                        let pp = PlayingPhrase::new(phrase, sr, bpm);
+                        let insert_pos = pos.min(phrases.len());
+                        phrases.insert(insert_pos, pp);
+                        // Adjust cur_phrase if insertion was at or before it
+                        if insert_pos <= cur_phrase && cur_phrase + 1 < phrases.len() {
+                            cur_phrase += 1;
+                            crate::CUR_PHRASE.store(cur_phrase, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                    AudioCmd::Rotate => {
+                        if phrases.len() > 1 {
+                            // Remember which phrase id is playing
+                            let playing_id = phrases.get(cur_phrase).map(|p| p.phrase.id);
+                            let last = phrases.remove(phrases.len() - 1);
+                            phrases.insert(0, last);
+                            // Find the playing phrase in its new position
+                            if let Some(pid) = playing_id {
+                                cur_phrase = phrases.iter()
+                                    .position(|p| p.phrase.id == pid)
+                                    .unwrap_or(0);
+                                crate::CUR_PHRASE.store(cur_phrase, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    }
                     AudioCmd::Clear => { phrases.clear(); voices.clear(); cur_phrase = 0; jump_counters.clear();
                         if let Ok(mut jc) = crate::jump_counters().try_lock() { jc.clear(); } }
                 }

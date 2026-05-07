@@ -283,6 +283,9 @@ pub fn melody_walk(n: usize, peak: usize) -> Vec<usize> {
 pub enum AudioCmd {
     AddPhrase(Phrase),
     RemovePhrase(usize),
+    InsertPhrase { pos: usize, phrase: Phrase },  // insert at pos, adjust cur_phrase
+    ReplacePhrase(Phrase),                            // replace bar/src by id, keep playing state
+    Rotate,                                        // move last to front, adjust cur_phrase
     SetBpm(f64),
     SetSustain(f64),
     Clear,

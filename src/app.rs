@@ -9,6 +9,7 @@ pub struct App {
     pub phrases:     Vec<Phrase>,
     pub input:       String,
     pub message:     Option<String>,
+    pub show_help:    bool,
     pub bpm:         f64,
     pub sustain:     f64,
     pub vol:         f32,
@@ -29,7 +30,8 @@ impl App {
         App {
             phrases:        Vec::new(),
             input:          String::new(),
-            message:        Some("<root> <maqam> [groups][,…] [r<N>]  │  bpm s x<N> clear ?".into()),
+            message:        Some("? for help".into()),
+            show_help:      false,
             bpm:            120.0,
             sustain:        1.25,
             vol:            1.0,
@@ -152,12 +154,7 @@ impl App {
     fn execute(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::Quit  => self.should_quit = true,
-            Cmd::Help  => {
-                self.message = Some(
-                    "<root> <maqam> [groups][,…] [r<N>]  │  bpm <n>  s <n>  x<N>  clear  ?"
-                        .into(),
-                );
-            }
+            Cmd::Help => { self.show_help = true; }
             Cmd::Jump { to, times } => {
                 // Verify target id exists
                 if !self.phrases.iter().any(|p| p.id == to) {
@@ -195,14 +192,8 @@ impl App {
                     .unwrap_or(self.phrases.len());
                 self.phrases.insert(pos, phrase.clone());
 
-                // Rebuild audio — preserve playing position adjusted for insertion
-                let cur = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
-                let new_cur = if pos <= cur { (cur + 1).min(self.phrases.len().saturating_sub(1)) } else { cur };
-                let _ = self.audio_tx.send(AudioCmd::Clear);
-                for p in &self.phrases {
-                    let _ = self.audio_tx.send(AudioCmd::AddPhrase(p.clone()));
-                }
-                let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(new_cur));
+                // Insert without disrupting playback
+                let _ = self.audio_tx.send(AudioCmd::InsertPhrase { pos, phrase });
                 self.message = Some(format!("inserted at {pos}"));
             }
 
@@ -220,17 +211,8 @@ impl App {
                 let entry = crate::sequencer::build_jump_entry(id, to, times);
 
                 self.phrases.insert(insert_pos, entry.clone());
-
-                // Rebuild audio preserving position
-                let cur     = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
-                let new_cur = if insert_pos <= cur {
-                    (cur + 1).min(self.phrases.len().saturating_sub(1))
-                } else { cur };
-                let _ = self.audio_tx.send(AudioCmd::Clear);
-                for p in &self.phrases {
-                    let _ = self.audio_tx.send(AudioCmd::AddPhrase(p.clone()));
-                }
-                let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(new_cur));
+                // Insert without disrupting playback
+                let _ = self.audio_tx.send(AudioCmd::InsertPhrase { pos: insert_pos, phrase: entry });
                 self.message = None;
             }
 
@@ -264,13 +246,9 @@ impl App {
                 if self.phrases.len() < 2 {
                     self.message = Some("nothing to rotate".into());
                 } else {
-                    // Move last phrase to front, shift everything else down
                     let last = self.phrases.pop().unwrap();
                     self.phrases.insert(0, last);
-                    let _ = self.audio_tx.send(AudioCmd::Clear);
-                    for p in &self.phrases {
-                        let _ = self.audio_tx.send(AudioCmd::AddPhrase(p.clone()));
-                    }
+                    let _ = self.audio_tx.send(AudioCmd::Rotate);
                     self.message = None;
                 }
             }
@@ -289,6 +267,36 @@ impl App {
                 self.sustain = secs;
                 let _ = self.audio_tx.send(AudioCmd::SetSustain(secs));
                 self.message = Some(format!("sustain → {secs:.2}s"));
+            }
+
+            Cmd::Edit { id, specs, repeat } => {
+                // Block editing the currently playing phrase
+                let cur_pos    = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
+                let playing_id = self.phrases.get(cur_pos).map(|p| p.id);
+                if playing_id == Some(id) {
+                    self.message = Some(format!("✗ phrase {id} is playing — cannot edit"));
+                    return;
+                }
+                // Find the phrase
+                let pos = match self.phrases.iter().position(|p| p.id == id) {
+                    Some(p) => p,
+                    None    => { self.message = Some(format!("✗ no phrase id {id}")); return; }
+                };
+                if self.phrases[pos].jump.is_some() {
+                    self.message = Some(format!("✗ id {id} is a jump entry — use x then j"));
+                    return;
+                }
+                let resolved = match resolve_rhythms(specs, &self.last_rhythm) {
+                    Ok(r)  => r,
+                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                };
+                if let Some(r) = resolved.last() { self.last_rhythm = r.groups.clone(); }
+                let src = resolved.iter().map(|s| s.src.as_str()).collect::<Vec<_>>().join(", ");
+                let mut phrase = build_phrase(id, src, resolved, 4, repeat.max(1));
+                phrase.id = id; // preserve original id
+                self.phrases[pos] = phrase.clone();
+                let _ = self.audio_tx.send(AudioCmd::ReplacePhrase(phrase));
+                self.message = Some(format!("edited {id}"));
             }
 
             Cmd::DeleteBars(ids) => {

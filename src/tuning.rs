@@ -127,6 +127,9 @@ pub enum Maqam {
     Kurd,
     Saba,
     Ajam,
+    Nikriz,     // Hijaz lower + natural upper (B not Bb)
+    Suznak,     // Rast lower + Hijaz upper (Bb + C#)
+    Jiharkah,   // Ajam lower + flat 7th (C not C#)
 }
 
 impl Maqam {
@@ -141,6 +144,11 @@ impl Maqam {
             ("kurd",     Maqam::Kurd),
             ("saba",     Maqam::Saba),
             ("ajam",     Maqam::Ajam),
+            ("nikriz",   Maqam::Nikriz),
+            ("suznak",   Maqam::Suznak),
+            ("jiharkah", Maqam::Jiharkah),
+            ("jiharka",  Maqam::Jiharkah),
+            ("jaharkah", Maqam::Jiharkah),
         ];
         for (name, kind) in candidates {
             if name.starts_with(s.as_str()) { return Some(*kind); }
@@ -157,6 +165,9 @@ impl Maqam {
             Maqam::Kurd     => "Kurd",
             Maqam::Saba     => "Saba",
             Maqam::Ajam     => "Ajam",
+            Maqam::Nikriz   => "Nikriz",
+            Maqam::Suznak   => "Suznak",
+            Maqam::Jiharkah => "Jiharkah",
         }
     }
 
@@ -198,6 +209,24 @@ impl Maqam {
             // Ajam: 5-limit major scale
             // D E F# G A B C# D  →  0,204,386,498,702,884,1088,1200¢
             Maqam::Ajam     => [(1,1),(9,8),(5,4),(4,3),(3,2),(5,3),(15,8),(2,1)],
+
+            // Nikriz: Hijaz lower tetrachord + natural upper (B♮ instead of B♭)
+            // D E♭ F# G A B C D  →  0,90,408,498,702,906,996,1200¢
+            // Lower = Hijaz; upper = Pythagorean (same as Nahawand upper)
+            // Reference: maqamworld.com/en/nikriz
+            Maqam::Nikriz   => [(1,1),(256,243),(81,64),(4,3),(3,2),(27,16),(16,9),(2,1)],
+
+            // Suznak: Rast lower tetrachord + Hijaz upper tetrachord
+            // D E F¾ G A B♭ C# D  →  0,204,355,498,702,792,1110,1200¢
+            // Lower = Rast (neutral 3rd); upper = Hijaz (augmented 2nd)
+            // Reference: maqamworld.com/en/suznak
+            Maqam::Suznak   => [(1,1),(9,8),(27,22),(4,3),(3,2),(128,81),(243,128),(2,1)],
+
+            // Jiharkah (Jaharkah): Ajam lower + flat 7th (C♮ not C#)
+            // D E F# G A B(5/3) C D  →  0,204,386,498,702,884,996,1200¢
+            // The flat 7th gives it a major-pentatonic feel with Mixolydian flavour.
+            // Reference: maqamworld.com/en/jiharkah
+            Maqam::Jiharkah => [(1,1),(9,8),(5,4),(4,3),(3,2),(5,3),(16,9),(2,1)],
         }
     }
 

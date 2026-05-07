@@ -38,6 +38,7 @@ pub enum Cmd {
     AddPhrase { specs: Vec<JinsSpec>, repeat: usize },
     Jump   { to: usize, times: usize },
     Insert { before: usize, specs: Vec<JinsSpec>, repeat: usize },
+    Edit   { id: usize, specs: Vec<JinsSpec>, repeat: usize },
     InsertJump { before: usize, to: usize, times: usize },
     DeleteBars(Vec<usize>),
     Rotate,
@@ -105,6 +106,22 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
     }
 
     // ── INSERT: i<pos> <cmd>  |  i <pos> <cmd> ───────────────────────────
+    // ── EDIT: edit <id> <new-phrase> ──────────────────────────────────────
+    if al == "edit" || al == "e" && !digits.is_empty() {
+        let rest_str = if al == "edit" { input.trim() } else { input };
+        // tokenize: skip "edit", grab id, rest is the new phrase
+        let mut toks = rest_str.splitn(3, char::is_whitespace);
+        toks.next(); // skip "edit"
+        let id: usize = toks.next().and_then(|s| s.parse().ok())
+            .ok_or("usage: edit <id> <phrase>")?;
+        let rest = toks.next().unwrap_or("").trim();
+        if rest.is_empty() { return Err("usage: edit <id> <phrase>".into()); }
+        let (phrase_part, repeat) = strip_repeat(rest);
+        let specs: Result<Vec<JinsSpec>, String> = phrase_part
+            .split(',').map(|p| parse_jins_spec(p.trim())).collect();
+        return Ok(Cmd::Edit { id, specs: specs?, repeat });
+    }
+
     if al == "i" {
         let before: usize;
         let rest: &str;
