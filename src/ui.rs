@@ -237,6 +237,17 @@ fn draw_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             .title(Span::styled(" cmd ", Style::default().fg(DIM).bg(BG)))
             .border_style(Style::default().fg(BORDER).bg(BG)));
     f.render_widget(para, area);
+
+    // Also place the real terminal cursor inside the bordered command box.
+    // The highlighted span above is useful, but some terminals/themes make it
+    // hard to see. Ratatui only shows the terminal cursor when we explicitly
+    // set its position for the current frame.
+    let inner = area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+    let prompt_width = 2u16;
+    let cursor_col = prompt_width.saturating_add(app.cursor_pos as u16);
+    let max_x = inner.x.saturating_add(inner.width.saturating_sub(1));
+    let cursor_x = inner.x.saturating_add(cursor_col).min(max_x);
+    f.set_cursor_position(ratatui::layout::Position { x: cursor_x, y: inner.y });
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
