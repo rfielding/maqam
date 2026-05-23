@@ -71,7 +71,7 @@ fn expand_one_cycle(phrases: &[Phrase])
 
 #[allow(unused_variables)]
 pub fn record_cycle(
-    phrases:      &[Phrase],
+    phrases:      Vec<Phrase>,
     bpm:          f64,
     sustain:      f64,
     cycle_repeat: usize,
@@ -87,7 +87,7 @@ pub fn record_cycle(
         ((subdiv_samples * phrases[idx].bar.total_subdivs as f64).round() as usize).max(1)
     };
 
-    let (one_cycle_seq, one_cycle_snaps) = expand_one_cycle(phrases);
+    let (one_cycle_seq, one_cycle_snaps) = expand_one_cycle(&phrases);
     let _ = &one_cycle_snaps; // used in subtitle loop
     if one_cycle_seq.is_empty() {
         return Err(anyhow::anyhow!("no musical phrases to render"));
@@ -106,7 +106,16 @@ pub fn record_cycle(
         }
     }
 
-    // ── Render ────────────────────────────────────────────────────────────────
+    // ── Progress setup ────────────────────────────────────────────────────
+    let render_samples: usize = full_seq.iter()
+        .map(|&(idx, _, _)| bar_samples_for(idx))
+        .sum::<usize>()
+        + tail_samples;
+    crate::REC_SAMPLES_TOTAL.store(render_samples, std::sync::atomic::Ordering::Relaxed);
+    crate::REC_SAMPLES_DONE.store(0,               std::sync::atomic::Ordering::Relaxed);
+    crate::REC_ACTIVE.store(true,                  std::sync::atomic::Ordering::Relaxed);
+
+    // ── Render ────────────────────────────────────────────────────────────
     let mut phrases_v = phrases.to_vec();
     let mut voices: Vec<Voice> = Vec::new();
     let mut left_buf:  Vec<f32> = Vec::new();
@@ -162,6 +171,10 @@ pub fn record_cycle(
             voices.retain(|v| !v.done);
         }
 
+        // tick progress
+        let done = left_buf.len().min(render_samples);
+        crate::REC_SAMPLES_DONE.store(done, std::sync::atomic::Ordering::Relaxed);
+
         evolve_bar(&mut phrases_v[phrase_idx].bar, true);
         let _ = seq_pos; // suppress warning
     }
@@ -185,7 +198,7 @@ pub fn record_cycle(
         voices.retain(|v| !v.done);
     }
 
-    // ── Normalize + write 16-bit PCM WAV ─────────────────────────────────────
+    // ── Normalize + write 16-bit PCM WAV ─────────────────────────────────
     // Normalize to 90% of full scale so the waveform is clearly visible.
     let peak = left_buf.iter().chain(right_buf.iter())
         .map(|s| s.abs()).fold(0f32, f32::max);
@@ -223,7 +236,7 @@ pub fn record_cycle(
         f.sync_all()?;
     }
 
-    // ── ASS subtitle file ─────────────────────────────────────────────────────
+    // ── ASS subtitle file ─────────────────────────────────────────────────
     #[allow(unused_variables)]
     let ass_path_s = temp_path("maqam-live.ass");
     let ass_path = ass_path_s.as_str();
@@ -311,7 +324,7 @@ pub fn record_cycle(
         f.flush()?;
     }
 
-    // ── ffmpeg ────────────────────────────────────────────────────────────────
+    // ── ffmpeg ────────────────────────────────────────────────────────────
     let ts  = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let home = std::env::var("HOME")
@@ -355,6 +368,9 @@ pub fn record_cycle(
             .stderr(Stdio::null())
             .status()?;
     }
+
+    crate::REC_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+    crate::REC_SAMPLES_DONE.store(render_samples, std::sync::atomic::Ordering::Relaxed);
 
     Ok(out)
 }

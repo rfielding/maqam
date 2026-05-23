@@ -20,6 +20,7 @@ pub struct App {
     pub history_pos: Option<usize>,
     pub saved_input: String,
     pub cursor_pos:  usize,   // char index into input
+    pub rec_rx:      Option<crossbeam_channel::Receiver<Result<String, String>>>,
     next_phrase_id:  usize,
     last_rhythm:     Vec<u8>,
     audio_tx:        Sender<AudioCmd>,
@@ -42,6 +43,7 @@ impl App {
             history_pos:    None,
             saved_input:    String::new(),
             cursor_pos:     0,
+            rec_rx:         None,
             next_phrase_id: 0,
             last_rhythm:    vec![3, 3, 2],
             audio_tx,
@@ -136,6 +138,26 @@ impl App {
         self.input.remove(byte_pos);
     }
 
+    // ── Render thread poll ────────────────────────────────────────────────
+
+    /// Call once per UI frame. Checks if the background render thread has
+    /// finished and updates app state accordingly.
+    pub fn tick(&mut self) {
+        if let Some(rx) = &self.rec_rx {
+            if let Ok(result) = rx.try_recv() {
+                match result {
+                    Ok(path) => {
+                        self.last_recording = Some(path.clone());
+                        self.message        = Some(format!("saved → {path}"));
+                    }
+                    Err(e) => {
+                        self.message = Some(format!("✗ {e}"));
+                    }
+                }
+                self.rec_rx = None;
+            }
+        }
+    }
 
     // ── Commands ──────────────────────────────────────────────────────────
 
@@ -229,17 +251,21 @@ impl App {
             }
 
             Cmd::Record(reps) => {
-                self.message = Some(format!("rendering {}×…", reps));
+                if crate::REC_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+                    self.message = Some("✗ already rendering".into());
+                    return;
+                }
                 let phrases = self.phrases.clone();
                 let bpm     = self.bpm;
                 let sustain = self.sustain;
-                match record::record_cycle(&phrases, bpm, sustain, reps) {
-                    Ok(path) => {
-                        self.last_recording = Some(path.clone());
-                        self.message = Some(format!("saved → {path}"));
-                    }
-                    Err(e) => self.message = Some(format!("✗ {e}")),
-                }
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                self.rec_rx  = Some(rx);
+                self.message = Some(format!("◉ rendering {}×…", reps));
+                std::thread::spawn(move || {
+                    let result = record::record_cycle(phrases, bpm, sustain, reps)
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(result);
+                });
             }
 
             Cmd::Rotate => {

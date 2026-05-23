@@ -35,6 +35,7 @@ pub fn run(app: &mut App) -> anyhow::Result<()> {
     let mut term = Terminal::new(backend)?;
 
     loop {
+        app.tick();   // poll render thread result; clears rec_rx on completion
         term.draw(|f| draw(f, app))?;
 
         if event::poll(std::time::Duration::from_millis(40))? {
@@ -102,7 +103,7 @@ fn draw(f: &mut Frame, app: &App) {
     }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-.constraints([Constraint::Min(3), Constraint::Length(3), Constraint::Length(1), Constraint::Length(1)])
+        .constraints([Constraint::Min(3), Constraint::Length(3), Constraint::Length(1), Constraint::Length(1)])
         .split(area);
     draw_phrases(f, app, chunks[0]);
     draw_input(f, app, chunks[1]);
@@ -210,25 +211,10 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 }
 
 fn draw_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    // Render with cursor block at cursor_pos
     let chars: Vec<char> = app.input.chars().collect();
     let mut spans = vec![Span::styled("> ", Style::default().fg(DIM).bg(BG))];
-    for (i, &ch) in chars.iter().enumerate() {
-        if i == app.cursor_pos {
-            spans.push(Span::styled(
-                ch.to_string(),
-                Style::default().fg(BG).bg(CMD).add_modifier(Modifier::BOLD),
-            ));
-        } else {
-            spans.push(Span::styled(ch.to_string(), Style::default().fg(CMD).bg(BG)));
-        }
-    }
-    // Cursor at end of input
-    if app.cursor_pos >= chars.len() {
-        spans.push(Span::styled(
-            " ",
-            Style::default().fg(BG).bg(CMD),
-        ));
+    for &ch in chars.iter() {
+        spans.push(Span::styled(ch.to_string(), Style::default().fg(CMD).bg(BG)));
     }
     let para = Paragraph::new(Line::from(spans))
         .style(Style::default().bg(BG))
@@ -238,16 +224,11 @@ fn draw_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             .border_style(Style::default().fg(BORDER).bg(BG)));
     f.render_widget(para, area);
 
-    // Also place the real terminal cursor inside the bordered command box.
-    // The highlighted span above is useful, but some terminals/themes make it
-    // hard to see. Ratatui only shows the terminal cursor when we explicitly
-    // set its position for the current frame.
-    let inner = area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
-    let prompt_width = 2u16;
-    let cursor_col = prompt_width.saturating_add(app.cursor_pos as u16);
-    let max_x = inner.x.saturating_add(inner.width.saturating_sub(1));
-    let cursor_x = inner.x.saturating_add(cursor_col).min(max_x);
-    f.set_cursor_position(ratatui::layout::Position { x: cursor_x, y: inner.y });
+    // Position the real terminal cursor — blinking block, always visible.
+    // area.x + 1 (border) + 2 ("> ") + cursor_pos columns
+    let cx = area.x + 1 + 2 + app.cursor_pos as u16;
+    let cy = area.y + 1; // +1 for top border
+    f.set_cursor_position((cx, cy));
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -266,15 +247,43 @@ fn draw_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 }
 
 fn draw_recording(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let text = match &app.last_recording {
-        Some(path) => Line::from(vec![
-            Span::styled("  ◉ ", Style::default().fg(Color::Rgb(200, 80, 80))),
-            Span::styled(path.as_str(), Style::default().fg(Color::Rgb(160, 160, 180))),
-        ]),
-        None => Line::from(vec![
-            Span::styled("  m → record cycle to ~/maqam-<ts>.mp4",
-                Style::default().fg(Color::Rgb(55, 55, 70))),
-        ]),
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let active = crate::REC_ACTIVE.load(Relaxed);
+    let text = if active {
+        let done  = crate::REC_SAMPLES_DONE.load(Relaxed);
+        let total = crate::REC_SAMPLES_TOTAL.load(Relaxed).max(1);
+        let pct   = (done * 100 / total).min(100);
+
+        // bar width: total area minus fixed decorations ("  ◉ rendering [" + "] 100%" = 22 chars)
+        let bar_w = (area.width as usize).saturating_sub(22).max(4);
+        let filled = bar_w * pct / 100;
+        let bar: String = std::iter::repeat('=').take(filled)
+            .chain(std::iter::once('>').take(if filled < bar_w { 1 } else { 0 }))
+            .chain(std::iter::repeat(' ').take(bar_w.saturating_sub(filled + 1)))
+            .collect();
+
+        Line::from(vec![
+            Span::styled("  ◉ rendering [",
+                Style::default().fg(Color::Rgb(200, 80, 80))),
+            Span::styled(bar,
+                Style::default().fg(Color::Rgb(0, 200, 100))),
+            Span::styled(format!("] {pct:>3}%"),
+                Style::default().fg(Color::Rgb(160, 160, 180))),
+        ])
+    } else {
+        match &app.last_recording {
+            Some(path) => Line::from(vec![
+                Span::styled("  ◉ ",
+                    Style::default().fg(Color::Rgb(200, 80, 80))),
+                Span::styled(path.as_str(),
+                    Style::default().fg(Color::Rgb(160, 160, 180))),
+            ]),
+            None => Line::from(vec![
+                Span::styled("  m → record cycle to ~/maqam-<ts>.mp4",
+                    Style::default().fg(Color::Rgb(55, 55, 70))),
+            ]),
+        }
     };
     f.render_widget(Paragraph::new(text).style(Style::default().bg(BG)), area);
 }

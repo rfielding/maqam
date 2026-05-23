@@ -19,6 +19,14 @@ pub static CUR_PLAYS: std::sync::atomic::AtomicUsize =
 pub static CUR_JUMP_REM: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// Progress atomics: written by render thread, read by TUI.
+pub static REC_SAMPLES_DONE:  std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+pub static REC_SAMPLES_TOTAL: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+pub static REC_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Jump counters visible to TUI: phrase_id → remaining jumps.
 /// Written by audio thread on every jump state change.
 pub static JUMP_COUNTERS: std::sync::OnceLock<
