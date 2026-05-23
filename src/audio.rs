@@ -38,6 +38,15 @@ impl PlayingPhrase {
     fn rebuild(&mut self, sr: f64, bpm: f64) {
         self.bar_states = make_bar_states(&self.phrase, sr, bpm);
     }
+
+    /// Reset to the very beginning of this phrase (plays_done=0, bar_pos=0).
+    fn reset(&mut self) {
+        self.plays_done = 0;
+        for bs in self.bar_states.iter_mut() {
+            bs.bar_pos     = 0;
+            bs.last_subdiv = None;
+        }
+    }
 }
 
 fn make_bar_states(phrase: &Phrase, sr: f64, bpm: f64) -> Vec<BarState> {
@@ -67,7 +76,6 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
     let mut sustain     = 1.25f64;
     let mut vol         = 1.0f32;
     let mut paused      = false;
-    // Per-entry jump counters: phrase.id → remaining jumps
     let mut jump_counters: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
 
     let stream = device.build_output_stream(
@@ -99,12 +107,16 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                     AudioCmd::SetCurPhrase(pos) => {
                         if pos < phrases.len() {
                             cur_phrase = pos;
+                            // Reset the target phrase to its very beginning
+                            phrases[pos].reset();
                             jump_counters.clear();
+                            if let Ok(mut jc) = crate::jump_counters().try_lock() { jc.clear(); }
                             crate::CUR_PHRASE.store(cur_phrase, std::sync::atomic::Ordering::Relaxed);
+                            crate::CUR_SUBDIV.store(0, std::sync::atomic::Ordering::Relaxed);
+                            crate::CUR_PLAYS.store(0,  std::sync::atomic::Ordering::Relaxed);
                         }
                     }
                     AudioCmd::ReplacePhrase(p) => {
-                        // Swap bar and src in-place — id, plays_done, bar_state preserved
                         if let Some(pp) = phrases.iter_mut().find(|pp| pp.phrase.id == p.id) {
                             pp.phrase.src    = p.src;
                             pp.phrase.bar    = p.bar;
@@ -116,7 +128,6 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                         let pp = PlayingPhrase::new(phrase, sr, bpm);
                         let insert_pos = pos.min(phrases.len());
                         phrases.insert(insert_pos, pp);
-                        // Adjust cur_phrase if insertion was at or before it
                         if insert_pos <= cur_phrase && cur_phrase + 1 < phrases.len() {
                             cur_phrase += 1;
                             crate::CUR_PHRASE.store(cur_phrase, std::sync::atomic::Ordering::Relaxed);
@@ -124,11 +135,9 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                     }
                     AudioCmd::Rotate => {
                         if phrases.len() > 1 {
-                            // Remember which phrase id is playing
                             let playing_id = phrases.get(cur_phrase).map(|p| p.phrase.id);
                             let last = phrases.remove(phrases.len() - 1);
                             phrases.insert(0, last);
-                            // Find the playing phrase in its new position
                             if let Some(pid) = playing_id {
                                 cur_phrase = phrases.iter()
                                     .position(|p| p.phrase.id == pid)
@@ -137,51 +146,49 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                             }
                         }
                     }
-                    AudioCmd::Clear => { phrases.clear(); voices.clear(); cur_phrase = 0; jump_counters.clear();
-                        if let Ok(mut jc) = crate::jump_counters().try_lock() { jc.clear(); } }
+                    AudioCmd::Clear => {
+                        phrases.clear();
+                        voices.clear();
+                        cur_phrase = 0;
+                        jump_counters.clear();
+                        if let Ok(mut jc) = crate::jump_counters().try_lock() { jc.clear(); }
+                    }
                 }
             }
 
             // ── per-sample loop ────────────────────────────────────────────
             for frame in data.chunks_mut(ch) {
 
-                // Tick the sequencer one sample; returns event + flags
                 let (event, milestone) = tick_sequencer(
                     &mut phrases, &mut cur_phrase, bpm, sr, sustain, &mut voices,
                     &mut jump_counters
                 );
 
-                // Level 3: phrase start → long root note (highest melody level)
                 if milestone == Milestone::PhraseStart && !paused {
                     if let Some(pp) = phrases.get(cur_phrase) {
                         let root_hz = pp.phrase.bar.root_hz;
                         spawn_phrase_start(root_hz, sustain, &mut voices);
-                        // Sub-bass: hold the root for the full phrase duration
-                        let subdiv_secs  = 60.0 / (bpm * 2.0);
-                        let phrase_secs  = (pp.phrase.bar.total_subdivs as f64
+                        let subdiv_secs = 60.0 / (bpm * 2.0);
+                        let phrase_secs = (pp.phrase.bar.total_subdivs as f64
                                          * subdiv_secs
                                          * pp.phrase.repeat as f64)
-                                         .min(3.0);  // cap to avoid bleeding into next phrase
+                                         .min(3.0);
                         spawn_sub_bass(root_hz, phrase_secs, &mut voices);
                     }
                 }
 
-                // Level 1 & 2: subdivision event → melody + chord tones
                 if let Some(ev) = event {
                     if !paused {
                         let scale = phrases.get(cur_phrase)
-                        .map(|pp| pp.phrase.bar.frequencies.clone())
-                        .unwrap_or_default();
-                    spawn_voices(ev, sustain, &mut voices, milestone, &scale);
+                            .map(|pp| pp.phrase.bar.frequencies.clone())
+                            .unwrap_or_default();
+                        spawn_voices(ev, sustain, &mut voices, milestone, &scale);
                     }
                 }
 
-                // Stereo mix: equal-power pan law.
-                // Sub-bass and kick stay at pan=0 (center).
                 let (mut left, mut right) = (0f32, 0f32);
                 for v in voices.iter_mut() {
-                    let s    = v.sample(sr);
-                    // angle ∈ [π/8 .. 3π/8] for pan ∈ [-0.5 .. +0.5]
+                    let s     = v.sample(sr);
                     let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
                     left  += s * angle.cos();
                     right += s * angle.sin();
@@ -207,8 +214,6 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
     Ok(stream)
 }
 
-/// Advance the sequencer by one sample.
-/// Returns (Option<event>, phrase_start, turnaround).
 fn tick_sequencer(
     phrases:       &mut Vec<PlayingPhrase>,
     cur_phrase:    &mut usize,
@@ -220,7 +225,6 @@ fn tick_sequencer(
 ) -> (Option<SubdivEvent>, Milestone) {
     if phrases.is_empty() { return (None, Milestone::None); }
 
-    // Skip over jump entries — execute them immediately
     let max_iter = phrases.len() + 1;
     for _ in 0..max_iter {
         if *cur_phrase >= phrases.len() { *cur_phrase = 0; }
@@ -229,8 +233,6 @@ fn tick_sequencer(
             (p.id, p.jump.clone())
         };
         if let Some(js) = jump {
-            // Counter starts at times-1: phrase already played once before
-            // we reached the jump, so times=3 means 2 more jumps = 3 plays total.
             let remaining = jump_counters.entry(pid).or_insert(js.times.saturating_sub(1));
             crate::CUR_JUMP_REM.store(*remaining, std::sync::atomic::Ordering::Relaxed);
             if *remaining > 0 {
@@ -238,9 +240,6 @@ fn tick_sequencer(
                 let target = phrases.iter().position(|p| p.phrase.id == js.target_id)
                     .unwrap_or(0).min(phrases.len().saturating_sub(1));
                 let jump_pos = *cur_phrase;
-                // Reset only entries strictly BETWEEN target and this jump (inner loops).
-                // Do NOT reset this entry itself — that would reinitialize and loop forever.
-                // Guard: target may be >= jump_pos after rot/insert rearrangement
                 let ids: Vec<usize> = if target < jump_pos {
                     phrases[target..jump_pos].iter()
                         .filter_map(|pp| pp.phrase.jump.as_ref().map(|_| pp.phrase.id))
@@ -250,13 +249,11 @@ fn tick_sequencer(
                 *cur_phrase = target;
                 crate::CUR_PHRASE.store(*cur_phrase, std::sync::atomic::Ordering::Relaxed);
             } else {
-                // Exhausted — fall through, reset counter for next outer loop pass
                 jump_counters.remove(&pid);
                 *cur_phrase += 1;
                 if *cur_phrase >= phrases.len() { *cur_phrase = 0; }
                 crate::CUR_PHRASE.store(*cur_phrase, std::sync::atomic::Ordering::Relaxed);
             }
-            // Publish updated counters to UI after jump state changes
             if let Ok(mut jc) = crate::jump_counters().try_lock() {
                 *jc = jump_counters.clone();
             }

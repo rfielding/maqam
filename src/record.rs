@@ -15,30 +15,69 @@ fn temp_path(name: &str) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
-// ── Pitch ruler helpers ───────────────────────────────────────────────────────
-
-// Ruler geometry (1280×720).  1 px = 1 ¢  across x ∈ [40, 1240].
+// ── Ruler geometry (1280×720, x: 40..1240 = 1200px = 1px/¢) ─────────────────
 //
-//  y=605  ┌──────────────────┐  indicator box top  (12px tall → bottom y=617)
-//  y=606  │  boundary ticks  │  (28px tall → bottom y=634)
-//  y=618  ├──────────────────┤  rail top  (16px tall → bottom y=634)
-//  y=634  └──────────────────┘  rail bottom
-//  y=636     cent labels         (11pt ≈ 15px → bottom y=651)
-//            ← gap 6px →
+//  y=588  ┌─ pitch indicator ───┐  h=12 → bottom 600
+//         └─────────────────────┘
+//  y=603  ┌─ rail ──────────────┤  h=16 → bottom 619
+//  y=591  │  boundary ticks top │  (28px tall, same bottom 619)
+//         └─────────────────────┘
+//  y=621     ratio labels          11pt ≈ 15px → bottom 636
+//
+//         (21px clear gap)
 //  y=657     URL text top
-//  y=682     URL text baseline   (MarginV=38, alignment=1)
+//  y=682     URL baseline (MarginV=38)
 
-const RAIL_Y:    i32 = 618;
-const RAIL_H:    i32 = 16;   // bottom = 634
-const BOUND_Y:   i32 = 606;  // boundary tick top; bottom = 634 (h=28)
-const NORM_Y:    i32 = 618;  // normal tick top = rail top
-const TICK_W:    i32 = 2;
-const IND_Y:     i32 = 605;  // active indicator top; bottom = 617 (h=12)
-const IND_W:     i32 = 12;
-const IND_H:     i32 = 12;
-const LABEL_Y:   i32 = 636;  // cent label baseline
-const RULER_X0:  i32 = 40;   // 0 ¢  left edge
-// RULER_X1 = 1240 (1200 ¢ right edge — implicit: X0 + 1200)
+
+const IND_Y:    i32 = 588;
+const IND_W:    i32 = 12;
+const IND_H:    i32 = 12;
+const RAIL_Y:   i32 = 603;
+const RAIL_H:   i32 = 16;
+const BOUND_Y:  i32 = 591;
+const TICK_W:   i32 = 2;
+const LABEL_Y:  i32 = 621;
+const RULER_X0: i32 = 40;
+
+// ── JI ratio arithmetic ───────────────────────────────────────────────────────
+
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 { let t = b; b = a % b; a = t; }
+    a
+}
+
+/// Best rational p/q ≈ x with q ≤ max_denom (brute-force; fast for max_denom≤1024).
+fn best_rational(x: f64, max_denom: u64) -> (u64, u64) {
+    if x <= 0.0 { return (0, 1); }
+    let mut best     = (1u64, 1u64);
+    let mut best_err = (x - 1.0).abs();
+    for q in 1u64..=max_denom {
+        let p   = (x * q as f64).round() as u64;
+        if p == 0 { continue; }
+        let err = (x - p as f64 / q as f64).abs();
+        if err < best_err {
+            best_err = err;
+            best     = (p, q);
+            if err < 1e-9 { break; }
+        }
+    }
+    let g = gcd(best.0, best.1);
+    (best.0 / g, best.1 / g)
+}
+
+/// Format hz/root_hz as a JI ratio like "4/3", normalised to [1, 2).
+/// Special-cases: 0¢ → "1/1", 1200¢ → "2/1".
+fn ratio_label(hz: f64, root_hz: f64) -> String {
+    if root_hz <= 0.0 || hz <= 0.0 { return "?".into(); }
+    let c = cents_from_root(hz, root_hz);
+    if c < 1.0   { return "1/1".into(); }
+    if c > 1199.0 { return "2/1".into(); }
+    let mut r = hz / root_hz;
+    while r <  1.0 { r *= 2.0; }
+    while r >= 2.0 { r /= 2.0; }
+    let (p, q) = best_rational(r, 1024);
+    format!("{p}/{q}")
+}
 
 fn cents_from_root(hz: f64, root_hz: f64) -> f64 {
     if root_hz <= 0.0 || hz <= 0.0 { return 0.0; }
@@ -46,8 +85,10 @@ fn cents_from_root(hz: f64, root_hz: f64) -> f64 {
     ((raw % 1200.0) + 1200.0) % 1200.0
 }
 
-/// Build ffmpeg drawbox filter elements for the pitch ruler.
-/// Returns a Vec of individual drawbox filter strings.
+// ── Ruler drawbox filter builder ──────────────────────────────────────────────
+
+/// Build ffmpeg drawbox filter elements for the ruler + beat cursor.
+/// Returns a Vec of individual filter strings to be chained with commas.
 fn build_ruler_boxes(
     full_seq:        &[(usize, usize, usize)],
     phrases:         &[Phrase],
@@ -58,10 +99,10 @@ fn build_ruler_boxes(
     let mut sample: usize = 0;
 
     for &(phrase_idx, _play, _snap) in full_seq {
-        let bs = bar_samples_for(phrase_idx);
-        let t0 = sample as f64 / SR;
-        let t1 = (sample + bs) as f64 / SR - 0.001;
-        let en = format!("'between(t,{t0:.6},{t1:.6})'");
+        let bs  = bar_samples_for(phrase_idx);
+        let t0  = sample as f64 / SR;
+        let t1  = (sample + bs) as f64 / SR - 0.001;
+        let en  = format!("'between(t,{t0:.6},{t1:.6})'");
 
         let bar     = &phrases[phrase_idx].bar;
         let root_hz = bar.root_hz;
@@ -72,31 +113,31 @@ fn build_ruler_boxes(
              :color=0x003300@0.5:t=fill:enable={en}"
         ));
 
-        // ── Tick marks ─────────────────────────────────────────────────────
+        // ── Pitch tick marks ───────────────────────────────────────────────
         for &hz in &bar.frequencies {
-            let c = cents_from_root(hz, root_hz);
+            let c  = cents_from_root(hz, root_hz);
             if c < 0.0 || c > 1200.5 { continue; }
             let x  = (RULER_X0 as f64 + c.clamp(0.0, 1200.0)).round() as i32;
-            let ty = if c < 1.0 || c > 1199.0 { BOUND_Y } else { NORM_Y };
-            let h  = RAIL_Y + RAIL_H - ty;   // always reaches rail bottom
+            let ty = if c < 1.0 || c > 1199.0 { BOUND_Y } else { RAIL_Y };
+            let h  = RAIL_Y + RAIL_H - ty;
             parts.push(format!(
                 "drawbox=x={x}:y={ty}:w={TICK_W}:h={h}\
                  :color=0x44BB44:t=fill:enable={en}"
             ));
         }
 
-        // ── Active-note indicator (yellow box, per subdivision) ─────────────
+        // ── Active pitch indicator (yellow box, per subdivision) ───────────
         for (si, ev) in bar.events.iter().enumerate() {
-            let st = t0 + si as f64 * subdiv_secs;
-            let et = (t0 + (si + 1) as f64 * subdiv_secs).min(t1) - 0.0001;
+            let st     = t0 + si as f64 * subdiv_secs;
+            let et     = (t0 + (si + 1) as f64 * subdiv_secs).min(t1) - 0.0001;
             if st >= et { continue; }
             let sub_en = format!("'between(t,{st:.6},{et:.6})'");
             let hz = match ev {
                 SubdivEvent::Kick(hz) | SubdivEvent::Snare(hz) => *hz,
             };
-            let c = cents_from_root(hz, root_hz);
+            let c  = cents_from_root(hz, root_hz);
             if c < 0.0 || c > 1200.0 { continue; }
-            let x = (RULER_X0 as f64 + c).round() as i32 - IND_W / 2;
+            let x  = (RULER_X0 as f64 + c).round() as i32 - IND_W / 2;
             parts.push(format!(
                 "drawbox=x={x}:y={IND_Y}:w={IND_W}:h={IND_H}\
                  :color=0xFFFF00:t=fill:enable={sub_en}"
@@ -204,7 +245,7 @@ pub fn record_cycle(
     crate::REC_SAMPLES_DONE.store(0,               std::sync::atomic::Ordering::Relaxed);
     crate::REC_ACTIVE.store(true,                  std::sync::atomic::Ordering::Relaxed);
 
-    // ── Render ────────────────────────────────────────────────────────────
+    // ── Audio render ──────────────────────────────────────────────────────
     let mut phrases_v = phrases.to_vec();
     let mut voices: Vec<Voice> = Vec::new();
     let mut left_buf:  Vec<f32> = Vec::new();
@@ -267,7 +308,6 @@ pub fn record_cycle(
         let _ = seq_pos;
     }
 
-    // Final "1"
     if let Some(&(first_idx, _, _)) = full_seq.first() {
         let root_hz = phrases_v[first_idx].bar.root_hz;
         spawn_phrase_start(root_hz, sustain, &mut voices);
@@ -286,18 +326,17 @@ pub fn record_cycle(
         voices.retain(|v| !v.done);
     }
 
-    // ── Normalize + write 16-bit PCM WAV ─────────────────────────────────
+    // ── Normalize + write WAV ─────────────────────────────────────────────
     let peak = left_buf.iter().chain(right_buf.iter())
         .map(|s| s.abs()).fold(0f32, f32::max);
     let gain = if peak > 0.001 { 0.9 / peak } else { 1.0 };
 
     let wav_path = temp_path("maqam-live.wav");
-    let wav_path = wav_path.as_str();
     {
         let n     = left_buf.len() as u32;
         let sr    = SR as u32;
         let dl    = n * 4;
-        let mut f = std::fs::File::create(wav_path)?;
+        let mut f = std::fs::File::create(&wav_path)?;
         f.write_all(b"RIFF")?; f.write_all(&(36 + dl).to_le_bytes())?;
         f.write_all(b"WAVE")?;
         f.write_all(b"fmt ")?;
@@ -319,6 +358,7 @@ pub fn record_cycle(
         f.flush()?;
         f.sync_all()?;
     }
+    let wav_path = wav_path.as_str();
 
     // ── ASS subtitle file ─────────────────────────────────────────────────
     let ass_path_s = temp_path("maqam-live.ass");
@@ -334,9 +374,9 @@ pub fn record_cycle(
         writeln!(f, "[V4+ Styles]")?;
         writeln!(f, "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,Strikeout,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding")?;
         writeln!(f, "Style: Line,Courier New,20,&H0000FF00,&H0000FF00,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,7,20,20,10,1")?;
-        // URL: MarginV=38 → baseline at y≈682, clear of ruler labels (bottom y≈651)
+        // URL: MarginV=38 → baseline y≈682, text top y≈657, well below ruler labels
         writeln!(f, "Style: URL,Courier New,18,&H0000FF00,&H0000FF00,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,1,20,20,38,1")?;
-        // Cent labels: small teal, positioned with \pos (plain text, no drawing)
+        // Ratio labels: small teal, \pos positioned — plain text, no drawing
         writeln!(f, "Style: RulerLabel,Courier New,11,&H0044BB44,&H0044BB44,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,1,0,0,0,1")?;
         writeln!(f, "[Events]")?;
         writeln!(f, "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text")?;
@@ -370,46 +410,82 @@ pub fn record_cycle(
             writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,0,,{hdr}")?;
             writeln!(f, "Dialogue: 0,{t0},{t1},URL,,0,0,0,,https://github.com/rfielding/maqam")?;
 
-            // Cent labels below each tick — plain \pos text, reliable on all renderers
+            // JI ratio labels below each pitch tick
             let bar     = &phrases[phrase_idx].bar;
             let root_hz = bar.root_hz;
             for &hz in &bar.frequencies {
                 let c = cents_from_root(hz, root_hz);
                 if c < 0.0 || c > 1200.5 { continue; }
-                let x = ((RULER_X0 as f64 + c.clamp(0.0, 1200.0)) as i32).max(0);
+                let x   = ((RULER_X0 as f64 + c.clamp(0.0, 1200.0)) as i32).max(0);
+                let lbl = ratio_label(hz, root_hz);
+                // \an1 = bottom-left anchor so text reads rightward from tick position
                 writeln!(f,
                     "Dialogue: 1,{t0},{t1},RulerLabel,,0,0,0,,\
-                     {{\\pos({x},{LABEL_Y})\\an1}}{:.0}\u{00a2}",
-                    c
+                     {{\\pos({x},{LABEL_Y})\\an1}}{lbl}"
                 )?;
             }
 
             // Phrase list
+            // Active phrase: one Dialogue per subdivision so the beat cursor
+            // character (white+bold) advances in real time.
+            // Inactive phrases: single Dialogue for the whole phrase window.
             let line_h: usize = 26;
             let mut margin_v: usize = 30;
             for (pi, p) in phrases.iter().enumerate() {
                 let active = p.jump.is_none() && pi == phrase_idx;
-                let m   = if active { '>' } else { '-' };
-                let id  = format!("{:>3}", p.id);
-                let body = if let Some(js) = &p.jump {
+                let id     = format!("{:>3}", p.id);
+
+                if let Some(js) = &p.jump {
+                    // Jump entry — always static
                     let snap = one_cycle_snaps.get(snap_idx % one_cycle_snaps.len().max(1));
                     let (pass, total) = snap.and_then(|s| s.get(&p.id)).copied()
                         .unwrap_or((0, js.times));
-                    format!("j {} [{}/{}]", js.target_id, pass, total)
+                    let text = format!("- {id}: j {} [{}/{}]", js.target_id, pass, total);
+                    writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,{margin_v},,{text}")?;
+
+                } else if active {
+                    // Active musical phrase: per-subdivision beat cursor
+                    let rhythm_plain = p.bar.rhythm_display();
+                    let maqam_str    = p.bar.maqam_names.join("+");
+                    let ctr          = format!("[{}/{}]", play_num + 1, p.repeat.max(1));
+                    let n            = p.bar.events.len().max(1);
+
+                    for si in 0..n {
+                        let ts0 = fmt_t(start_s + si as f64 * subdiv_secs);
+                        let ts1 = fmt_t(
+                            (start_s + (si + 1) as f64 * subdiv_secs).min(end_s)
+                        );
+                        // Build rhythm string: active char white+bold, rest green
+                        let mut rhy = String::new();
+                        for (ci, ch) in rhythm_plain.chars().enumerate() {
+                            if ci == si {
+                                // &H00FFFFFF& = white (ASS: alpha=00 B=FF G=FF R=FF)
+                                rhy.push_str(&format!(
+                                    "{{\\1c&H00FFFFFF&\\b1}}{ch}{{\\1c&H0000FF00&\\b0}}"
+                                ));
+                            } else {
+                                rhy.push(ch);
+                            }
+                        }
+                        // Preserve {:<10} field width using plain rhythm length
+                        let pad = " ".repeat(
+                            10usize.saturating_sub(rhythm_plain.chars().count())
+                        );
+                        let body = format!("{:<20} {}{} {:<16} {}",
+                            p.src, rhy, pad, maqam_str, ctr);
+                        let text = format!("> {id}: {body}");
+                        writeln!(f, "Dialogue: 0,{ts0},{ts1},Line,,0,0,{margin_v},,{text}")?;
+                    }
+
                 } else {
+                    // Inactive musical phrase — static
                     let rhythm    = p.bar.rhythm_display();
                     let maqam_str = p.bar.maqam_names.join("+");
-                    if active {
-                        let ctr = format!("[{}/{}]", play_num + 1, p.repeat.max(1));
-                        format!("{:<20} {:<10} {:<16} {}",
-                            p.src, rhythm, maqam_str, ctr)
-                    } else {
-                        format!("{:<20} {:<10} {:<16}",
-                            p.src, rhythm, maqam_str)
-                    }
-                };
-                let text = format!("{m} {id}: {body}");
-                writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,{margin_v},,{text}")?;
+                    let body = format!("{:<20} {:<10} {:<16}", p.src, rhythm, maqam_str);
+                    let text = format!("- {id}: {body}");
+                    writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,{margin_v},,{text}")?;
+                }
+
                 margin_v += line_h;
             }
 
@@ -419,16 +495,14 @@ pub fn record_cycle(
     }
 
     // ── Build filter complex ──────────────────────────────────────────────
-    // showwaves: grey (#555555) so the waveform sits in the background.
-    // drawbox ruler filters are layered on top of the waveform.
-    // subtitles (text only — no \p drawing) sit on top of everything.
-    let ruler_boxes  = build_ruler_boxes(&full_seq, &phrases, subdiv_secs, &bar_samples_for);
-    let ruler_chain  = if ruler_boxes.is_empty() {
+    let ruler_boxes = build_ruler_boxes(&full_seq, &phrases, subdiv_secs, &bar_samples_for);
+    let ruler_chain = if ruler_boxes.is_empty() {
         String::new()
     } else {
         format!("{},", ruler_boxes.join(","))
     };
 
+    // Grey waveform sits in background; ruler + subtitles on top.
     let filter_with_subs = format!(
         "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=0x555555[wv];\
          [wv]{ruler_chain}subtitles={ass_path}[v]"
@@ -440,7 +514,7 @@ pub fn record_cycle(
     let filter_bare =
         "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=0x555555[v]".to_string();
 
-    // Write to script file to avoid OS command-line length limits
+    // Write to script file to sidestep OS command-line length limits.
     let fscript_path = temp_path("maqam-filter.txt");
     std::fs::write(&fscript_path, &filter_with_subs)?;
 
@@ -499,7 +573,7 @@ pub fn record_cycle(
                 .unwrap_or(false);
 
             if !ok3 {
-                // Pass 4: plain waveform only
+                // Pass 4: plain waveform
                 Command::new("ffmpeg")
                     .args(["-y", "-i", wav_path,
                            "-filter_complex", &filter_bare,

@@ -240,6 +240,10 @@ impl App {
 
             Cmd::TogglePause => {
                 self.paused = !self.paused;
+                if !self.paused {
+                    // Restart from phrase 0 every time we unpause
+                    let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(0));
+                }
                 let _ = self.audio_tx.send(AudioCmd::SetPaused(self.paused));
                 self.message = Some(if self.paused { "⏸ paused".into() } else { "▶ playing".into() });
             }
