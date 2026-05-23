@@ -186,7 +186,7 @@ impl Maqam {
             // Note: 27/22 = 9/8 × 3/11... but more naturally expressed as
             // two 12/11 stacked: (12/11)^2 = 144/121 ≈ 299¢, close to 32/27=294¢
             // We use 27/22 for the authentic sound.
-            Maqam::Bayati   => [(1,1),(12,11),(27,22),(4,3),(3,2),(18,11),(16,9),(2,1)],
+            Maqam::Bayati   => [(1,1),(12,11),(32,27),(4,3),(3,2),(18,11),(16,9),(2,1)],
 
             // Hijaz: augmented 2nd between degrees 2 and 3
             // D Eb F# G A Bb B D  →  0,90,408,498,702,792,1088,1200¢
@@ -204,7 +204,7 @@ impl Maqam {
 
             // Saba: distinctive diminished 4th (11/8)
             // D E¾ F- (11/8) A Bb C D  →  0,151,267,551,702,792,996,1200¢
-            Maqam::Saba     => [(1,1),(12,11),(7,6),(11,8),(3,2),(128,81),(16,9),(2,1)],
+            Maqam::Saba     => [(1,1),(12,11),(32,27),(11,8),(3,2),(18,11),(16,9),(2,1)],
 
             // Ajam: 5-limit major scale
             // D E F# G A B C# D  →  0,204,386,498,702,884,1088,1200¢
