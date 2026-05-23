@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use crate::sequencer::Phrase;
+use crate::sequencer::{Phrase, SubdivEvent};
 use crate::synth::{evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Milestone, Voice};
 
 const SR: f64 = 44100.0;
@@ -12,14 +12,105 @@ const SR: f64 = 44100.0;
 fn temp_path(name: &str) -> String {
     let mut p = std::env::temp_dir();
     p.push(name);
-    // Use forward slashes everywhere — ffmpeg requires them even on Windows
     p.to_string_lossy().replace('\\', "/")
+}
+
+// ── Pitch ruler helpers ───────────────────────────────────────────────────────
+
+// Ruler geometry (1280×720).  1 px = 1 ¢  across x ∈ [40, 1240].
+//
+//  y=605  ┌──────────────────┐  indicator box top  (12px tall → bottom y=617)
+//  y=606  │  boundary ticks  │  (28px tall → bottom y=634)
+//  y=618  ├──────────────────┤  rail top  (16px tall → bottom y=634)
+//  y=634  └──────────────────┘  rail bottom
+//  y=636     cent labels         (11pt ≈ 15px → bottom y=651)
+//            ← gap 6px →
+//  y=657     URL text top
+//  y=682     URL text baseline   (MarginV=38, alignment=1)
+
+const RAIL_Y:    i32 = 618;
+const RAIL_H:    i32 = 16;   // bottom = 634
+const BOUND_Y:   i32 = 606;  // boundary tick top; bottom = 634 (h=28)
+const NORM_Y:    i32 = 618;  // normal tick top = rail top
+const TICK_W:    i32 = 2;
+const IND_Y:     i32 = 605;  // active indicator top; bottom = 617 (h=12)
+const IND_W:     i32 = 12;
+const IND_H:     i32 = 12;
+const LABEL_Y:   i32 = 636;  // cent label baseline
+const RULER_X0:  i32 = 40;   // 0 ¢  left edge
+// RULER_X1 = 1240 (1200 ¢ right edge — implicit: X0 + 1200)
+
+fn cents_from_root(hz: f64, root_hz: f64) -> f64 {
+    if root_hz <= 0.0 || hz <= 0.0 { return 0.0; }
+    let raw = 1200.0 * (hz / root_hz).log2();
+    ((raw % 1200.0) + 1200.0) % 1200.0
+}
+
+/// Build ffmpeg drawbox filter elements for the pitch ruler.
+/// Returns a Vec of individual drawbox filter strings.
+fn build_ruler_boxes(
+    full_seq:        &[(usize, usize, usize)],
+    phrases:         &[Phrase],
+    subdiv_secs:     f64,
+    bar_samples_for: &dyn Fn(usize) -> usize,
+) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut sample: usize = 0;
+
+    for &(phrase_idx, _play, _snap) in full_seq {
+        let bs = bar_samples_for(phrase_idx);
+        let t0 = sample as f64 / SR;
+        let t1 = (sample + bs) as f64 / SR - 0.001;
+        let en = format!("'between(t,{t0:.6},{t1:.6})'");
+
+        let bar     = &phrases[phrase_idx].bar;
+        let root_hz = bar.root_hz;
+
+        // ── Rail ───────────────────────────────────────────────────────────
+        parts.push(format!(
+            "drawbox=x={RULER_X0}:y={RAIL_Y}:w=1200:h={RAIL_H}\
+             :color=0x003300@0.5:t=fill:enable={en}"
+        ));
+
+        // ── Tick marks ─────────────────────────────────────────────────────
+        for &hz in &bar.frequencies {
+            let c = cents_from_root(hz, root_hz);
+            if c < 0.0 || c > 1200.5 { continue; }
+            let x  = (RULER_X0 as f64 + c.clamp(0.0, 1200.0)).round() as i32;
+            let ty = if c < 1.0 || c > 1199.0 { BOUND_Y } else { NORM_Y };
+            let h  = RAIL_Y + RAIL_H - ty;   // always reaches rail bottom
+            parts.push(format!(
+                "drawbox=x={x}:y={ty}:w={TICK_W}:h={h}\
+                 :color=0x44BB44:t=fill:enable={en}"
+            ));
+        }
+
+        // ── Active-note indicator (yellow box, per subdivision) ─────────────
+        for (si, ev) in bar.events.iter().enumerate() {
+            let st = t0 + si as f64 * subdiv_secs;
+            let et = (t0 + (si + 1) as f64 * subdiv_secs).min(t1) - 0.0001;
+            if st >= et { continue; }
+            let sub_en = format!("'between(t,{st:.6},{et:.6})'");
+            let hz = match ev {
+                SubdivEvent::Kick(hz) | SubdivEvent::Snare(hz) => *hz,
+            };
+            let c = cents_from_root(hz, root_hz);
+            if c < 0.0 || c > 1200.0 { continue; }
+            let x = (RULER_X0 as f64 + c).round() as i32 - IND_W / 2;
+            parts.push(format!(
+                "drawbox=x={x}:y={IND_Y}:w={IND_W}:h={IND_H}\
+                 :color=0xFFFF00:t=fill:enable={sub_en}"
+            ));
+        }
+
+        sample += bs;
+    }
+
+    parts
 }
 
 // ── Sequence expansion ────────────────────────────────────────────────────────
 
-/// Returns (phrase_idx_list, jump_counter_snapshots).
-/// jump_counter_snapshots[i] maps jump phrase_id → (pass 1-based, total).
 fn expand_one_cycle(phrases: &[Phrase])
     -> (Vec<usize>, Vec<HashMap<usize, (usize, usize)>>)
 {
@@ -51,7 +142,6 @@ fn expand_one_cycle(phrases: &[Phrase])
             }
             continue;
         }
-        // Snapshot current jump counters: id → (pass, total)
         let snap: HashMap<usize, (usize, usize)> = phrases.iter()
             .filter_map(|p| p.jump.as_ref().map(|js| {
                 let remaining = jc.get(&p.id).copied().unwrap_or(js.times.saturating_sub(1));
@@ -88,7 +178,7 @@ pub fn record_cycle(
     };
 
     let (one_cycle_seq, one_cycle_snaps) = expand_one_cycle(&phrases);
-    let _ = &one_cycle_snaps; // used in subtitle loop
+    let _ = &one_cycle_snaps;
     if one_cycle_seq.is_empty() {
         return Err(anyhow::anyhow!("no musical phrases to render"));
     }
@@ -96,7 +186,6 @@ pub fn record_cycle(
     let cycles       = cycle_repeat.max(1);
     let tail_samples = (SR * (sustain + 1.0)) as usize;
 
-    // Build flat play sequence: (phrase_idx, play_num, snap_idx)
     let mut full_seq: Vec<(usize, usize, usize)> = Vec::new();
     for _ in 0..cycles {
         for (si, &idx) in one_cycle_seq.iter().enumerate() {
@@ -171,12 +260,11 @@ pub fn record_cycle(
             voices.retain(|v| !v.done);
         }
 
-        // tick progress
         let done = left_buf.len().min(render_samples);
         crate::REC_SAMPLES_DONE.store(done, std::sync::atomic::Ordering::Relaxed);
 
         evolve_bar(&mut phrases_v[phrase_idx].bar, true);
-        let _ = seq_pos; // suppress warning
+        let _ = seq_pos;
     }
 
     // Final "1"
@@ -199,7 +287,6 @@ pub fn record_cycle(
     }
 
     // ── Normalize + write 16-bit PCM WAV ─────────────────────────────────
-    // Normalize to 90% of full scale so the waveform is clearly visible.
     let peak = left_buf.iter().chain(right_buf.iter())
         .map(|s| s.abs()).fold(0f32, f32::max);
     let gain = if peak > 0.001 { 0.9 / peak } else { 1.0 };
@@ -209,21 +296,18 @@ pub fn record_cycle(
     {
         let n     = left_buf.len() as u32;
         let sr    = SR as u32;
-        let dl    = n * 4; // 2 channels × 2 bytes per sample
+        let dl    = n * 4;
         let mut f = std::fs::File::create(wav_path)?;
-        // RIFF header
         f.write_all(b"RIFF")?; f.write_all(&(36 + dl).to_le_bytes())?;
         f.write_all(b"WAVE")?;
-        // fmt chunk — PCM s16
         f.write_all(b"fmt ")?;
-        f.write_all(&16u32.to_le_bytes())?; // chunk size
-        f.write_all(&1u16.to_le_bytes())?;  // PCM
-        f.write_all(&2u16.to_le_bytes())?;  // stereo
+        f.write_all(&16u32.to_le_bytes())?;
+        f.write_all(&1u16.to_le_bytes())?;
+        f.write_all(&2u16.to_le_bytes())?;
         f.write_all(&sr.to_le_bytes())?;
-        f.write_all(&(sr * 4).to_le_bytes())?; // byte rate
-        f.write_all(&4u16.to_le_bytes())?;  // block align
-        f.write_all(&16u16.to_le_bytes())?; // bits
-        // data chunk
+        f.write_all(&(sr * 4).to_le_bytes())?;
+        f.write_all(&4u16.to_le_bytes())?;
+        f.write_all(&16u16.to_le_bytes())?;
         f.write_all(b"data")?;
         f.write_all(&dl.to_le_bytes())?;
         for i in 0..left_buf.len() {
@@ -237,9 +321,8 @@ pub fn record_cycle(
     }
 
     // ── ASS subtitle file ─────────────────────────────────────────────────
-    #[allow(unused_variables)]
     let ass_path_s = temp_path("maqam-live.ass");
-    let ass_path = ass_path_s.as_str();
+    let ass_path   = ass_path_s.as_str();
     {
         let total_secs = left_buf.len() as f64 / SR;
         let mut f      = std::fs::File::create(ass_path)?;
@@ -250,10 +333,11 @@ pub fn record_cycle(
         writeln!(f, "WrapStyle: 0")?;
         writeln!(f, "[V4+ Styles]")?;
         writeln!(f, "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,Strikeout,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding")?;
-        // Line: top-left (alignment 7), green, monospace
         writeln!(f, "Style: Line,Courier New,20,&H0000FF00,&H0000FF00,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,7,20,20,10,1")?;
-        // URL: bottom-left (alignment 1), green, smaller
-        writeln!(f, "Style: URL,Courier New,18,&H0000FF00,&H0000FF00,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,1,20,20,100,1")?;
+        // URL: MarginV=38 → baseline at y≈682, clear of ruler labels (bottom y≈651)
+        writeln!(f, "Style: URL,Courier New,18,&H0000FF00,&H0000FF00,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,1,20,20,38,1")?;
+        // Cent labels: small teal, positioned with \pos (plain text, no drawing)
+        writeln!(f, "Style: RulerLabel,Courier New,11,&H0044BB44,&H0044BB44,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,1,0,0,0,1")?;
         writeln!(f, "[Events]")?;
         writeln!(f, "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text")?;
 
@@ -281,22 +365,32 @@ pub fn record_cycle(
                 format!("  cycle {}/{}", cycle_num + 1, cycles)
             } else { String::new() };
 
-            // Header line
             let hdr = format!("   bpm:{:<4} sus:{:.1}s{}",
                 (60.0 / (subdiv_secs * 2.0)) as u32, sustain, cycle_disp);
             writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,0,,{hdr}")?;
-
-            // Repo URL — bottom left, permanent per segment
             writeln!(f, "Dialogue: 0,{t0},{t1},URL,,0,0,0,,https://github.com/rfielding/maqam")?;
 
-            // One Dialogue per phrase, stacked by MarginV
+            // Cent labels below each tick — plain \pos text, reliable on all renderers
+            let bar     = &phrases[phrase_idx].bar;
+            let root_hz = bar.root_hz;
+            for &hz in &bar.frequencies {
+                let c = cents_from_root(hz, root_hz);
+                if c < 0.0 || c > 1200.5 { continue; }
+                let x = ((RULER_X0 as f64 + c.clamp(0.0, 1200.0)) as i32).max(0);
+                writeln!(f,
+                    "Dialogue: 1,{t0},{t1},RulerLabel,,0,0,0,,\
+                     {{\\pos({x},{LABEL_Y})\\an1}}{:.0}\u{00a2}",
+                    c
+                )?;
+            }
+
+            // Phrase list
             let line_h: usize = 26;
             let mut margin_v: usize = 30;
             for (pi, p) in phrases.iter().enumerate() {
                 let active = p.jump.is_none() && pi == phrase_idx;
                 let m   = if active { '>' } else { '-' };
                 let id  = format!("{:>3}", p.id);
-
                 let body = if let Some(js) = &p.jump {
                     let snap = one_cycle_snaps.get(snap_idx % one_cycle_snaps.len().max(1));
                     let (pass, total) = snap.and_then(|s| s.get(&p.id)).copied()
@@ -324,27 +418,45 @@ pub fn record_cycle(
         f.flush()?;
     }
 
-    // ── ffmpeg ────────────────────────────────────────────────────────────
-    let ts  = std::time::SystemTime::now()
+    // ── Build filter complex ──────────────────────────────────────────────
+    // showwaves: grey (#555555) so the waveform sits in the background.
+    // drawbox ruler filters are layered on top of the waveform.
+    // subtitles (text only — no \p drawing) sit on top of everything.
+    let ruler_boxes  = build_ruler_boxes(&full_seq, &phrases, subdiv_secs, &bar_samples_for);
+    let ruler_chain  = if ruler_boxes.is_empty() {
+        String::new()
+    } else {
+        format!("{},", ruler_boxes.join(","))
+    };
+
+    let filter_with_subs = format!(
+        "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=0x555555[wv];\
+         [wv]{ruler_chain}subtitles={ass_path}[v]"
+    );
+    let filter_plain = format!(
+        "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=0x555555[wv];\
+         [wv]{ruler_chain}null[v]"
+    );
+    let filter_bare =
+        "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=0x555555[v]".to_string();
+
+    // Write to script file to avoid OS command-line length limits
+    let fscript_path = temp_path("maqam-filter.txt");
+    std::fs::write(&fscript_path, &filter_with_subs)?;
+
+    let ts   = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".into());
-    let out = format!("{home}/maqam-{ts}.mp4");
-
-    // Run ffmpeg directly — no shell script needed, works on Windows/macOS/Linux.
-    let filter_subs = format!(
-        "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=white[wv];[wv]subtitles={}[v]",
-        ass_path
-    );
-    let filter_plain =
-        "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=white[v]".to_string();
+    let out  = format!("{home}/maqam-{ts}.mp4");
 
     let log_path = temp_path("maqam-ffmpeg.log");
 
-    let ok = Command::new("ffmpeg")
+    // Pass 1: script file (ruler + subtitles)
+    let ok1 = Command::new("ffmpeg")
         .args(["-y", "-i", wav_path,
-               "-filter_complex", &filter_subs,
+               "-filter_complex_script", &fscript_path,
                "-map", "[v]", "-map", "0:a",
                "-c:v", "libx264", "-crf", "18",
                "-c:a", "aac", "-b:a", "256k",
@@ -356,17 +468,50 @@ pub fn record_cycle(
         .map(|s| s.success())
         .unwrap_or(false);
 
-    if !ok {
-        Command::new("ffmpeg")
+    if !ok1 {
+        // Pass 2: inline (ruler + subtitles)
+        let ok2 = Command::new("ffmpeg")
             .args(["-y", "-i", wav_path,
-                   "-filter_complex", &filter_plain,
+                   "-filter_complex", &filter_with_subs,
                    "-map", "[v]", "-map", "0:a",
                    "-c:v", "libx264", "-crf", "18",
                    "-c:a", "aac", "-b:a", "256k",
                    "-r", "30", &out])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()?;
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if !ok2 {
+            // Pass 3: ruler, no subtitles
+            let ok3 = Command::new("ffmpeg")
+                .args(["-y", "-i", wav_path,
+                       "-filter_complex", &filter_plain,
+                       "-map", "[v]", "-map", "0:a",
+                       "-c:v", "libx264", "-crf", "18",
+                       "-c:a", "aac", "-b:a", "256k",
+                       "-r", "30", &out])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+
+            if !ok3 {
+                // Pass 4: plain waveform only
+                Command::new("ffmpeg")
+                    .args(["-y", "-i", wav_path,
+                           "-filter_complex", &filter_bare,
+                           "-map", "[v]", "-map", "0:a",
+                           "-c:v", "libx264", "-crf", "18",
+                           "-c:a", "aac", "-b:a", "256k",
+                           "-r", "30", &out])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()?;
+            }
+        }
     }
 
     crate::REC_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
