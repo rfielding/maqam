@@ -164,7 +164,7 @@ pub fn build_phrase(
     for (i, spec) in specs.iter().enumerate() {
         let root      = roots_hz[i];
         let is_last   = i + 1 == n_specs;
-        let n_degrees = if n_specs == 1 { 8 } else if is_last { 8 } else { 4 };
+        let n_degrees = if n_specs == 1 { 8 } else { 4 };
 
         let next_root = if i + 1 < n_specs { Some(roots_hz[i + 1]) } else { None };
 
