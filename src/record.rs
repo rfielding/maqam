@@ -282,9 +282,17 @@ pub fn record_cycle(
                     last_subdiv = Some(curr);
                     let is_last_play   = play_num + 1 >= repeats;
                     let is_last_subdiv = curr + 1 >= total_subdivs;
-                    let milestone = if is_first && curr == 0 { Milestone::PhraseStart }
-                                   else if is_last_play && is_last_subdiv { Milestone::Turnaround }
-                                   else { Milestone::None };
+                    // Look ahead in full_seq: is next entry a different phrase?
+                    let next_is_different = full_seq.get(seq_pos + 1)
+                        .map_or(false, |&(next_idx, _, _)| next_idx != phrase_idx);
+                    let milestone = if is_first && curr == 0 {
+                        Milestone::PhraseStart
+                    } else if is_last_play && is_last_subdiv {
+                        if next_is_different { Milestone::CrossPhraseWarning }
+                        else                 { Milestone::Turnaround }
+                    } else {
+                        Milestone::None
+                    };
                     phrases_v[phrase_idx].bar.events.get(curr).copied().map(|e| (e, milestone))
                 } else { None };
                 bar_pos += 1;

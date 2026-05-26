@@ -263,6 +263,24 @@ fn tick_sequencer(
     }
 
     if *cur_phrase >= phrases.len() { *cur_phrase = 0; }
+
+    // Look ahead: find the next musical phrase after this one completes,
+    // skipping over any jump entries. Used to set CrossPhraseWarning milestone.
+    let next_is_different = {
+        let curr_id = phrases[*cur_phrase].phrase.id;
+        let n       = phrases.len();
+        let mut pos = (*cur_phrase + 1) % n;
+        let mut result = false;
+        for _ in 0..n {
+            if phrases[pos].phrase.jump.is_none() {
+                result = phrases[pos].phrase.id != curr_id;
+                break;
+            }
+            pos = (pos + 1) % n;
+        }
+        result
+    };
+
     let pp  = &mut phrases[*cur_phrase];
     let bar = &pp.phrase.bar;
     let bs  = &mut pp.bar_states[0];
@@ -281,7 +299,11 @@ fn tick_sequencer(
         if pp.plays_done == 0 && curr == 0 {
             milestone = Milestone::PhraseStart;
         } else if is_last_play && is_last_subdiv {
-            milestone = Milestone::Turnaround;
+            milestone = if next_is_different {
+                Milestone::CrossPhraseWarning   // half-vol kick: change is coming
+            } else {
+                Milestone::Turnaround           // rimshot: just looping
+            };
         }
         crate::CUR_SUBDIV.store(curr, std::sync::atomic::Ordering::Relaxed);
         crate::CUR_PLAYS.store(pp.plays_done, std::sync::atomic::Ordering::Relaxed);
