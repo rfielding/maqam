@@ -20,8 +20,6 @@ const BG:       Color = Color::Rgb(0, 0, 0);
 const BORDER:   Color = Color::Rgb(0, 255, 0);
 const ACCENT:   Color = Color::Rgb(0, 255, 0);
 const DIM:      Color = Color::Rgb(0, 180, 0);
-const KICK:     Color = Color::Rgb(0, 255, 0);
-const SNARE:    Color = Color::Rgb(0, 200, 0);
 const CMD:      Color = Color::Rgb(0, 255, 0);
 const ERR:      Color = Color::Rgb(255, 80, 80);
 const MAQAM:    Color = Color::Rgb(0, 200, 0);
@@ -172,12 +170,20 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
         for (si, ch) in rhythm.chars().enumerate() {
             let is_now = playing && si == cur_sub;
-            let col = if is_now { Color::Rgb(255,255,255) }
-                      else if playing { match ch { 'X' => KICK, _ => SNARE } }
-                      else { match ch { 'X' => Color::Rgb(140,100,50), _ => Color::Rgb(60,80,110) } };
             let sty = if is_now {
-                Style::default().fg(col).bg(BG).add_modifier(Modifier::BOLD | Modifier::REVERSED)
-            } else { Style::default().fg(col).bg(BG) };
+                // Active beat: black text on bright white — unmistakable
+                Style::default()
+                    .fg(Color::Rgb(0, 0, 0))
+                    .bg(Color::Rgb(255, 255, 255))
+                    .add_modifier(Modifier::BOLD)
+            } else if playing {
+                // Playing phrase, other beats: dim green so active stands out
+                let col = match ch { 'X' => Color::Rgb(0, 160, 0), _ => Color::Rgb(0, 100, 0) };
+                Style::default().fg(col).bg(BG)
+            } else {
+                // Inactive phrase: gray
+                Style::default().fg(Color::Rgb(80, 80, 80)).bg(BG)
+            };
             spans.push(Span::styled(ch.to_string(), sty));
         }
 
@@ -325,7 +331,7 @@ fn draw_help(f: &mut Frame, area: ratatui::layout::Rect) {
         Line::from(vec![Span::styled("  bpm <n>   ", green), Span::styled("tempo (20–400)    ", dim),
                         Span::styled("  s <n>     ", green), Span::styled("sustain seconds", dim)]),
         Line::from(vec![Span::styled("  vol <n>   ", green), Span::styled("volume (0–2)      ", dim),
-                        Span::styled("  z         ", green), Span::styled("toggle pause", dim)]),
+                        Span::styled("  z [id]    ", green), Span::styled("pause / play from id", dim)]),
         Line::from(vec![Span::raw("")]),
 
         Line::from(vec![Span::styled("  RECORDING", bright)]),

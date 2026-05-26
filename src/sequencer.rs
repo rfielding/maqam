@@ -89,7 +89,7 @@ pub fn build_jump_entry(id: usize, target_id: usize, times: usize) -> Phrase {
     };
     Phrase {
         id,
-        src: format!("j {target_id} {times}"),    // shows as typed
+        src: format!("j {target_id} {times}"),
         bar,
         repeat: 1,
         jump: Some(JumpSpec { target_id, times }),
@@ -106,16 +106,6 @@ pub struct BarSpec {
     pub groups: Vec<u8>,
 }
 
-// snap_to_oud_lattice moved to tuning.rs
-
-
-
-
-
-
-/// D4 as the universal JI reference pitch.
-/// All notes are expressed as D × (5-limit ratio).
-
 pub fn build_phrase(
     phrase_id:   usize,
     src:         String,
@@ -126,45 +116,35 @@ pub fn build_phrase(
     assert!(!specs.is_empty());
 
     // ── Tetrachord stacking ───────────────────────────────────────────────
-    // Each jins contributes notes only within its pitch range:
-    //   jins i (0..n-2): notes in [root_i, root_{i+1})
-    //   jins n-1 (last): notes in [root_{n-1}, root_0 * 2]  (the octave)
     //
-    // This is the traditional maqam model — jins stack by range, not by
-    // merging full octave scales. Prevents chromatic clashes like Eb/E♮.
-    //   d kurd [D,A) + a kurd [A,D'] = D Phrygian ✓
-    //   d nah  [D,A) + a kurd [A,D'] = D natural minor ✓
+    // Each jins contributes exactly its lower tetrachord (4 degrees: root +
+    // 3 intervals), EXCEPT the last jins in a multi-spec phrase which
+    // contributes all 8 degrees so its upper portion fills out to the octave.
+    //
+    // Single-spec ("d bayati 332"): only 4 degrees — melody stays inside the
+    // jins.  To get a full maqam scale, name both ajnas explicitly:
+    //   "d bayati, a nahawand 332"
+    //
+    // Dedup at 50 cents: if two ajnas contribute notes within a quarter-tone
+    // of each other, the earlier-jins note wins.
 
-    // ── Build combined scale from tetrachord stacking ───────────────────────
-    //
-    // Rule: when combining N jins with commas, each jins is a TETRACHORD —
-    // it contributes exactly its first 4 scale degrees (root + 3 intervals).
-    // The last jins contributes all notes up to the octave of the first root.
-    //
-    // This mirrors Arabic maqam practice: each jins name describes a specific
-    // 4-note colour; you stack colours to build a full scale.
-    //
-    // Single jins (no comma): all 8 degrees as usual.
-    //
-    // Dedup at 50 cents: if two jins contribute notes within a quarter-tone of
-    // each other, the earlier-jins note wins. This prevents micro-intervals
-    // (e.g. D×11/8=403 and G=391 are 54¢ apart — if both land in range, keep
-    // the one from the earlier jins).
-
-    let n_specs = specs.len();
+    let n_specs   = specs.len();
     let roots_hz: Vec<f64> = specs.iter()
         .map(|s| snap_to_oud_lattice(s.root.to_hz()))
         .collect();
-    let upper_bound = roots_hz[0] * 2.0;
-
+    let upper_bound  = roots_hz[0] * 2.0;
     let dedup_thresh = if n_specs > 1 { 50.0_f64 / 1200.0 } else { 23.0_f64 / 1200.0 };
 
     let mut deduped: Vec<f64> = Vec::new();
 
     for (i, spec) in specs.iter().enumerate() {
-        let root      = roots_hz[i];
-        let is_last   = i + 1 == n_specs;
-        let n_degrees = if n_specs == 1 { 8 } else { 4 };
+        let root    = roots_hz[i];
+        let is_last = i + 1 == n_specs;
+
+        // Single spec → 4 degrees (jins only).
+        // Multi spec, not last → 4 degrees (lower tetrachord).
+        // Multi spec, last → 8 degrees (fills upper portion to octave).
+        let n_degrees = if n_specs > 1 && is_last { 8 } else { 4 };
 
         let next_root = if i + 1 < n_specs { Some(roots_hz[i + 1]) } else { None };
 
@@ -173,8 +153,6 @@ pub fn build_phrase(
             .map(|&(p, q)| root * p as f64 / q as f64)
             .filter(|&f| {
                 if f > upper_bound * 1.001 { return false; }
-                // Drop notes within 70 cents of the next jins's root —
-                // they would create micro-interval clashes at the jins boundary.
                 if let Some(nr) = next_root {
                     if (f / nr).log2().abs() < 70.0 / 1200.0 { return false; }
                 }
@@ -190,18 +168,16 @@ pub fn build_phrase(
     }
 
     deduped.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    // ── Use the groups from the last spec that has explicit rhythm ────────
-    let groups = specs.last().map(|s| s.groups.clone()).unwrap_or_else(|| vec![4]);
-    let n_groups = groups.len();
 
-    // Peak index into combined scale — target dominant-ish position
-    let n_freqs = deduped.len();
-    let peak    = (peak_degree * n_freqs / 8).clamp(2, n_freqs.saturating_sub(1));
+    let groups    = specs.last().map(|s| s.groups.clone()).unwrap_or_else(|| vec![4]);
+    let n_groups  = groups.len();
+    let n_freqs   = deduped.len();
+    let peak      = (peak_degree * n_freqs / 8).clamp(2, n_freqs.saturating_sub(1));
     let group_degrees = zigzag_walk(n_groups, peak);
 
-    let degrees      = expand_degrees(&group_degrees, &groups);
+    let degrees       = expand_degrees(&group_degrees, &groups);
     let total_subdivs = degrees.len();
-    let events       = events_from_freqs(&degrees, &deduped, &groups);
+    let events        = events_from_freqs(&degrees, &deduped, &groups);
 
     let maqam_names: Vec<String> = specs.iter()
         .map(|s| s.maqam.name().to_string())
@@ -238,9 +214,6 @@ pub fn events_from_freqs(
     for &g in groups {
         for i in 0..g as usize {
             let hz = frequencies[degrees[pos].min(n - 1)];
-            // A group of length 1 is a pickup or accent — use snare, not kick.
-            // A lone eighth note in e.g. 84421 would sound like a click as a kick;
-            // a snare pop is much more musical.
             let ev = if g == 1 {
                 SubdivEvent::Snare(hz)
             } else if i == 0 {
@@ -255,7 +228,7 @@ pub fn events_from_freqs(
     events
 }
 
-// ── Helpers (kept for evolve_bar reset path) ──────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 #[allow(dead_code)]
 pub fn melody_walk(n: usize, peak: usize) -> Vec<usize> {
@@ -283,9 +256,9 @@ pub fn melody_walk(n: usize, peak: usize) -> Vec<usize> {
 pub enum AudioCmd {
     AddPhrase(Phrase),
     RemovePhrase(usize),
-    InsertPhrase { pos: usize, phrase: Phrase },  // insert at pos, adjust cur_phrase
-    ReplacePhrase(Phrase),                            // replace bar/src by id, keep playing state
-    Rotate,                                        // move last to front, adjust cur_phrase
+    InsertPhrase { pos: usize, phrase: Phrase },
+    ReplacePhrase(Phrase),
+    Rotate,
     SetBpm(f64),
     SetSustain(f64),
     Clear,

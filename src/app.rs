@@ -15,11 +15,11 @@ pub struct App {
     pub vol:         f32,
     pub paused:      bool,
     pub should_quit:    bool,
-    pub last_recording: Option<String>,  // persists across commands
+    pub last_recording: Option<String>,
     pub history:     Vec<String>,
     pub history_pos: Option<usize>,
     pub saved_input: String,
-    pub cursor_pos:  usize,   // char index into input
+    pub cursor_pos:  usize,
     pub rec_rx:      Option<crossbeam_channel::Receiver<Result<String, String>>>,
     next_phrase_id:  usize,
     last_rhythm:     Vec<u8>,
@@ -109,7 +109,6 @@ impl App {
     }
 
     pub fn insert_char(&mut self, ch: char) {
-        // Convert char-index to byte-index
         let byte_pos: usize = self.input.char_indices()
             .nth(self.cursor_pos)
             .map(|(b, _)| b)
@@ -140,8 +139,6 @@ impl App {
 
     // ── Render thread poll ────────────────────────────────────────────────
 
-    /// Call once per UI frame. Checks if the background render thread has
-    /// finished and updates app state accordingly.
     pub fn tick(&mut self) {
         if let Some(rx) = &self.rec_rx {
             if let Ok(result) = rx.try_recv() {
@@ -162,7 +159,6 @@ impl App {
     // ── Commands ──────────────────────────────────────────────────────────
 
     pub fn handle_command(&mut self, raw: &str) {
-        // Semicolons act as line separators — execute each part in order.
         for part in raw.split(';') {
             let part = part.trim();
             if part.is_empty() { continue; }
@@ -178,14 +174,12 @@ impl App {
             Cmd::Quit  => self.should_quit = true,
             Cmd::Help => { self.show_help = true; }
             Cmd::Jump { to, times } => {
-                // Verify target id exists
                 if !self.phrases.iter().any(|p| p.id == to) {
                     self.message = Some(format!("✗ no phrase id {to}"));
                     return;
                 }
                 let id = self.next_phrase_id;
                 self.next_phrase_id += 1;
-                // Store target_id directly — audio thread resolves position at runtime
                 let entry = crate::sequencer::build_jump_entry(id, to, times);
                 let _ = self.audio_tx.send(AudioCmd::AddPhrase(entry.clone()));
                 self.phrases.push(entry);
@@ -202,47 +196,48 @@ impl App {
                     Err(e) => { self.message = Some(format!("✗ {e}")); return; }
                 };
                 if let Some(r) = resolved.last() { self.last_rhythm = r.groups.clone(); }
-
                 let peak = 4usize;
                 let src = resolved.iter().map(|s| s.src.as_str()).collect::<Vec<_>>().join(", ");
                 let id  = self.next_phrase_id;
                 self.next_phrase_id += 1;
                 let phrase = build_phrase(id, src, resolved, peak, repeat.max(1));
-
-                // `before` is a stable phrase.id — find its list position
                 let pos = self.phrases.iter().position(|p| p.id == before)
                     .unwrap_or(self.phrases.len());
                 self.phrases.insert(pos, phrase.clone());
-
-                // Insert without disrupting playback
                 let _ = self.audio_tx.send(AudioCmd::InsertPhrase { pos, phrase });
                 self.message = Some(format!("inserted at {pos}"));
             }
 
             Cmd::InsertJump { before, to, times } => {
-                // Verify target exists
                 if !self.phrases.iter().any(|p| p.id == to) {
                     self.message = Some(format!("✗ no phrase id {to}")); return;
                 }
                 let insert_pos = self.phrases.iter().position(|p| p.id == before)
                     .unwrap_or(self.phrases.len());
-
                 let id    = self.next_phrase_id;
                 self.next_phrase_id += 1;
-                // Store target phrase id — audio thread resolves position
                 let entry = crate::sequencer::build_jump_entry(id, to, times);
-
                 self.phrases.insert(insert_pos, entry.clone());
-                // Insert without disrupting playback
                 let _ = self.audio_tx.send(AudioCmd::InsertPhrase { pos: insert_pos, phrase: entry });
                 self.message = None;
             }
 
-            Cmd::TogglePause => {
+            Cmd::TogglePause { start_id } => {
+                // Validate start_id before unpausing (irrelevant when pausing)
+                if self.paused {
+                    if let Some(id) = start_id {
+                        if !self.phrases.iter().any(|p| p.id == id) {
+                            self.message = Some(format!("✗ no phrase id {id}"));
+                            return;
+                        }
+                    }
+                }
                 self.paused = !self.paused;
                 if !self.paused {
-                    // Restart from phrase 0 every time we unpause
-                    let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(0));
+                    let pos = start_id
+                        .and_then(|id| self.phrases.iter().position(|p| p.id == id))
+                        .unwrap_or(0);
+                    let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(pos));
                 }
                 let _ = self.audio_tx.send(AudioCmd::SetPaused(self.paused));
                 self.message = Some(if self.paused { "⏸ paused".into() } else { "▶ playing".into() });
@@ -300,14 +295,12 @@ impl App {
             }
 
             Cmd::Edit { id, specs, repeat } => {
-                // Block editing the currently playing phrase
                 let cur_pos    = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
                 let playing_id = self.phrases.get(cur_pos).map(|p| p.id);
                 if playing_id == Some(id) {
                     self.message = Some(format!("✗ phrase {id} is playing — cannot edit"));
                     return;
                 }
-                // Find the phrase
                 let pos = match self.phrases.iter().position(|p| p.id == id) {
                     Some(p) => p,
                     None    => { self.message = Some(format!("✗ no phrase id {id}")); return; }
@@ -323,14 +316,13 @@ impl App {
                 if let Some(r) = resolved.last() { self.last_rhythm = r.groups.clone(); }
                 let src = resolved.iter().map(|s| s.src.as_str()).collect::<Vec<_>>().join(", ");
                 let mut phrase = build_phrase(id, src, resolved, 4, repeat.max(1));
-                phrase.id = id; // preserve original id
+                phrase.id = id;
                 self.phrases[pos] = phrase.clone();
                 let _ = self.audio_tx.send(AudioCmd::ReplacePhrase(phrase));
                 self.message = Some(format!("edited {id}"));
             }
 
             Cmd::DeleteBars(ids) => {
-                // Delete by stable phrase.id (what the TUI shows)
                 let mut not_found = Vec::new();
                 for id in &ids {
                     if let Some(pos) = self.phrases.iter().position(|p| p.id == *id) {
@@ -358,21 +350,15 @@ impl App {
                     Err(e) => { self.message = Some(format!("✗ {e}")); return; }
                 };
                 if let Some(r) = resolved.last() { self.last_rhythm = r.groups.clone(); }
-
                 let peak: usize = if self.phrases.is_empty() { 4 } else {
                     let total: usize = self.phrases.iter()
-                        .map(|p| p.bar.total_subdivs)
-                        .sum();
+                        .map(|p| p.bar.total_subdivs).sum();
                     let count = self.phrases.len().max(1);
                     (total / count / 2).clamp(2, 4)
                 };
-
-                // Build src from the original tokens
                 let src = resolved.iter()
                     .map(|s| s.src.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-
+                    .collect::<Vec<_>>().join(", ");
                 let id     = self.next_phrase_id;
                 self.next_phrase_id += 1;
                 let phrase = build_phrase(id, src, resolved, peak, repeat.max(1));

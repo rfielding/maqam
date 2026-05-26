@@ -1,28 +1,4 @@
 // command.rs — mini-language parser
-//
-// Keyword dispatch (checked before any pitch parsing):
-//
-//   bpm <n>              set tempo
-//   s <n>                set sustain seconds
-//   vol <n>              set output volume (0–2)
-//   x<N> [N …]          delete phrase(s) at list positions
-//   j <pos> [<times>]    append jump entry: when reached, loop to pos N times
-//   j<pos> [<times>]     same with attached digit
-//   i <pos> <phrase>     insert phrase before list position
-//   i<pos> <phrase>      same with attached digit
-//   rot                  rotate: last phrase moves to front
-//   m [<N>]              record N cycles to MP4
-//   z                    toggle pause
-//   clear                clear all phrases
-//   ?  help  q           misc
-//
-// ADD PHRASE (everything else):
-//   <root> <maqam> [<groups>] [, …]  [r<N> | bare ≤20]
-//
-//   root:   c d e f g a b  with + for sharp, - for flat
-//   maqam:  prefix-matched nah bay hij ras kur sab aja
-//   groups: additive 8th-note rhythm e.g. 332 3234 44
-//   repeat: r4 or bare number ≤20 at end
 
 use crate::tuning::{Maqam, Pitch};
 
@@ -46,7 +22,7 @@ pub enum Cmd {
     SetSustain(f64),
     SetVol(f32),
     Record(usize),
-    TogglePause,
+    TogglePause { start_id: Option<usize> },
     Clear,
     Help,
     Quit,
@@ -63,11 +39,10 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
         "clear"      => return Ok(Cmd::Clear),
         "rot"        => return Ok(Cmd::Rotate),
         "m"          => return Ok(Cmd::Record(1)),
-        "z"          => return Ok(Cmd::TogglePause),
         _            => {}
     }
 
-    // ── m<N> / m <N>  (before tokenising so strip_repeat can't eat the N) ─
+    // ── m<N> / m <N> ─────────────────────────────────────────────────────
     {
         let mut it = input.split_whitespace();
         if let Some(tok) = it.next() {
@@ -84,13 +59,22 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
         }
     }
 
-    // All remaining commands use first-token dispatch via alpha/digits split
     let first  = input.split_whitespace().next().unwrap_or("");
-    let alpha: String = first.chars().take_while( |c| c.is_ascii_alphabetic()).collect();
-    let digits: String= first.chars().skip_while(|c| c.is_ascii_alphabetic()).collect();
+    let alpha: String  = first.chars().take_while( |c| c.is_ascii_alphabetic()).collect();
+    let digits: String = first.chars().skip_while(|c| c.is_ascii_alphabetic()).collect();
     let al = alpha.to_ascii_lowercase();
 
-    // ── JUMP: j <pos> [<times>]  |  j<pos> [<times>] ─────────────────────
+    // ── PAUSE: z [phrase-id] ──────────────────────────────────────────────
+    if al == "z" {
+        let start_id: Option<usize> = if !digits.is_empty() {
+            Some(digits.parse().map_err(|_| "usage: z [phrase-id]")?)
+        } else {
+            input.split_whitespace().nth(1).and_then(|s| s.parse().ok())
+        };
+        return Ok(Cmd::TogglePause { start_id });
+    }
+
+    // ── JUMP: j <pos> [<times>] ───────────────────────────────────────────
     if al == "j" {
         let to: usize = if !digits.is_empty() {
             digits.parse().map_err(|_| "usage: j <pos> [times]")?
@@ -105,12 +89,10 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
         return Ok(Cmd::Jump { to, times: times.max(1) });
     }
 
-    // ── INSERT: i<pos> <cmd>  |  i <pos> <cmd> ───────────────────────────
     // ── EDIT: edit <id> <new-phrase> ──────────────────────────────────────
-    if al == "edit" && !digits.is_empty() {
-        let rest_str = if al == "edit" { input.trim() } else { input };
-        // tokenize: skip "edit", grab id, rest is the new phrase
-        let mut toks = rest_str.splitn(3, char::is_whitespace);
+    // "edit 5 d hijaz 332" — same space-separated syntax as insert
+    if al == "edit" {
+        let mut toks = input.splitn(3, char::is_whitespace);
         toks.next(); // skip "edit"
         let id: usize = toks.next().and_then(|s| s.parse().ok())
             .ok_or("usage: edit <id> <phrase>")?;
@@ -122,6 +104,7 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
         return Ok(Cmd::Edit { id, specs: specs?, repeat });
     }
 
+    // ── INSERT: i<pos> <cmd> ──────────────────────────────────────────────
     if al == "i" {
         let before: usize;
         let rest: &str;
@@ -137,7 +120,6 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
         }
         if rest.is_empty() { return Err("usage: i <pos> <phrase|j target times>".into()); }
 
-        // i <before> j <target> [<times>]  — insert a jump entry
         let rest_toks: Vec<&str> = rest.split_whitespace().collect();
         if rest_toks.first().map(|s| s.eq_ignore_ascii_case("j")).unwrap_or(false) {
             let to: usize = rest_toks.get(1).and_then(|s| s.parse().ok())
@@ -205,7 +187,6 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
     Ok(Cmd::AddPhrase { specs: specs?, repeat })
 }
 
-/// Strip trailing repeat: r<N> (no space) or bare number ≤20.
 fn strip_repeat(input: &str) -> (&str, usize) {
     let toks: Vec<&str> = input.split_whitespace().collect();
     if toks.is_empty() { return (input, 1); }

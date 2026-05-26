@@ -94,14 +94,21 @@ fn build_ruler_boxes(
     phrases:         &[Phrase],
     subdiv_secs:     f64,
     bar_samples_for: &dyn Fn(usize) -> usize,
+    total_secs:      f64,
 ) -> Vec<String> {
     let mut parts: Vec<String> = Vec::new();
     let mut sample: usize = 0;
+    let n_seq = full_seq.len();
 
-    for &(phrase_idx, _play, _snap) in full_seq {
+    for (seq_i, &(phrase_idx, _play, _snap)) in full_seq.iter().enumerate() {
         let bs  = bar_samples_for(phrase_idx);
         let t0  = sample as f64 / SR;
-        let t1  = (sample + bs) as f64 / SR - 0.001;
+        // Last entry extends to total_secs so the ruler stays visible through the tail
+        let t1  = if seq_i + 1 == n_seq {
+            total_secs - 0.001
+        } else {
+            (sample + bs) as f64 / SR - 0.001
+        };
         let en  = format!("'between(t,{t0:.6},{t1:.6})'");
 
         let bar     = &phrases[phrase_idx].bar;
@@ -361,10 +368,10 @@ pub fn record_cycle(
     let wav_path = wav_path.as_str();
 
     // ── ASS subtitle file ─────────────────────────────────────────────────
+    let total_secs = left_buf.len() as f64 / SR;
     let ass_path_s = temp_path("maqam-live.ass");
     let ass_path   = ass_path_s.as_str();
     {
-        let total_secs = left_buf.len() as f64 / SR;
         let mut f      = std::fs::File::create(ass_path)?;
         writeln!(f, "[Script Info]")?;
         writeln!(f, "ScriptType: v4.00+")?;
@@ -459,9 +466,15 @@ pub fn record_cycle(
                         let mut rhy = String::new();
                         for (ci, ch) in rhythm_plain.chars().enumerate() {
                             if ci == si {
-                                // &H00FFFFFF& = white (ASS: alpha=00 B=FF G=FF R=FF)
+                                // Inverted: black text on white box.
+                                // ASS has no per-char background, so we use a thick
+                                // white outline (\3c white, \bord6) which fills the
+                                // character cell, then black text (\1c black) on top.
+                                // \shad0 suppresses shadow so it doesn't bleed.
+                                // After: reset to green text, thin outline, no shadow.
                                 rhy.push_str(&format!(
-                                    "{{\\1c&H00FFFFFF&\\b1}}{ch}{{\\1c&H0000FF00&\\b0}}"
+                                    "{{\\1c&H00000000&\\3c&H00FFFFFF&\\bord6\\shad0}}{ch}\
+                                     {{\\1c&H0000FF00&\\3c&H00000000&\\bord2\\shad0}}"
                                 ));
                             } else {
                                 rhy.push(ch);
@@ -475,6 +488,18 @@ pub fn record_cycle(
                             p.src, rhy, pad, maqam_str, ctr);
                         let text = format!("> {id}: {body}");
                         writeln!(f, "Dialogue: 0,{ts0},{ts1},Line,,0,0,{margin_v},,{text}")?;
+                    }
+
+                    // Tail: last phrase stays visible through the sustain tail.
+                    // Per-subdivision Dialogues end at phrase end; this covers
+                    // the silence tail so the row doesn't go black.
+                    let phrase_end_s = start_s + n as f64 * subdiv_secs;
+                    if phrase_end_s < end_s {
+                        let ts0  = fmt_t(phrase_end_s);
+                        let body = format!("{:<20} {:<10} {:<16} {}",
+                            p.src, rhythm_plain, maqam_str, ctr);
+                        let text = format!("> {id}: {body}");
+                        writeln!(f, "Dialogue: 0,{ts0},{t1},Line,,0,0,{margin_v},,{text}")?;
                     }
 
                 } else {
@@ -495,7 +520,7 @@ pub fn record_cycle(
     }
 
     // ── Build filter complex ──────────────────────────────────────────────
-    let ruler_boxes = build_ruler_boxes(&full_seq, &phrases, subdiv_secs, &bar_samples_for);
+    let ruler_boxes = build_ruler_boxes(&full_seq, &phrases, subdiv_secs, &bar_samples_for, total_secs);
     let ruler_chain = if ruler_boxes.is_empty() {
         String::new()
     } else {
@@ -533,7 +558,7 @@ pub fn record_cycle(
                "-filter_complex_script", &fscript_path,
                "-map", "[v]", "-map", "0:a",
                "-c:v", "libx264", "-crf", "18",
-               "-c:a", "aac", "-b:a", "256k",
+               "-c:a", "aac", "-b:a", "320k",
                "-r", "30", &out])
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(&log_path).map(Stdio::from)
@@ -549,7 +574,7 @@ pub fn record_cycle(
                    "-filter_complex", &filter_with_subs,
                    "-map", "[v]", "-map", "0:a",
                    "-c:v", "libx264", "-crf", "18",
-                   "-c:a", "aac", "-b:a", "256k",
+                   "-c:a", "aac", "-b:a", "320k",
                    "-r", "30", &out])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -564,7 +589,7 @@ pub fn record_cycle(
                        "-filter_complex", &filter_plain,
                        "-map", "[v]", "-map", "0:a",
                        "-c:v", "libx264", "-crf", "18",
-                       "-c:a", "aac", "-b:a", "256k",
+                       "-c:a", "aac", "-b:a", "320k",
                        "-r", "30", &out])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -579,7 +604,7 @@ pub fn record_cycle(
                            "-filter_complex", &filter_bare,
                            "-map", "[v]", "-map", "0:a",
                            "-c:v", "libx264", "-crf", "18",
-                           "-c:a", "aac", "-b:a", "256k",
+                           "-c:a", "aac", "-b:a", "320k",
                            "-r", "30", &out])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
