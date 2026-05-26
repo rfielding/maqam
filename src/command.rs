@@ -107,7 +107,7 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
 
     // ── INSERT: i<pos> <cmd>  |  i <pos> <cmd> ───────────────────────────
     // ── EDIT: edit <id> <new-phrase> ──────────────────────────────────────
-    if al == "edit" || al == "e" && !digits.is_empty() {
+    if al == "edit" && !digits.is_empty() {
         let rest_str = if al == "edit" { input.trim() } else { input };
         // tokenize: skip "edit", grab id, rest is the new phrase
         let mut toks = rest_str.splitn(3, char::is_whitespace);
