@@ -87,6 +87,7 @@ pub enum Maqam {
     Rast,
     Kurd,
     Saba,
+    Zaba,
     Ajam,
     Nikriz,
     Suznak,
@@ -104,6 +105,7 @@ impl Maqam {
             ("rast",     Maqam::Rast),
             ("kurd",     Maqam::Kurd),
             ("saba",     Maqam::Saba),
+            ("zaba",     Maqam::Zaba),
             ("ajam",     Maqam::Ajam),
             ("nikriz",   Maqam::Nikriz),
             ("suznak",   Maqam::Suznak),
@@ -125,6 +127,7 @@ impl Maqam {
             Maqam::Rast     => "Rast",
             Maqam::Kurd     => "Kurd",
             Maqam::Saba     => "Saba",
+            Maqam::Zaba     => "Zaba",
             Maqam::Ajam     => "Ajam",
             Maqam::Nikriz   => "Nikriz",
             Maqam::Suznak   => "Suznak",
@@ -154,7 +157,8 @@ impl Maqam {
             Maqam::Suznak   => &[(1,1),(9,8),(27,22),(4,3),(3,2)],
             Maqam::Jiharkah => &[(1,1),(9,8),(5,4),(4,3),(3,2)],
             // ── 4-note jins (tritone/flat-4th endpoint) ───────────────────
-            Maqam::Saba     => &[(1,1),(12,11),(32,27),(11,8)],
+            Maqam::Saba     => &[(1,1),(12,11),(6,5),(6*12,5*11)],
+            Maqam::Zaba     => &[(1,1),(12,11),(32,27),(11,8)],
         }
     }
 
