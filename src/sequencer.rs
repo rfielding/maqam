@@ -138,17 +138,12 @@ pub fn build_phrase(
     let mut deduped: Vec<f64> = Vec::new();
 
     for (i, spec) in specs.iter().enumerate() {
-        let root    = roots_hz[i];
-        let is_last = i + 1 == n_specs;
-
-        // Single spec → 4 degrees (jins only).
-        // Multi spec, not last → 4 degrees (lower tetrachord).
-        // Multi spec, last → 8 degrees (fills upper portion to octave).
-        let n_degrees = if n_specs > 1 && is_last { 8 } else { 4 };
-
+        let root      = roots_hz[i];
         let next_root = if i + 1 < n_specs { Some(roots_hz[i + 1]) } else { None };
 
-        let jins_freqs: Vec<f64> = spec.maqam.ratios()[..n_degrees]
+        // ratios() length IS the jins size — no n_degrees needed.
+        // The octave filter handles upper-jins notes that exceed the octave.
+        let jins_freqs: Vec<f64> = spec.maqam.ratios()
             .iter()
             .map(|&(p, q)| root * p as f64 / q as f64)
             .filter(|&f| {
