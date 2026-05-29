@@ -157,7 +157,7 @@ impl Maqam {
             Maqam::Suznak   => &[(1,1),(9,8),(27,22),(4,3),(3,2)],
             Maqam::Jiharkah => &[(1,1),(9,8),(5,4),(4,3),(3,2)],
             // ── 4-note jins (tritone/flat-4th endpoint) ───────────────────
-            Maqam::Saba     => &[(1,1),(12,11),(32,27),(4*243,3*256)],
+            Maqam::Saba     => &[(1,1),(13,12),(32,27),(80,64)],
             Maqam::Zaba     => &[(1,1),(12,11),(32,27),(11,8)], // the wrong "Saba" from Claude,
                                                                 // which is amazing, and related.
         }

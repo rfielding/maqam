@@ -24,7 +24,8 @@ pub struct Bar {
     pub root_hz:       f64,            // actual 5-limit snapped root Hz
     #[allow(dead_code)]
     pub maqam:         Maqam,          // first jins maqam — for display
-    pub maqam_names:   Vec<String>,    // all jins names — for display
+    pub maqam_names:   Vec<String>,    // all jins names — kept for debugging
+    pub ratio_strs:    Vec<String>,    // actual JI ratios per jins — for display
     pub groups:        Vec<u8>,        // rhythm groups
     pub frequencies:   Vec<f64>,       // combined JI scale, sorted ascending
     pub group_degrees: Vec<usize>,     // waypoints (n_groups+1), index into frequencies
@@ -80,6 +81,7 @@ pub fn build_jump_entry(id: usize, target_id: usize, times: usize) -> Phrase {
         root_hz: 293.6648,
         maqam: Maqam::Nahawand,
         maqam_names: vec![],
+        ratio_strs:  vec![],
         groups: vec![],
         frequencies: vec![],
         group_degrees: vec![],
@@ -178,12 +180,22 @@ pub fn build_phrase(
         .map(|s| s.maqam.name().to_string())
         .collect();
 
+    // ratio_strs: one entry per jins spec, e.g. "1/1 12/11 32/27 4/3 3/2"
+    // Derived directly from ratios() so it reflects whatever tuning.rs defines.
+    let ratio_strs: Vec<String> = specs.iter()
+        .map(|s| s.maqam.ratios().iter()
+            .map(|&(p,q)| format!("{}/{}", p, q))
+            .collect::<Vec<_>>()
+            .join(" "))
+        .collect();
+
     let root_hz_0 = snap_to_oud_lattice(specs[0].root.to_hz());
     let bar = Bar {
         root:         specs[0].root,
         root_hz:      root_hz_0,
         maqam:        specs[0].maqam,
         maqam_names,
+        ratio_strs,
         groups,
         frequencies:  deduped,
         group_degrees,

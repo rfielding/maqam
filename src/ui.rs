@@ -153,7 +153,7 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
         let src_str   = format!("{:<28}", phrase.src);
         let rhythm    = phrase.rhythm_display();
-        let maqam_str = phrase.bar.maqam_names.join("+");
+        let maqam_str = phrase.bar.ratio_strs.join(" | ");
 
         let (fg_id, fg_src) = if playing {
             (ACCENT, Color::Rgb(255, 255, 180))
@@ -331,7 +331,8 @@ fn draw_help(f: &mut Frame, area: ratatui::layout::Rect) {
         Line::from(vec![Span::styled("  bpm <n>   ", green), Span::styled("tempo (20–400)    ", dim),
                         Span::styled("  s <n>     ", green), Span::styled("sustain seconds", dim)]),
         Line::from(vec![Span::styled("  vol <n>   ", green), Span::styled("volume (0–2)      ", dim),
-                        Span::styled("  z [id]    ", green), Span::styled("pause / play from id", dim)]),
+                        Span::styled("  z         ", green), Span::styled("toggle pause", dim)]),
+        Line::from(vec![Span::styled("  z <id>    ", green), Span::styled("seek to phrase id (no pause toggle)", dim)]),
         Line::from(vec![Span::raw("")]),
 
         Line::from(vec![Span::styled("  RECORDING", bright)]),

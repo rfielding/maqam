@@ -461,7 +461,7 @@ pub fn record_cycle(
                 } else if active {
                     // Active musical phrase: per-subdivision beat cursor
                     let rhythm_plain = p.bar.rhythm_display();
-                    let maqam_str    = p.bar.maqam_names.join("+");
+                    let maqam_str    = p.bar.ratio_strs.join(" | ");
                     let ctr          = format!("[{}/{}]", play_num + 1, p.repeat.max(1));
                     let n            = p.bar.events.len().max(1);
 
@@ -513,7 +513,7 @@ pub fn record_cycle(
                 } else {
                     // Inactive musical phrase — static
                     let rhythm    = p.bar.rhythm_display();
-                    let maqam_str = p.bar.maqam_names.join("+");
+                    let maqam_str = p.bar.ratio_strs.join(" | ");
                     let body = format!("{:<20} {:<10} {:<16}", p.src, rhythm, maqam_str);
                     let text = format!("- {id}: {body}");
                     writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,{margin_v},,{text}")?;
