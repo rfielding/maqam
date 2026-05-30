@@ -120,6 +120,7 @@ fn build_ruler_boxes(
              :color=0x003300@0.5:t=fill:enable={en}"
         ));
 
+        /*
         // ── Pitch tick marks ───────────────────────────────────────────────
         for &hz in &bar.frequencies {
             let c  = cents_from_root(hz, root_hz);
@@ -132,6 +133,7 @@ fn build_ruler_boxes(
                  :color=0x44BB44:t=fill:enable={en}"
             ));
         }
+        */
 
         // ── Active pitch indicator (yellow box, per subdivision) ───────────
         for (si, ev) in bar.events.iter().enumerate() {
@@ -537,11 +539,11 @@ pub fn record_cycle(
 
     // Grey waveform sits in background; ruler + subtitles on top.
     let filter_with_subs = format!(
-        "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=0x555555[wv];\
+        "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=0x002222[wv];\
          [wv]{ruler_chain}subtitles={ass_path}[v]"
     );
     let filter_plain = format!(
-        "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=0x555555[wv];\
+        "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=0x220022[wv];\
          [wv]{ruler_chain}null[v]"
     );
     let filter_bare =
