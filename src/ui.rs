@@ -218,7 +218,7 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
 fn draw_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let chars: Vec<char> = app.input.chars().collect();
-    let mut spans = vec![Span::styled("▶ ", Style::default().fg(DIM).bg(BG))];
+    let mut spans = vec![Span::styled("> ", Style::default().fg(DIM).bg(BG))];
     for &ch in chars.iter() {
         spans.push(Span::styled(ch.to_string(), Style::default().fg(CMD).bg(BG)));
     }
@@ -324,6 +324,7 @@ fn draw_help(f: &mut Frame, area: ratatui::layout::Rect) {
         Line::from(vec![Span::styled("  i <id> j <target> [n]   ", green), Span::styled("insert jump entry before id", dim)]),
         Line::from(vec![Span::styled("  x <id> [id…]            ", green), Span::styled("delete by id  (blocked if playing)", dim)]),
         Line::from(vec![Span::styled("  edit <id> <phrase>      ", green), Span::styled("replace phrase content  (blocked if playing)", dim)]),
+        Line::from(vec![Span::styled("  edit <id> j <tgt> [n]   ", green), Span::styled("replace phrase with jump entry", dim)]),
         Line::from(vec![Span::styled("  rot                     ", green), Span::styled("move last phrase to front", dim)]),
         Line::from(vec![Span::raw("")]),
 

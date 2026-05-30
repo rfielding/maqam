@@ -15,6 +15,7 @@ pub enum Cmd {
     Jump   { to: usize, times: usize },
     Insert { before: usize, specs: Vec<JinsSpec>, repeat: usize },
     Edit   { id: usize, specs: Vec<JinsSpec>, repeat: usize },
+    EditJump { id: usize, to: usize, times: usize },
     InsertJump { before: usize, to: usize, times: usize },
     DeleteBars(Vec<usize>),
     Rotate,
@@ -95,9 +96,18 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
         let mut toks = input.splitn(3, char::is_whitespace);
         toks.next(); // skip "edit"
         let id: usize = toks.next().and_then(|s| s.parse().ok())
-            .ok_or("usage: edit <id> <phrase>")?;
+            .ok_or("usage: edit <id> <phrase|j target [times]>")?;
         let rest = toks.next().unwrap_or("").trim();
-        if rest.is_empty() { return Err("usage: edit <id> <phrase>".into()); }
+        if rest.is_empty() { return Err("usage: edit <id> <phrase|j target [times]>".into()); }
+
+        let rest_toks: Vec<&str> = rest.split_whitespace().collect();
+        if rest_toks.first().map(|s| s.eq_ignore_ascii_case("j")).unwrap_or(false) {
+            let to: usize = rest_toks.get(1).and_then(|s| s.parse().ok())
+                .ok_or("usage: edit <id> j <target_id> [times]")?;
+            let times: usize = rest_toks.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
+            return Ok(Cmd::EditJump { id, to, times: times.max(1) });
+        }
+
         let (phrase_part, repeat) = strip_repeat(rest);
         let specs: Result<Vec<JinsSpec>, String> = phrase_part
             .split(',').map(|p| parse_jins_spec(p.trim())).collect();

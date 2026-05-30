@@ -223,24 +223,26 @@ impl App {
             }
 
             Cmd::TogglePause { start_id } => {
-                // Validate start_id before unpausing (irrelevant when pausing)
-                if self.paused {
-                    if let Some(id) = start_id {
-                        if !self.phrases.iter().any(|p| p.id == id) {
+                if let Some(id) = start_id {
+                    // z <id>: seek to phrase, no pause toggle
+                    match self.phrases.iter().position(|p| p.id == id) {
+                        Some(pos) => {
+                            let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(pos));
+                            self.message = Some(format!("→ phrase {id}"));
+                        }
+                        None => {
                             self.message = Some(format!("✗ no phrase id {id}"));
-                            return;
                         }
                     }
+                } else {
+                    // z alone: toggle pause; restart from 0 when unpausing
+                    self.paused = !self.paused;
+                    if !self.paused {
+                        let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(0));
+                    }
+                    let _ = self.audio_tx.send(AudioCmd::SetPaused(self.paused));
+                    self.message = Some(if self.paused { "⏸ paused".into() } else { "▶ playing".into() });
                 }
-                self.paused = !self.paused;
-                if !self.paused {
-                    let pos = start_id
-                        .and_then(|id| self.phrases.iter().position(|p| p.id == id))
-                        .unwrap_or(0);
-                    let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(pos));
-                }
-                let _ = self.audio_tx.send(AudioCmd::SetPaused(self.paused));
-                self.message = Some(if self.paused { "⏸ paused".into() } else { "▶ playing".into() });
             }
 
             Cmd::SetVol(v) => {
@@ -292,6 +294,21 @@ impl App {
                 self.sustain = secs;
                 let _ = self.audio_tx.send(AudioCmd::SetSustain(secs));
                 self.message = Some(format!("sustain → {secs:.2}s"));
+            }
+
+            Cmd::EditJump { id, to, times } => {
+                if !self.phrases.iter().any(|p| p.id == to) {
+                    self.message = Some(format!("✗ no phrase id {to}")); return;
+                }
+                let pos = match self.phrases.iter().position(|p| p.id == id) {
+                    Some(p) => p,
+                    None    => { self.message = Some(format!("✗ no phrase id {id}")); return; }
+                };
+                let mut entry = crate::sequencer::build_jump_entry(id, to, times);
+                entry.id = id; // preserve the original id
+                self.phrases[pos] = entry.clone();
+                let _ = self.audio_tx.send(AudioCmd::ReplacePhrase(entry));
+                self.message = Some(format!("edited {id} → jump to {to} ×{times}"));
             }
 
             Cmd::Edit { id, specs, repeat } => {
