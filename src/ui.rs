@@ -218,7 +218,7 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
 fn draw_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let chars: Vec<char> = app.input.chars().collect();
-    let mut spans = vec![Span::styled("> ", Style::default().fg(DIM).bg(BG))];
+    let mut spans = vec![Span::styled("▶ ", Style::default().fg(DIM).bg(BG))];
     for &ch in chars.iter() {
         spans.push(Span::styled(ch.to_string(), Style::default().fg(CMD).bg(BG)));
     }

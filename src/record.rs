@@ -494,7 +494,7 @@ pub fn record_cycle(
                         );
                         let body = format!("{:<20} {}{} {:<16} {}",
                             p.src, rhy, pad, maqam_str, ctr);
-                        let text = format!("> {id}: {body}");
+                        let text = format!("▶ {id}: {body}");
                         writeln!(f, "Dialogue: 0,{ts0},{ts1},Line,,0,0,{margin_v},,{text}")?;
                     }
 
