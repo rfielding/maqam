@@ -314,9 +314,9 @@ fn tick_sequencer(
             milestone = Milestone::PhraseStart;
         } else if is_last_play && is_last_subdiv {
             milestone = if next_is_different {
-                Milestone::CrossPhraseWarning   // half-vol kick: change is coming
+                Milestone::Turnaround   // half-vol kick: change is coming
             } else {
-                Milestone::Turnaround           // rimshot: just looping
+                Milestone::CrossPhraseWarning           // rimshot: just looping
             };
         }
         crate::CUR_SUBDIV.store(curr, std::sync::atomic::Ordering::Relaxed);
