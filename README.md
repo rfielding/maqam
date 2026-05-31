@@ -1,344 +1,339 @@
 # maqam-live
 
-A live-coding terminal sequencer for Arabic maqam music, built on just
-intonation. Type a phrase, hear it immediately. Stack ajnas (tetrachords)
-with commas to build scales from pieces. Insert, edit, delete, and rotate
-phrases while the sequence loops. Render to MP4 when it sounds right.
-
-Every pitch is an exact rational multiple of D — no equal temperament
-anywhere in the signal chain. The beating between simultaneously ringing
-voices is the sound of the instrument.
-
-Music theory reference: **[maqamworld.com](https://maqamworld.com)** —
-the most comprehensive English-language resource on Arabic maqam theory,
-ajnas, and modulation practice.
-
-> The main commands are either "chord changes" connected to how it is played rhythmically, or they are jumps that are nested repeats.
+A real-time terminal sequencer for Arabic maqam music using just intonation synthesis.
+Live-code phrases of stacked jins, record to MP4 with a synchronized pitch ruler.
 
 ```
-┌ maqam-live ─────────────────────────────────────────────────────────────────┐
-│ >  0: d bay, a nah 332    X..X..X.  Bayati+Nahawand       [2/4]            │
-│    1: j 0 3                                                [1/3]            │
-│    2: c rast 332           X..X..X.  Rast                                  │
-├─ cmd ───────────────────────────────────────────────────────────────────────┤
-│ > d bay, a nah 332_                                                         │
-│  BPM:120 sus:1.2s vol:1.00 phrases:3  [?] help  [z] pause                  │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─ maqam-live ──────────────────────────────────────────────────────────────────┐
+│ ▶  0: d bayati 332          X..X..X.  1/1 12/11 32/27 4/3 3/2               │
+│    1: j 0 3                           [1/3]                                   │
+│    2: a nahawand 332        X..X..X.  1/1 9/8 32/27 4/3 3/2                  │
+│    3: c rast 44             X...X...  1/1 9/8 27/22 4/3 3/2                  │
+└───────────────────────────────────────────────────────────────────────────────┘
+│ ▶ cmd                                                                         │
+│   BPM:120 sus:1.2s vol:1.00 phrases:4  [?] help  [z] pause                  │
+│   m → record cycle to ~/maqam-<ts>.mp4                                       │
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
-`>` marks the currently playing phrase. Jump entries show live pass counters.
-IDs are permanent — they never shift when you insert, delete, or rotate.
+## Build
+
+```bash
+cargo build --release
+cargo run --release
+```
+
+Requires ffmpeg on PATH for MP4 recording.
 
 ---
 
-## Install
+## Concepts
 
-### Linux (Ubuntu / Debian)
+### Jins (plural: ajnas)
 
-```bash
-sudo apt install libasound2-dev pkg-config ffmpeg
-tar -xzf maqam-live.tar.gz
-cd maqam-live
-cargo build --release
-cargo run --release
+A jins is a short scale fragment — the basic harmonic unit of Arabic maqam.
+maqam-live treats each jins as its own chord: a set of JI ratios that define
+the current harmonic field. Most jins span five notes (root through fifth);
+Saba is an exception at four notes with a characteristic major-third endpoint.
+
+The melody walks through the jins notes using a zigzag contour that evolves
+slightly each repetition.
+
+### Rhythm groups
+
+Rhythm is specified as a string of non-zero digits. Each digit is a group size —
+the number of subdivisions in that group. The first subdivision of each group
+is a kick (X), the rest are snares (.).
+
+```
+332   →  X..X..X.   (8 subdivisions: 3+3+2)
+44    →  X...X...   (8 subdivisions: 4+4)
+4444  →  X...X...X...X...  (16 subdivisions)
+664   →  X.....X.....X...
+21    →  X.X
 ```
 
-### macOS
+### Stacking ajnas
 
-```bash
-brew install ffmpeg
-tar -xzf maqam-live.tar.gz
-cd maqam-live
-cargo build --release
-cargo run --release
+Separate two jins specs with a comma to stack them into one combined scale.
+The melody walks through both jins together.
+
 ```
-
-No extra audio dependencies — cpal uses CoreAudio, which is built in.
-
-### Windows
-
-1. Install [ffmpeg](https://ffmpeg.org/download.html) and add it to PATH
-   (`winget install ffmpeg` works on recent Windows)
-2. Install [Rust](https://rustup.rs/)
-3. Open a terminal (Windows Terminal recommended):
-
-```powershell
-tar -xzf maqam-live.tar.gz
-cd maqam-live
-cargo build --release
-cargo run --release
+d bayati, a nahawand 332    →  D natural minor (Bayati lower + Nahawand upper)
+d hijaz, a kurd 44          →  D Hijaz Kar
+d rast, a rast 332          →  D Rast full octave
 ```
-
-cpal uses WASAPI on Windows — no extra audio dependencies needed.
-Recordings are saved to `%USERPROFILE%\maqam-<timestamp>.mp4`.
-
-`rust-toolchain.toml` pins Rust 1.85.0. `rustup` downloads it automatically.
 
 ---
 
-## Language
+## Commands
 
 ### Add a phrase
 
 ```
-<root> <maqam> [<groups>] [, <root> <maqam>] ...  [r<N>]
+<root> <jins> [rhythm]
+<root> <jins>, <root> <jins> [rhythm]       ← stacked
+<root> <jins> [rhythm] r<N>                 ← repeat N times
 ```
 
-**root** — pitch name: `c d e f g a b`, with `+` for sharp, `-` for flat.
-`d+` = D♯, `b-` = B♭.
-
-**maqam** — prefix-matched (type as few letters as needed):
-
-| Name | Type | Character | Degrees (cents) |
-|---|---|---|---|
-| `nah` Nahawand | Pythagorean minor | Minor, resonant | 0 204 294 498 702 792 996 1200 |
-| `bay` Bayati | 11-limit neutral | Arabic, expressive | 0 151 355 498 702 853 996 1200 |
-| `hij` Hijaz | Augmented 2nd | Dramatic, Middle Eastern | 0 90 408 498 702 792 1110 1200 |
-| `ras` Rast | Neutral 3rd | Balanced, central | 0 204 355 498 702 906 996 1200 |
-| `kur` Kurd | Pythagorean Phrygian | Dark, Spanish | 0 90 294 498 702 792 996 1200 |
-| `sab` Saba | Diminished 4th (11/8) | Melancholic, characteristic | 0 151 267 551 702 792 996 1200 |
-| `aja` Ajam | 5-limit major | Bright, major | 0 204 386 498 702 884 1088 1200 |
-| `nik` Nikriz | Hijaz lower + natural upper | Dramatic with bright upper | 0 90 408 498 702 906 996 1200 |
-| `suz` Suznak | Rast lower + Hijaz upper | Neutral colour + augmented 2nd | 0 204 355 498 702 792 1110 1200 |
-| `jih` Jiharkah | Ajam lower + flat 7th | Major with Mixolydian ending | 0 204 386 498 702 884 996 1200 |
-
-See [maqamworld.com](https://maqamworld.com) for full maqam theory, modulation
-paths, and performance practice.
-
-**groups** — additive rhythm in eighth notes: `332` = 3+3+2 = one bar of 8,
-`44` = 4+4, `3234` = 12/8. Default is `332`.
-
-**r\<N\>** — repeat the phrase N times before advancing (`r4`, not `r 4`).
-
-### Comma = stacked ajnas
-
-Commas build one combined scale from tetrachords. Each jins contributes its
-first 4 scale degrees; the last jins fills out to the octave. Notes within
-70 cents of a jins boundary are dropped to prevent micro-interval clashes.
-
 ```
-d nah, a kurd 332      D natural minor
-d kurd, a kurd         D Phrygian
-d bay, a nah           Bayati + Nahawand (classic)
-d sab, g nah           Traditional Saba maqam
-d hij, a nah           Hijaz lower + natural upper
-d nah, a bay, c nik    Three-jins combination
+d bayati 332
+d hijaz 4444
+a nahawand 44 r3
+d bayati, a nahawand 332
 ```
 
-### Commands
+Root names: `c  d  e  f  g  a  b`
+Append `+` or `-` for sharp/flat: `d+  f-  g+`
 
-**Sequence control:**
+Jins names can be abbreviated to any unambiguous prefix:
+`nah  bay  hij  ras  kur  sab  aja  nik  suz  jih  zab`
 
-| Command | Effect |
-|---|---|
-| `j <id> [<n>]` | Append jump: loop back to phrase `id` a total of `n` times, then fall through. Default n=1. |
-| `i <id> <phrase>` | Insert a new phrase immediately before the phrase with id. |
-| `i <id> j <target> [<n>]` | Insert a jump entry before the phrase with id. |
-| `x <id> [id …]` | Delete phrase(s) by id. Cannot delete the currently playing phrase. |
-| `edit <id> <phrase>` | Replace the content of phrase id in-place. Cannot edit the currently playing phrase. |
-| `rot` | Move the last phrase to the front. Playback continues uninterrupted. |
-
-**Settings:**
-
-| Command | Effect |
-|---|---|
-| `bpm <n>` | Set tempo (20–400). Default 120. |
-| `s <n>` | Set melody sustain in seconds. Default 1.25. |
-| `vol <n>` | Set output volume 0–2. Default 1.0. |
-
-**Other:**
-
-| Command | Effect |
-|---|---|
-| `m [<n>]` | Record n full cycles to `~/maqam-<timestamp>.mp4`. Default 1. |
-| `clear` | Remove all phrases. |
-| `z` | Toggle pause. |
-| `?` | Show help. |
-| `q` | Quit. |
-
-Semicolons separate multiple commands: `d bay r4; j 0 3; c rast`
-
-**Up/Down arrows** scroll command history. **Left/Right/Home/End** move the
-cursor. **Delete** removes the character at the cursor.
-
-### IDs are permanent
-
-Every phrase and jump entry is assigned a sequential ID at creation. IDs
-never change when you insert, delete, or rotate. The number shown on each
-line is that permanent ID — not its list position.
-
-```
- 0: d bay, a nah 332    ← always id 0
- 1: j 0 3               ← always id 1, jumps to wherever id 0 currently is
- 2: c rast 332          ← always id 2
-```
-
-If you delete id 1 and add a new phrase, the new phrase gets id 3. Id 1 is
-gone forever. All `j`, `i`, `x`, and `edit` commands operate by id.
+Rhythm defaults to the last rhythm used, so you can omit it after the first phrase.
 
 ---
 
-## Tuning
+### Sequence control
 
-### The oud lattice
-
-All pitches are exact rational multiples of D:
+#### Jump
 
 ```
-D = 293.6648 Hz    matches electronic tuner D
-G = D × 4/3        open G string (perfect fourth)
-A = D × 3/2        open A string (perfect fifth)
-C = D × 16/9       open C string (two fourths above D)
+j <id> [times]
 ```
 
-Every note is a 5-limit or 11-limit ratio from D. No equal temperament
-anywhere in the system. The table of valid pitches:
+Add a jump entry that loops back to phrase `id` a total of `times` times,
+then falls through to the next phrase.
 
-| Note | Ratio from D | Cents | Character |
-|---|---|---|---|
-| D | 1/1 | 0 | open string |
-| E♭ | 256/243 | 90 | Pythagorean semitone |
-| E¾ | 12/11 | 151 | 11-limit neutral 2nd |
-| E | 9/8 | 204 | Pythagorean whole tone |
-| F | 32/27 | 294 | Pythagorean minor 3rd |
-| F# | 81/64 | 408 | Pythagorean major 3rd |
-| G | 4/3 | 498 | open string, perfect fourth |
-| A♭ | 1024/729 | 588 | Pythagorean diminished 5th |
-| A | 3/2 | 702 | open string, perfect fifth |
-| B♭ | 128/81 | 792 | Pythagorean minor 6th |
-| B | 27/16 | 906 | Pythagorean major 6th |
-| C | 16/9 | 996 | open string |
+```
+d bayati 332          ← phrase 0
+j 0 4                 ← loop bayati 4× before continuing
+c rast 332            ← phrase 2: plays after the 4th bayati
+```
 
-Neutral intervals (12/11 = 151¢, 27/22 = 355¢) are kept at exact 11-limit
-values — never rounded. These are the characteristic colour of Bayati, Rast,
-and Saba.
+A warning kick sounds on the last kick beat of the last bayati before rast begins.
+
+#### Insert
+
+```
+i <id> <phrase>                 ← insert phrase before id
+i <id> j <target> [times]       ← insert jump entry before id
+```
+
+```
+i 2 f hijaz 332                 ← insert hijaz before phrase 2
+i 1 j 0 3                       ← insert "loop back to 0, 3 times" before phrase 1
+```
+
+#### Edit
+
+```
+edit <id> <phrase>              ← replace phrase content
+edit <id> j <target> [times]    ← replace with a jump entry
+```
+
+```
+edit 2 d kurd 44                ← change phrase 2 to D Kurd with rhythm 44
+edit 1 j 0 6                    ← change phrase 1 to loop 6 times
+```
+
+Editing the currently-playing phrase is blocked.
+
+#### Delete
+
+```
+x <id> [id …]
+```
+
+```
+x 3
+x 1 2 4
+```
+
+#### Rotate
+
+```
+rot
+```
+
+Moves the last phrase to the front of the list.
 
 ---
 
-## How it sounds
-
-### Rhythmic hierarchy
+### Settings
 
 ```
-Subdivision  →  melody note (zigzag walk through scale)
-Group start  →  floor tom + chord tones snapped to scale
-Phrase start →  crash cymbal + long root voice + sub-bass pedal
-Phrase change → high tom on top
-Turnaround   → rimshot on top (last beat before loop)
+bpm <n>         tempo in BPM (20–400), default 120
+s <n>           sustain in seconds (0.05–10), default 1.25
+vol <n>         volume multiplier (0–2), default 1.0
 ```
 
-Chord tones (5th and octave above melody) are snapped to the nearest scale
-note. Nothing outside the maqam ever plays.
-
-### Sub-bass
-
-A chain of six pure octaves below the root plays for the full phrase
-duration. Gains peak two octaves below the root and taper toward both
-extremes. The lowest partials add physical weight even below the audible
-range.
-
-### Stereo
-
-Each note voice is assigned a random fixed pan (±90%) at spawn. The pan does
-not move as the voice decays. Floor tom and sub-bass stay centred.
-
-### Evolution
-
-After every phrase play, the melodic arc drifts slightly: interior notes
-shift ±1 scale degree 70% of the time, with occasional fills (20%) and full
-resets (8%). The penultimate group before each boundary rises toward the
-dominant 50% of the time — the classical maqam cadential motion.
-
----
-
-## Example session
-
 ```
-d bay, a nah 332 r4     Bayati+Nahawand, 4 loops
-c rast                  Add Rast on C
-bpm 96                  Slow down
-s 2.0                   Longer sustain
-j 0 3                   Append jump: loop to id 0 three times
-m 4                     Record 4 cycles to ~/maqam-*.mp4
-edit 2 c jih r2         Edit id 2 to Jiharkah, 2 loops
-i 2 d hij 2323 r2       Insert Hijaz before id 2
-x 2                     Delete id 2 (if not playing)
-vol 0.8                 Back off volume
+bpm 180
+s 2
+vol 0.8
 ```
 
 ---
 
-## Recording
-
-`m` records one full cycle (following all jumps and repeats). `m4` records
-four cycles. Output is `~/maqam-<timestamp>.mp4` — 1280×720, teal waveform
-on black, phrase list overlay showing which phrase is active with pass
-counters. Repo URL pinned to bottom-left corner.
-
-Requires `ffmpeg` in PATH.
-
----
-
-## Architecture
+### Playback
 
 ```
-src/
-  main.rs       thread wiring, global atomics
-  command.rs    mini-language parser
-  app.rs        application state, command dispatch, history
-  sequencer.rs  Phrase/JumpSpec/Bar structs, tetrachord stacking
-  tuning.rs     oud lattice, 5-limit ratios, maqam interval tables
-  synth.rs      additive synthesis, evolution, stereo, drums
-  audio.rs      cpal stream, per-sample sequencer tick, jump logic
-  record.rs     offline synthesis, normalization, ffmpeg MP4 + ASS subtitles
-  ui.rs         ratatui TUI, cursor editing, history navigation
+z               toggle pause / play (restarts from phrase 0 on unpause)
+z <id>          seek to phrase id without toggling pause
 ```
 
-See `CODE.md` for a detailed explanation of every file, the reasoning behind
-the design, and a complete walkthrough of how a keypress becomes sound.
+---
+
+### Recording
+
+```
+m               record one cycle to ~/maqam-<timestamp>.mp4
+m <n>           record n cycles
+```
+
+The MP4 includes a grey waveform, a pitch ruler (1 pixel per cent, 0–1200¢),
+a yellow indicator tracking the current pitch, JI ratio labels below each
+pitch position, and the phrase list with a live beat cursor.
 
 ---
 
-## Music theory
+### Jins registry
 
-This software implements the Arabic maqam system as described at
-**[maqamworld.com](https://maqamworld.com)**, the authoritative English-language
-reference for Arabic maqam theory.
+The jins registry is live-editable at runtime.
 
-Key concepts used:
-- **Jins** (pl. ajnas): a 3–5 note melodic cell, the building block of maqamat
-- **Tetrachord stacking**: combining ajnas to build full scales
-- **Just intonation**: exact rational frequency ratios, not equal temperament
-- **Neutral intervals**: 12/11 (151¢) and 27/22 (355¢), between the Western
-  semitone and whole tone — characteristic of Bayati, Rast, and Sikah families
-- **Maqam families**: each maqam belongs to a family sharing a lower jins
-  (Bayati family, Rast family, Hijaz family, etc.)
+```
+ls                                      ← list all jins with ratios
+create <Name> <p/q> <p/q> …            ← create or overwrite a jins
+delete <Name>                           ← remove a jins
+```
 
-For modulation paths, characteristic phrases (sayr), regional variations, and
-performance practice, see maqamworld.com directly.
+Names are case-insensitive. `create` normalizes to title case.
 
----
+```
+create Zaba 1/1 12/11 32/27 11/8       ← add the "Zaba" jins
+create Saba 1/1 13/12 32/27 80/64      ← redefine Saba
+delete Zaba                             ← remove it
+ls                                      ← see the full list
+```
 
-## Version history
+Built-in jins:
 
-**v1.0.0** — Initial release.
-
-**v1.1.0** — Tuning rewrite.
-- Oud lattice tuning (D-based JI, no equal temperament)
-- Tetrachord stacking with 70-cent boundary guard
-- Permanent phrase IDs (survive insert/delete/rotate)
-- Jump entries with live countdown display
-- Cursor editing, command history
-- Stereo panning, sub-bass octave chain
-- Four drum timbres by milestone
-- `vol`, `z`, `rot`, `edit` commands
-- Non-disruptive insert/rotate (playback continues uninterrupted)
-- Delete/edit blocked on currently playing phrase
-- Added maqamat: Nikriz, Suznak, Jiharkah
-- MP4 recording with phrase overlay, repo URL, pass counters
-- Cross-platform: Linux (ALSA), macOS (CoreAudio), Windows (WASAPI)
+| Name      | Ratios                              | Character              |
+|-----------|-------------------------------------|------------------------|
+| Nahawand  | 1/1 9/8 32/27 4/3 3/2              | Natural minor          |
+| Bayati    | 1/1 12/11 32/27 4/3 3/2            | Neutral 2nd            |
+| Hijaz     | 1/1 256/243 81/64 4/3 3/2          | Augmented 2nd          |
+| Rast      | 1/1 9/8 27/22 4/3 3/2              | Neutral 3rd            |
+| Kurd      | 1/1 256/243 32/27 4/3 3/2          | Phrygian               |
+| Saba      | 1/1 13/12 32/27 80/64              | Major-3rd endpoint     |
+| Zaba      | 1/1 12/11 32/27 11/8               | Tritone endpoint       |
+| Ajam      | 1/1 9/8 5/4 4/3 3/2                | Major                  |
+| Nikriz    | 1/1 256/243 81/64 4/3 3/2          | Hijaz lower            |
+| Suznak    | 1/1 9/8 27/22 4/3 3/2              | Rast lower             |
+| Jiharkah  | 1/1 9/8 5/4 4/3 3/2                | Ajam lower             |
 
 ---
 
-Source: https://github.com/rfielding/maqam
-Music theory reference: https://maqamworld.com
+### Multiple commands
+
+Separate commands with `;` to run them on one line:
+
+```
+d bayati 332; j 0 3; c rast 332
+bpm 160; s 1.5; vol 0.9
+```
+
+---
+
+## Rhythm vocabulary
+
+These patterns have distinct musical characters:
+
+| Pattern | Shape       | Character                                  |
+|---------|-------------|--------------------------------------------|
+| `332`   | X..X..X.    | Travelling, forward momentum               |
+| `44`    | X...X...    | Open, spacious                             |
+| `4444`  | X...×4      | Steady pulse, meditative                   |
+| `44332` | X...X...X..X..X. | Minor turnaround (pulse then cadence) |
+| `332332`| X..X..X.×2  | Major turnaround, two cadential cycles     |
+| `664`   | X.....X.....X... | Deceleration, ending feel             |
+| `21`    | X.X         | Tight, urgent                              |
+
+---
+
+## Full workflow example
+
+```
+bpm 140
+s 1.5
+
+d bayati 332
+j 0 3
+a nahawand 332
+
+m 2
+```
+
+This creates:
+- Phrase 0: D Bayati, rhythm 332
+- Phrase 1: jump back to phrase 0, 3 total loops
+- Phrase 2: A Nahawand, rhythm 332 (inherits from previous)
+
+Then records 2 full cycles to a timestamped MP4.
+
+---
+
+## Extended example: building a taqsim-style sequence
+
+```
+bpm 120
+s 2
+
+d bayati 332              ← open on D Bayati
+j 0 4                     ← circle it 4 times
+d bayati, a nahawand 332  ← expand to full D natural minor
+j 2 2                     ← repeat twice
+f hijaz 44                ← move to F Hijaz for contrast
+j 4 2
+d bayati 664              ← return, decelerating rhythm
+j 6 2
+```
+
+```
+m 3                       ← record 3 cycles
+```
+
+At any point you can edit a phrase without stopping:
+
+```
+edit 4 f hijaz, c kurd 44     ← add upper Kurd to the Hijaz phrase
+edit 1 j 0 6                  ← loop Bayati longer before moving on
+x 7                           ← remove the last phrase
+```
+
+---
+
+## Acoustic notes
+
+With `sus 2` and `bpm 180`, sustained phrases overlap — notes from the
+previous phrase are still ringing when the next begins. At these settings
+the JI intervals create standing wave interference patterns that can produce
+formant-like resonances in the 11-limit range (12/11, 11/10, 11/8).
+
+The Saba/Zaba combination is particularly striking:
+
+```
+bpm 180
+s 2
+d saba 4444; d zaba 4444; f saba 4444
+```
+
+The 11-limit intervals (11/8 in Zaba) activate vocal-tract-like resonances
+that some listeners perceive as acoustic hallucinations — voice-like sounds
+emerging from the interference between overlapping JI standing waves.
+
+---
+
+## Source
+
+https://github.com/rfielding/maqam
