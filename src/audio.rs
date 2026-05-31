@@ -266,17 +266,31 @@ fn tick_sequencer(
 
     // Look ahead: find the next musical phrase after this one completes,
     // skipping over any jump entries. Used to set CrossPhraseWarning milestone.
+// Look ahead: simulate what the sequencer will actually do next.
+    // Must check jump counters — a live jump loops back (same phrase),
+    // an exhausted jump falls through to the next musical phrase.
     let next_is_different = {
         let curr_id = phrases[*cur_phrase].phrase.id;
         let n       = phrases.len();
         let mut pos = (*cur_phrase + 1) % n;
         let mut result = false;
         for _ in 0..n {
-            if phrases[pos].phrase.jump.is_none() {
-                result = phrases[pos].phrase.id != curr_id;
+            let p = &phrases[pos].phrase;
+            if let Some(js) = &p.jump {
+                let remaining = jump_counters.get(&p.id).copied()
+                    .unwrap_or_else(|| js.times.saturating_sub(1));
+                if remaining > 0 {
+                    let target = phrases.iter()
+                        .position(|pp| pp.phrase.id == js.target_id)
+                        .unwrap_or(0);
+                    result = phrases[target].phrase.id != curr_id;
+                    break;
+                }
+                pos = (pos + 1) % n;
+            } else {
+                result = p.id != curr_id;
                 break;
             }
-            pos = (pos + 1) % n;
         }
         result
     };

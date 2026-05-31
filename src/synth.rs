@@ -152,13 +152,11 @@ impl Voice {
                 (osc, amp, t > 0.55)
             }
             VoiceKind::Rimshot => {
-                let ping_freq = self.freq * 8.0;
-                self.phase += ping_freq * dt;
-                let ping  = (self.phase * std::f64::consts::TAU).sin() as f32;
-                let noise = rand_f32();
-                let osc   = ping * 0.4 + noise * 0.6;
-                let amp   = (-t * 45.0).exp() as f32;
-                (osc, amp, t > 0.07)
+                let freq = self.freq * (1.0 + 1.8 * (-t * 12.0).exp()) * 0.25;
+                self.phase += freq * dt;
+                let osc = (self.phase * std::f64::consts::TAU).sin() as f32;
+                let amp = (-t * 7.0).exp() as f32;
+                (osc, amp, t > 0.55)
             }
             VoiceKind::Crash => {
                 let shimmer_freq = self.freq * 10.0;
@@ -280,37 +278,34 @@ pub fn spawn_voices(
     milestone: Milestone,
     scale:     &[f64],
 ) {
+    // Milestone sounds fire regardless of whether the event is a kick or snare.
+    // Previously these were inside the Kick arm, so rhythms ending on '.' (snare)
+    // never triggered the turnaround/warning sounds.
+    match milestone {
+        Milestone::Turnaround => {
+            let mut v = Voice::mk(VoiceKind::Rimshot, 200.0, 0.0);
+            v.pan = 0.0; voices.push(v);
+        }
+        Milestone::CrossPhraseWarning => {
+            let mut rim = Voice::mk(VoiceKind::FloorTom, 80.0, 0.0);
+            rim.pan = 0.0; voices.push(rim);
+        }
+        Milestone::PhraseStart => {
+            let mut v = Voice::mk(VoiceKind::Crash, 400.0, 0.0);
+            v.pan = 0.0; voices.push(v);
+        }
+        Milestone::PhraseChange => {
+            let mut v = Voice::mk(VoiceKind::PhraseChange, 160.0, 0.0);
+            v.pan = 0.0; voices.push(v);
+        }
+        Milestone::None => {}
+    }
+
     match event {
         SubdivEvent::Kick(hz) => {
             let mut tom = Voice::mk(VoiceKind::FloorTom, 40.0, 0.0);
             tom.pan = 0.0;
             voices.push(tom);
-
-            match milestone {
-                Milestone::Turnaround => {
-                    let mut v = Voice::mk(VoiceKind::Rimshot, 200.0, 0.0);
-                    v.pan = 0.0; voices.push(v);
-                }
-                Milestone::CrossPhraseWarning => {
-                    // Rimshot like Turnaround, PLUS a half-volume warning kick
-                    // so the listener hears the phrase boundary coming
-                    let mut rim = Voice::mk(VoiceKind::Rimshot, 200.0, 0.0);
-                    rim.pan = 0.0; voices.push(rim);
-                    let mut warn = Voice::mk(VoiceKind::FloorTom, 40.0, 0.0);
-                    warn.gain_override = Some(0.32); // ~half of normal 0.65
-                    warn.pan = 0.0; voices.push(warn);
-                }
-                Milestone::PhraseStart => {
-                    let mut v = Voice::mk(VoiceKind::Crash, 400.0, 0.0);
-                    v.pan = 0.0; voices.push(v);
-                }
-                Milestone::PhraseChange => {
-                    let mut v = Voice::mk(VoiceKind::PhraseChange, 160.0, 0.0);
-                    v.pan = 0.0; voices.push(v);
-                }
-                Milestone::None => {}
-            }
-
             voices.push(panned(Voice::melody(hz, sustain)));
             let fifth  = snap_to_scale(hz * 1.5, scale);
             let octave = snap_to_scale(hz * 2.0, scale);
@@ -358,3 +353,4 @@ pub fn spawn_sub_bass(root_hz: f64, phrase_secs: f64, voices: &mut Vec<Voice>) {
         voices.push(v);
     }
 }
+

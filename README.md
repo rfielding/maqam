@@ -13,6 +13,8 @@ Music theory reference: **[maqamworld.com](https://maqamworld.com)** —
 the most comprehensive English-language resource on Arabic maqam theory,
 ajnas, and modulation practice.
 
+> The main commands are either "chord changes" connected to how it is played rhythmically, or they are jumps that are nested repeats.
+
 ```
 ┌ maqam-live ─────────────────────────────────────────────────────────────────┐
 │ >  0: d bay, a nah 332    X..X..X.  Bayati+Nahawand       [2/4]            │
