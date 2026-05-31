@@ -287,7 +287,7 @@ pub fn spawn_voices(
             v.pan = 0.0; voices.push(v);
         }
         Milestone::CrossPhraseWarning => {
-            let mut rim = Voice::mk(VoiceKind::FloorTom, 80.0, 0.0);
+            let mut rim = Voice::mk(VoiceKind::FloorTom, 30.0, 0.0);
             rim.pan = 0.0; voices.push(rim);
         }
         Milestone::PhraseStart => {
@@ -295,7 +295,7 @@ pub fn spawn_voices(
             v.pan = 0.0; voices.push(v);
         }
         Milestone::PhraseChange => {
-            let mut v = Voice::mk(VoiceKind::PhraseChange, 160.0, 0.0);
+            let mut v = Voice::mk(VoiceKind::PhraseChange, 60.0, 0.0);
             v.pan = 0.0; voices.push(v);
         }
         Milestone::None => {}

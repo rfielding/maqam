@@ -290,8 +290,8 @@ pub fn record_cycle(
                     let milestone = if is_first && curr == 0 {
                         Milestone::PhraseStart
                     } else if is_last_play && is_last_subdiv {
-                        if next_is_different { Milestone::CrossPhraseWarning }
-                        else                 { Milestone::Turnaround }
+                        if next_is_different { Milestone::None }
+                        else                 { Milestone::CrossPhraseWarning }
                     } else {
                         Milestone::None
                     };
