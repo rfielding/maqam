@@ -62,7 +62,7 @@ fn registry() -> &'static RwLock<HashMap<String, Vec<(u32, u32)>>> {
         m.insert("Hijaz".into(),    vec![(1,1),(256,243),(81,64),(4,3),(3,2)]);
         m.insert("Rast".into(),     vec![(1,1),(9,8),(27,22),(4,3),(3,2)]);
         m.insert("Kurd".into(),     vec![(1,1),(256,243),(32,27),(4,3),(3,2)]);
-        m.insert("Saba".into(),     vec![(1,1),(13,12),(32,27),(80,64)]);
+        m.insert("Saba".into(),     vec![(1,1),(13,12),(32,27),(5,4)]);
         m.insert("Zaba".into(),     vec![(1,1),(12,11),(32,27),(11,8)]);
         m.insert("Ajam".into(),     vec![(1,1),(9,8),(5,4),(4,3),(3,2)]);
         m.insert("Nikriz".into(),   vec![(1,1),(256,243),(81,64),(4,3),(3,2)]);
