@@ -24,6 +24,9 @@ pub enum Cmd {
     SetVol(f32),
     Record(usize),
     TogglePause { start_id: Option<usize> },
+    ListJins,
+    CreateJins { name: String, ratios: Vec<(u32, u32)> },
+    DeleteJins { name: String },
     Clear,
     Help,
     Quit,
@@ -189,6 +192,29 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
         return Ok(Cmd::DeleteBars(ids));
     }
 
+    // ── LS: list all jins ─────────────────────────────────────────────────
+    if input == "ls" { return Ok(Cmd::ListJins); }
+
+    // ── CREATE: create <Name> <p/q> <p/q> … ──────────────────────────────
+    if al == "create" {
+        let mut toks = input.split_whitespace();
+        toks.next(); // skip "create"
+        let name = toks.next().ok_or("usage: create <Name> <ratios…>")?.to_string();
+        let ratios: Result<Vec<(u32,u32)>, String> = toks
+            .map(|t| parse_ratio(t).ok_or_else(|| format!("bad ratio '{t}'")))
+            .collect();
+        let ratios = ratios?;
+        if ratios.is_empty() { return Err("need at least one ratio".into()); }
+        return Ok(Cmd::CreateJins { name, ratios });
+    }
+
+    // ── DELETE: delete <Name> ─────────────────────────────────────────────
+    if al == "delete" {
+        let name = input.split_whitespace().nth(1)
+            .ok_or("usage: delete <Name>")?.to_string();
+        return Ok(Cmd::DeleteJins { name });
+    }
+
     // ── ADD PHRASE ────────────────────────────────────────────────────────
     let (phrase_part, repeat) = strip_repeat(input);
     if phrase_part.is_empty() { return Err("empty phrase".into()); }
@@ -238,4 +264,12 @@ fn parse_jins_spec(part: &str) -> Result<JinsSpec, String> {
         }
     };
     Ok(JinsSpec { src: part.trim().to_string(), root, maqam, groups })
+}
+
+fn parse_ratio(s: &str) -> Option<(u32, u32)> {
+    let mut parts = s.splitn(2, '/');
+    let p = parts.next()?.parse::<u32>().ok()?;
+    let q = parts.next().map(|q| q.parse::<u32>().ok()).flatten().unwrap_or(1);
+    if q == 0 { return None; }
+    Some((p, q))
 }

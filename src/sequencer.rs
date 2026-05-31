@@ -79,7 +79,7 @@ pub fn build_jump_entry(id: usize, target_id: usize, times: usize) -> Phrase {
     let bar = Bar {
         root: Pitch { letter: 'd', accidental: 0, octave: 4 },
         root_hz: 293.6648,
-        maqam: Maqam::Nahawand,
+        maqam: Maqam::new("Nahawand"),
         maqam_names: vec![],
         ratio_strs:  vec![],
         groups: vec![],
@@ -193,7 +193,7 @@ pub fn build_phrase(
     let bar = Bar {
         root:         specs[0].root,
         root_hz:      root_hz_0,
-        maqam:        specs[0].maqam,
+        maqam:        specs[0].maqam.clone(),
         maqam_names,
         ratio_strs,
         groups,

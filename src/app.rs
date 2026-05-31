@@ -10,6 +10,7 @@ pub struct App {
     pub input:       String,
     pub message:     Option<String>,
     pub show_help:    bool,
+    pub show_jins:    bool,
     pub bpm:         f64,
     pub sustain:     f64,
     pub vol:         f32,
@@ -33,6 +34,7 @@ impl App {
             input:          String::new(),
             message:        Some("? for help".into()),
             show_help:      false,
+            show_jins:      false,
             bpm:            120.0,
             sustain:        1.25,
             vol:            1.0,
@@ -277,6 +279,21 @@ impl App {
                     self.phrases.insert(0, last);
                     let _ = self.audio_tx.send(AudioCmd::Rotate);
                     self.message = None;
+                }
+            }
+
+            Cmd::ListJins => { self.show_jins = true; }
+
+            Cmd::CreateJins { name, ratios } => {
+                crate::tuning::Maqam::create(&name, ratios);
+                self.message = Some(format!("created jins {name}"));
+            }
+
+            Cmd::DeleteJins { name } => {
+                if crate::tuning::Maqam::delete(&name) {
+                    self.message = Some(format!("deleted jins {name}"));
+                } else {
+                    self.message = Some(format!("✗ no jins '{name}'"));
                 }
             }
 

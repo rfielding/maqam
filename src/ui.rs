@@ -43,6 +43,10 @@ pub fn run(app: &mut App) -> anyhow::Result<()> {
                     app.show_help = false;
                     continue;
                 }
+                if app.show_jins {
+                    app.show_jins = false;
+                    continue;
+                }
                 match key.code {
                     KeyCode::Char('c') | KeyCode::Char('q')
                         if key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -97,6 +101,10 @@ fn draw(f: &mut Frame, app: &App) {
     f.render_widget(ratatui::widgets::Block::default().style(Style::default().bg(BG)), area);
     if app.show_help {
         draw_help(f, area);
+        return;
+    }
+    if app.show_jins {
+        draw_jins_list(f, area);
         return;
     }
     let chunks = Layout::default()
@@ -357,6 +365,49 @@ fn draw_help(f: &mut Frame, area: ratatui::layout::Rect) {
 
     let para = Paragraph::new(lines)
         .block(block)
+        .style(Style::default().fg(ACCENT).bg(BG));
+
+    f.render_widget(para, area);
+}
+
+fn draw_jins_list(f: &mut Frame, area: ratatui::layout::Rect) {
+    use ratatui::widgets::{Block, Borders, Paragraph};
+    use ratatui::text::{Line, Span};
+    use crate::tuning::Maqam;
+
+    let name_col = Style::default().fg(ACCENT).bg(BG);
+    let rat_col  = Style::default().fg(DIM).bg(BG);
+    let heading  = Style::default().fg(Color::Rgb(0,255,0)).bg(BG)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let dim      = Style::default().fg(DIM).bg(BG);
+
+    let mut lines = vec![
+        Line::from(vec![Span::styled("  maqam-live — jins registry", heading)]),
+        Line::from(vec![Span::styled("  press any key to close", dim)]),
+        Line::from(vec![Span::raw("")]),
+        Line::from(vec![Span::styled(
+            "  create <Name> <p/q> …   delete <Name>   ls",
+            Style::default().fg(Color::Rgb(0,160,0)).bg(BG),
+        )]),
+        Line::from(vec![Span::raw("")]),
+    ];
+
+    for (name, ratios) in Maqam::list_all() {
+        let rat_str = ratios.iter()
+            .map(|&(p,q)| format!("{p}/{q}"))
+            .collect::<Vec<_>>()
+            .join("  ");
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:<14}", name), name_col),
+            Span::styled(rat_str, rat_col),
+        ]));
+    }
+
+    let para = Paragraph::new(lines)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(ACCENT).bg(BG))
+            .style(Style::default().bg(BG)))
         .style(Style::default().fg(ACCENT).bg(BG));
 
     f.render_widget(para, area);
