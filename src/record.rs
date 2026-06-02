@@ -40,6 +40,7 @@ const BOUND_Y:  i32 = 591;
 const TICK_W:   i32 = 2;
 const LABEL_Y:  i32 = 621;
 const RULER_X0: i32 = 40;
+const BG_H:     usize = 720;
 
 // ── JI ratio arithmetic ───────────────────────────────────────────────────────
 
@@ -87,10 +88,210 @@ fn cents_from_root(hz: f64, root_hz: f64) -> f64 {
     ((raw % 1200.0) + 1200.0) % 1200.0
 }
 
+fn fill_rect(buf: &mut [u8], buf_w: usize, x: usize, y: usize, w: usize, h: usize, rgb: [u8; 3]) {
+    let x1 = x.min(buf_w);
+    let y1 = y.min(BG_H);
+    let x2 = x.saturating_add(w).min(buf_w);
+    let y2 = y.saturating_add(h).min(BG_H);
+    for yy in y1..y2 {
+        for xx in x1..x2 {
+            let i = (yy * buf_w + xx) * 3;
+            buf[i..i + 3].copy_from_slice(&rgb);
+        }
+    }
+}
+
+fn blend_px(buf: &mut [u8], buf_w: usize, x: i32, y: i32, rgb: [u8; 3], alpha: f32) {
+    if x < 0 || y < 0 || x >= buf_w as i32 || y >= BG_H as i32 { return; }
+    let idx = (y as usize * buf_w + x as usize) * 3;
+    for c in 0..3 {
+        let base = buf[idx + c] as f32;
+        let over = rgb[c] as f32;
+        buf[idx + c] = (base * (1.0 - alpha) + over * alpha).round().clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn draw_line(buf: &mut [u8], buf_w: usize, mut x0: i32, mut y0: i32, x1: i32, y1: i32, rgb: [u8; 3], alpha: f32) {
+    let dx = (x1 - x0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let dy = -(y1 - y0).abs();
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    loop {
+        blend_px(buf, buf_w, x0, y0, rgb, alpha);
+        if x0 == x1 && y0 == y1 { break; }
+        let e2 = 2 * err;
+        if e2 >= dy { err += dy; x0 += sx; }
+        if e2 <= dx { err += dx; y0 += sy; }
+    }
+}
+
+fn draw_thick_line(buf: &mut [u8], buf_w: usize, x0: i32, y0: i32, x1: i32, y1: i32, rgb: [u8; 3], alpha: f32, thickness: i32) {
+    let half = thickness.max(1) / 2;
+    for off in -half..=half {
+        draw_line(buf, buf_w, x0 + off, y0, x1 + off, y1, rgb, alpha);
+        draw_line(buf, buf_w, x0, y0 + off, x1, y1 + off, rgb, alpha);
+    }
+}
+
+fn nearest_degree_index(hz: f64, freqs: &[f64]) -> usize {
+    let mut best = 0usize;
+    let mut best_dist = f64::MAX;
+    for (i, &f) in freqs.iter().enumerate() {
+        let dist = (f / hz).log2().abs();
+        if dist < best_dist {
+            best_dist = dist;
+            best = i;
+        }
+    }
+    best
+}
+
+fn hex_points(cx: i32, cy: i32, rx: i32, ry: i32) -> [(i32, i32); 6] {
+    [
+        (cx - rx, cy),
+        (cx - rx / 2, cy - ry),
+        (cx + rx / 2, cy - ry),
+        (cx + rx, cy),
+        (cx + rx / 2, cy + ry),
+        (cx - rx / 2, cy + ry),
+    ]
+}
+
+fn fill_polygon(
+    buf: &mut [u8],
+    buf_w: usize,
+    pts: &[(i32, i32)],
+    rgb: [u8; 3],
+    alpha: f32,
+) {
+    if pts.len() < 3 { return; }
+    let min_y = pts.iter().map(|p| p.1).min().unwrap_or(0).max(0);
+    let max_y = pts.iter().map(|p| p.1).max().unwrap_or(0).min(BG_H as i32 - 1);
+    for y in min_y..=max_y {
+        let mut xs: Vec<i32> = Vec::new();
+        for i in 0..pts.len() {
+            let (x0, y0) = pts[i];
+            let (x1, y1) = pts[(i + 1) % pts.len()];
+            if y0 == y1 { continue; }
+            let ymin = y0.min(y1);
+            let ymax = y0.max(y1);
+            if y < ymin || y >= ymax { continue; }
+            let t = (y - y0) as f32 / (y1 - y0) as f32;
+            xs.push((x0 as f32 + t * (x1 - x0) as f32).round() as i32);
+        }
+        xs.sort_unstable();
+        for pair in xs.chunks(2) {
+            if let [xa, xb] = pair {
+                for x in (*xa).max(0)..=(*xb).min(buf_w as i32 - 1) {
+                    blend_px(buf, buf_w, x, y, rgb, alpha);
+                }
+            }
+        }
+    }
+}
+
+fn draw_polygon_outline(
+    buf: &mut [u8],
+    buf_w: usize,
+    pts: &[(i32, i32)],
+    rgb: [u8; 3],
+    alpha: f32,
+    thickness: i32,
+) {
+    if pts.len() < 2 { return; }
+    for i in 0..pts.len() {
+        let (x0, y0) = pts[i];
+        let (x1, y1) = pts[(i + 1) % pts.len()];
+        draw_thick_line(buf, buf_w, x0, y0, x1, y1, rgb, alpha, thickness);
+    }
+}
+
+fn write_tiling_background(
+    full_seq: &[(usize, usize, usize)],
+    phrases: &[Phrase],
+    subdiv_secs: f64,
+    sustain: f64,
+) -> anyhow::Result<(String, usize, usize)> {
+    const BG_START_X: usize = 1100;
+    const BG_STEP_X: usize = 22;
+
+    let path = temp_path("maqam-tiling.ppm");
+    let tick_count: usize = full_seq.iter()
+        .map(|&(phrase_idx, _, _)| phrases[phrase_idx].bar.events.len().max(1))
+        .sum();
+    let step_x = 42usize;
+    let buf_w = (tick_count * step_x + 640).max(1600);
+    let mut buf = vec![0u8; buf_w * BG_H * 3];
+    fill_rect(&mut buf, buf_w, 0, 0, buf_w, BG_H, [4, 23, 12]);
+    fill_rect(&mut buf, buf_w, 0, 0, buf_w, 220, [2, 16, 8]);
+    fill_rect(&mut buf, buf_w, 0, 560, buf_w, 160, [2, 16, 8]);
+
+    let line_main = [62, 66, 72];
+    let line_accent = [126, 132, 138];
+    let fill_main = [18, 20, 22];
+    let fill_accent = [44, 48, 54];
+    let start_x = BG_START_X;
+    let mut x = start_x as i32;
+    let sustain_steps = ((sustain / subdiv_secs).ceil() as usize).clamp(1, 12);
+    let mut active_until: Vec<usize> = Vec::new();
+    let rx = 18i32;
+    let step_x = BG_STEP_X as i32;
+    let mut col_idx = 0usize;
+
+    for &(phrase_idx, _play, _snap) in full_seq {
+        let bar = &phrases[phrase_idx].bar;
+        let rows = bar.frequencies.len().max(1);
+        if active_until.len() != rows {
+            active_until = vec![0; rows];
+        }
+        let top = 230i32;
+        let bottom = 530i32;
+        let usable = bottom - top;
+        let ry = ((usable / (rows as i32 * 2 + 1)).max(7)).min(18);
+        let base_gap = ry * 2;
+        let y_offset = if col_idx % 2 == 0 { 0 } else { ry };
+        for ev in &bar.events {
+            let hz = match ev {
+                SubdivEvent::Kick(hz) | SubdivEvent::Snare(hz) => *hz,
+            };
+            let row = nearest_degree_index(hz, &bar.frequencies);
+            active_until[row] = col_idx + sustain_steps;
+            for r in 0..rows {
+                let cy = top + y_offset + ry + r as i32 * base_gap;
+                let pts = hex_points(x, cy, rx, ry);
+                let fade = if active_until[r] > col_idx {
+                    ((active_until[r] - col_idx) as f32 / sustain_steps as f32).clamp(0.15, 1.0)
+                } else { 0.0 };
+                if fade > 0.0 {
+                    let rgb = if r == row { fill_accent } else { fill_main };
+                    let alpha = if r == row { 0.28 + fade * 0.22 } else { 0.04 + fade * 0.07 };
+                    fill_polygon(&mut buf, buf_w, &pts, rgb, alpha);
+                }
+                draw_polygon_outline(
+                    &mut buf, buf_w, &pts,
+                    if r == row { line_accent } else { line_main },
+                    if r == row { 0.82 } else { 0.40 },
+                    if r == row { 3 } else { 1 },
+                );
+            }
+            x += step_x;
+            col_idx += 1;
+        }
+    }
+
+    let mut f = std::fs::File::create(&path)?;
+    write!(f, "P6\n{} {}\n255\n", buf_w, BG_H)?;
+    f.write_all(&buf)?;
+    f.flush()?;
+    Ok((path, buf_w, x.max(start_x as i32) as usize))
+}
+
 // ── Ruler drawbox filter builder ──────────────────────────────────────────────
 
 /// Build ffmpeg drawbox filter elements for the ruler + beat cursor.
 /// Returns a Vec of individual filter strings to be chained with commas.
+#[allow(dead_code)]
 fn build_ruler_boxes(
     full_seq:        &[(usize, usize, usize)],
     phrases:         &[Phrase],
@@ -536,24 +737,36 @@ pub fn record_cycle(
     }
 
     // ── Build filter complex ──────────────────────────────────────────────
-    let ruler_boxes = build_ruler_boxes(&full_seq, &phrases, subdiv_secs, &bar_samples_for, total_secs);
-    let ruler_chain = if ruler_boxes.is_empty() {
-        String::new()
+    let (bg_path, bg_w, content_right) = write_tiling_background(&full_seq, &phrases, subdiv_secs, sustain)?;
+    let scroll_range = bg_w.saturating_sub(1280);
+    const BG_START_X: usize = 1100;
+    const BG_STEP_X: usize = 22;
+
+    let start_x = BG_START_X;
+    let right_margin = 10usize;
+    let latest_target = 1280usize.saturating_sub(right_margin);
+    let scroll_expr = if scroll_range == 0 {
+        "0".to_string()
     } else {
-        format!("{},", ruler_boxes.join(","))
+        let max_follow = content_right.saturating_sub(latest_target).min(scroll_range);
+        format!(
+            "min(max(0,({start_x}+{step}*floor(t/{:.6}))-{latest_target}),{max_follow})",
+            subdiv_secs.max(0.001)
+            ,
+            step = BG_STEP_X
+        )
     };
 
-    // Grey waveform sits in background; ruler + subtitles on top.
     let filter_with_subs = format!(
-        "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=0x002222[wv];\
-         [wv]{ruler_chain}subtitles={ass_path}[v]"
+        "[1:v]crop=1280:720:x='{scroll_expr}':y=0[bg];\
+         [bg]subtitles={ass_path}[v]"
     );
     let filter_plain = format!(
-        "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=0x220022[wv];\
-         [wv]{ruler_chain}null[v]"
+        "[1:v]crop=1280:720:x='{scroll_expr}':y=0[bg];\
+         [bg]null[v]"
     );
     let filter_bare =
-        "[0:a]showwaves=s=1280x720:mode=cline:rate=30:colors=0x555555[v]".to_string();
+        format!("[1:v]crop=1280:720:x='{scroll_expr}':y=0[v]");
 
     // Write to script file to sidestep OS command-line length limits.
     let fscript_path = temp_path("maqam-filter.txt");
@@ -570,12 +783,13 @@ pub fn record_cycle(
 
     // Pass 1: script file (ruler + subtitles)
     let ok1 = Command::new("ffmpeg")
-        .args(["-y", "-i", wav_path,
+        .args(["-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &bg_path,
                "-filter_complex_script", &fscript_path,
                "-map", "[v]", "-map", "0:a",
                "-c:v", "libx264", "-crf", "18",
+               "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                "-c:a", "aac", "-b:a", "320k",
-               "-r", "30", &out])
+               "-r", "30", "-shortest", &out])
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(&log_path).map(Stdio::from)
             .unwrap_or(Stdio::null()))
@@ -586,12 +800,13 @@ pub fn record_cycle(
     if !ok1 {
         // Pass 2: inline (ruler + subtitles)
         let ok2 = Command::new("ffmpeg")
-            .args(["-y", "-i", wav_path,
+            .args(["-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &bg_path,
                    "-filter_complex", &filter_with_subs,
                    "-map", "[v]", "-map", "0:a",
                    "-c:v", "libx264", "-crf", "18",
+                   "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                    "-c:a", "aac", "-b:a", "320k",
-                   "-r", "30", &out])
+                   "-r", "30", "-shortest", &out])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -601,12 +816,13 @@ pub fn record_cycle(
         if !ok2 {
             // Pass 3: ruler, no subtitles
             let ok3 = Command::new("ffmpeg")
-                .args(["-y", "-i", wav_path,
+                .args(["-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &bg_path,
                        "-filter_complex", &filter_plain,
                        "-map", "[v]", "-map", "0:a",
                        "-c:v", "libx264", "-crf", "18",
+                       "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                        "-c:a", "aac", "-b:a", "320k",
-                       "-r", "30", &out])
+                       "-r", "30", "-shortest", &out])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status()
@@ -616,12 +832,13 @@ pub fn record_cycle(
             if !ok3 {
                 // Pass 4: plain waveform
                 Command::new("ffmpeg")
-                    .args(["-y", "-i", wav_path,
+                    .args(["-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &bg_path,
                            "-filter_complex", &filter_bare,
                            "-map", "[v]", "-map", "0:a",
                            "-c:v", "libx264", "-crf", "18",
+                           "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                            "-c:a", "aac", "-b:a", "320k",
-                           "-r", "30", &out])
+                           "-r", "30", "-shortest", &out])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .status()?;
