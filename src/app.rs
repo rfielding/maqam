@@ -27,6 +27,7 @@ pub struct App {
     session_path:    Option<String>,
     next_phrase_id:  usize,
     last_rhythm:     Vec<u8>,
+    auditioning_jins: bool,
     audio_tx:        Sender<AudioCmd>,
 }
 
@@ -52,6 +53,7 @@ impl App {
             session_path:   None,
             next_phrase_id: 0,
             last_rhythm:    vec![3, 3, 2],
+            auditioning_jins: false,
             audio_tx,
         }
     }
@@ -202,6 +204,49 @@ impl App {
         if !self.phrases.is_empty() {
             let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(target_pos.min(self.phrases.len() - 1)));
         }
+        self.auditioning_jins = false;
+    }
+
+    fn audition_jins(&mut self, name: &str) -> Result<(), String> {
+        let maqam = crate::tuning::Maqam::parse(name)
+            .ok_or_else(|| format!("unknown jins '{name}'"))?;
+        let display_name = maqam.name().to_string();
+        let root = crate::tuning::Pitch { letter: 'd', accidental: 0, octave: 4 };
+        let spec = BarSpec {
+            src: format!("d {display_name}"),
+            root,
+            maqam,
+            groups: vec![1],
+        };
+        let mut phrase = build_phrase(usize::MAX, format!("[preview] d {display_name}"), vec![spec], 4, 1);
+        let n_freqs = phrase.bar.frequencies.len().max(1);
+        let mut walk = Vec::with_capacity(n_freqs * 4);
+        for degree in 0..n_freqs {
+            walk.push(degree);
+            walk.push(degree);
+        }
+        if n_freqs > 1 {
+            for degree in (0..(n_freqs - 1)).rev() {
+                walk.push(degree);
+                walk.push(degree);
+            }
+        }
+        phrase.bar.groups = vec![1; walk.len()];
+        phrase.bar.group_degrees = walk;
+        phrase.bar.group_degrees.push(0);
+        phrase.bar.recompute_events();
+        phrase.bar.total_subdivs = phrase.bar.events.len();
+
+        self.paused = false;
+        let _ = self.audio_tx.send(AudioCmd::Clear);
+        let _ = self.audio_tx.send(AudioCmd::SetBpm(self.bpm));
+        let _ = self.audio_tx.send(AudioCmd::SetSustain(self.sustain));
+        let _ = self.audio_tx.send(AudioCmd::SetVol(self.vol));
+        let _ = self.audio_tx.send(AudioCmd::SetPaused(false));
+        let _ = self.audio_tx.send(AudioCmd::AddPhrase(phrase));
+        let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(0));
+        self.auditioning_jins = true;
+        Ok(())
     }
 
     // ── Commands ──────────────────────────────────────────────────────────
@@ -218,6 +263,10 @@ impl App {
     }
 
     fn execute(&mut self, cmd: Cmd) {
+        let keep_audition = matches!(&cmd, Cmd::CreateJins { .. } | Cmd::AuditionJins { .. } | Cmd::Help | Cmd::ListJins);
+        if self.auditioning_jins && !keep_audition {
+            self.resync_audio_sequence(None);
+        }
         match cmd {
             Cmd::Quit  => self.should_quit = true,
             Cmd::Help => { self.show_help = true; }
@@ -400,6 +449,13 @@ impl App {
 
             Cmd::ListJins => { self.show_jins = true; }
 
+            Cmd::AuditionJins { name } => {
+                match self.audition_jins(&name) {
+                    Ok(()) => self.message = Some(format!("auditioning {name}")),
+                    Err(e) => self.message = Some(format!("✗ {e}")),
+                }
+            }
+
             Cmd::CreateJins { name, ratios } => {
                 crate::tuning::Maqam::create(&name, ratios);
                 self.message = Some(format!("created jins {name}"));
@@ -478,6 +534,12 @@ impl App {
                 if !self.phrases.iter().any(|p| p.id == to) {
                     self.message = Some(format!("✗ no phrase id {to}")); return;
                 }
+                let cur_pos    = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
+                let playing_id = self.phrases.get(cur_pos).map(|p| p.id);
+                if playing_id == Some(id) {
+                    self.message = Some(format!("✗ phrase {id} is playing — cannot edit"));
+                    return;
+                }
                 let pos = match self.phrases.iter().position(|p| p.id == id) {
                     Some(p) => p,
                     None    => { self.message = Some(format!("✗ no phrase id {id}")); return; }
@@ -500,14 +562,6 @@ impl App {
                     Some(p) => p,
                     None    => { self.message = Some(format!("✗ no phrase id {id}")); return; }
                 };
-                if self.phrases[pos].jump.is_some() {
-                    self.message = Some(format!("✗ id {id} is a jump entry — use x then j"));
-                    return;
-                }
-                if self.phrases[pos].control.is_some() {
-                    self.message = Some(format!("✗ id {id} is a settings entry — use x then bpm/s"));
-                    return;
-                }
                 let resolved = match resolve_rhythms(specs, &self.last_rhythm) {
                     Ok(r)  => r,
                     Err(e) => { self.message = Some(format!("✗ {e}")); return; }
@@ -519,6 +573,48 @@ impl App {
                 self.phrases[pos] = phrase.clone();
                 let _ = self.audio_tx.send(AudioCmd::ReplacePhrase(phrase));
                 self.message = Some(format!("edited {id}"));
+            }
+
+            Cmd::EditBpm { id, change } => {
+                let cur_pos    = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
+                let playing_id = self.phrases.get(cur_pos).map(|p| p.id);
+                if playing_id == Some(id) {
+                    self.message = Some(format!("✗ phrase {id} is playing — cannot edit"));
+                    return;
+                }
+                let pos = match self.phrases.iter().position(|p| p.id == id) {
+                    Some(p) => p,
+                    None    => { self.message = Some(format!("✗ no phrase id {id}")); return; }
+                };
+                let bpm = match apply_bpm_change(self.bpm, change) {
+                    Ok(v) => v,
+                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                };
+                let entry = build_control_entry(id, format!("bpm {bpm}"), ControlSpec::SetBpm(bpm));
+                self.phrases[pos] = entry.clone();
+                let _ = self.audio_tx.send(AudioCmd::ReplacePhrase(entry));
+                self.message = Some(format!("edited {id} → bpm {bpm:.2}"));
+            }
+
+            Cmd::EditSustain { id, change } => {
+                let cur_pos    = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
+                let playing_id = self.phrases.get(cur_pos).map(|p| p.id);
+                if playing_id == Some(id) {
+                    self.message = Some(format!("✗ phrase {id} is playing — cannot edit"));
+                    return;
+                }
+                let pos = match self.phrases.iter().position(|p| p.id == id) {
+                    Some(p) => p,
+                    None    => { self.message = Some(format!("✗ no phrase id {id}")); return; }
+                };
+                let secs = match apply_sustain_change(self.sustain, change) {
+                    Ok(v) => v,
+                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                };
+                let entry = build_control_entry(id, format!("s {secs}"), ControlSpec::SetSustain(secs));
+                self.phrases[pos] = entry.clone();
+                let _ = self.audio_tx.send(AudioCmd::ReplacePhrase(entry));
+                self.message = Some(format!("edited {id} → s {secs:.2}s"));
             }
 
             Cmd::DeleteBars(ids) => {

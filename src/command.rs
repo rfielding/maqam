@@ -58,6 +58,8 @@ pub enum Cmd {
     MoveDown(usize),
     Edit   { id: usize, specs: Vec<JinsSpec>, repeat: usize },
     EditJump { id: usize, to: usize, times: usize },
+    EditBpm { id: usize, change: ValueChange },
+    EditSustain { id: usize, change: ValueChange },
     InsertJump { before: usize, to: usize, times: usize },
     DeleteBars(Vec<usize>),
     Rotate,
@@ -67,6 +69,7 @@ pub enum Cmd {
     Record(usize),
     TogglePause { start_id: Option<usize> },
     ListJins,
+    AuditionJins { name: String },
     CreateJins { name: String, ratios: Vec<(u32, u32)> },
     DeleteJins { name: String },
     Save { path: Option<String> },
@@ -137,28 +140,22 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
         return Ok(Cmd::Jump { to, times: times.max(1) });
     }
 
-    // ── EDIT: edit <id> <new-phrase> ──────────────────────────────────────
-    // "edit 5 d hijaz 332" — same space-separated syntax as insert
+    // ── EDIT: edit <id> <cmd> ─────────────────────────────────────────────
     if al == "edit" {
         let mut toks = input.splitn(3, char::is_whitespace);
         toks.next(); // skip "edit"
         let id: usize = toks.next().and_then(|s| s.parse().ok())
-            .ok_or("usage: edit <id> <phrase|j target [times]>")?;
+            .ok_or("usage: edit <id> <phrase|j target [times]|bpm n|s n>")?;
         let rest = toks.next().unwrap_or("").trim();
-        if rest.is_empty() { return Err("usage: edit <id> <phrase|j target [times]>".into()); }
+        if rest.is_empty() { return Err("usage: edit <id> <phrase|j target [times]|bpm n|s n>".into()); }
 
-        let rest_toks: Vec<&str> = rest.split_whitespace().collect();
-        if rest_toks.first().map(|s| s.eq_ignore_ascii_case("j")).unwrap_or(false) {
-            let to: usize = rest_toks.get(1).and_then(|s| s.parse().ok())
-                .ok_or("usage: edit <id> j <target_id> [times]")?;
-            let times: usize = rest_toks.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
-            return Ok(Cmd::EditJump { id, to, times: times.max(1) });
-        }
-
-        let (phrase_part, repeat) = strip_repeat(rest);
-        let specs: Result<Vec<JinsSpec>, String> = phrase_part
-            .split(',').map(|p| parse_jins_spec(p.trim())).collect();
-        return Ok(Cmd::Edit { id, specs: specs?, repeat });
+        return match parse(rest)? {
+            Cmd::AddPhrase { specs, repeat } => Ok(Cmd::Edit { id, specs, repeat }),
+            Cmd::Jump { to, times } => Ok(Cmd::EditJump { id, to, times }),
+            Cmd::SetBpm(change) => Ok(Cmd::EditBpm { id, change }),
+            Cmd::SetSustain(change) => Ok(Cmd::EditSustain { id, change }),
+            _ => Err("unsupported command after edit".into()),
+        };
     }
 
     // ── REORDER: up/down <id> ─────────────────────────────────────────────
@@ -245,6 +242,14 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
 
     // ── LS: list all jins ─────────────────────────────────────────────────
     if input == "ls" { return Ok(Cmd::ListJins); }
+
+    // ── AUDITION: audition <Name> ────────────────────────────────────────
+    if al == "audition" {
+        let name = input.split_whitespace().nth(1)
+            .ok_or("usage: audition <Name>")?
+            .to_string();
+        return Ok(Cmd::AuditionJins { name });
+    }
 
     // ── CREATE: create <Name> <p/q> <p/q> … ──────────────────────────────
     if al == "create" {

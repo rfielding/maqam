@@ -423,7 +423,7 @@ fn draw_jins_list(f: &mut Frame, area: ratatui::layout::Rect) {
         Line::from(vec![Span::styled("  press any key to close", dim)]),
         Line::from(vec![Span::raw("")]),
         Line::from(vec![Span::styled(
-            "  create <Name> <p/q> …   delete <Name>   ls",
+            "  audition <Name>   create <Name> <p/q> …   delete <Name>   ls",
             Style::default().fg(Color::Rgb(0,160,0)).bg(BG),
         )]),
         Line::from(vec![Span::raw("")]),

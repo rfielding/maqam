@@ -810,10 +810,7 @@ pub fn record_cycle(
 
     let ts   = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    let out  = format!("{home}/maqam-{ts}.mp4");
+    let out  = format!("./maqam-{ts}.mp4");
 
     let log_path = temp_path("maqam-ffmpeg.log");
 

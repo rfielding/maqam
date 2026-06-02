@@ -18,12 +18,15 @@ Live-code phrases of stacked jins, record to MP4 with a synchronized pitch ruler
 
 ## Build
 
+Recommended prerequisites:
+
+- Install Rust with `rustup`: <https://rustup.rs/>
+- Install `ffmpeg` and make sure the `ffmpeg` executable is available on your `PATH` if you want MP4 recording to work
+
 ```bash
 cargo build --release
 cargo run --release
 ```
-
-Requires ffmpeg on PATH for MP4 recording.
 
 ---
 
@@ -117,23 +120,31 @@ A warning kick sounds on the last kick beat of the last bayati before rast begin
 ```
 i <id> <phrase>                 ← insert phrase before id
 i <id> j <target> [times]       ← insert jump entry before id
+i <id> bpm <n|+n|-n|*k|/k>      ← insert BPM settings entry before id
+i <id> s <n|+n|-n|*k|/k>        ← insert sustain settings entry before id
 ```
 
 ```
 i 2 f hijaz 332                 ← insert hijaz before phrase 2
 i 1 j 0 3                       ← insert "loop back to 0, 3 times" before phrase 1
+i 1 bpm 180                     ← insert a tempo change before phrase 1
+i 1 sus 1.5                     ← insert a sustain change before phrase 1
 ```
 
 #### Edit
 
 ```
-edit <id> <phrase>              ← replace phrase content
+edit <id> <phrase>              ← replace with a phrase
 edit <id> j <target> [times]    ← replace with a jump entry
+edit <id> bpm <n|+n|-n|*k|/k>   ← replace with a BPM settings entry
+edit <id> s <n|+n|-n|*k|/k>     ← replace with a sustain settings entry
 ```
 
 ```
 edit 2 d kurd 44                ← change phrase 2 to D Kurd with rhythm 44
 edit 1 j 0 6                    ← change phrase 1 to loop 6 times
+edit 1 bpm 180                  ← change entry 1 to a tempo change
+edit 1 sus 1.5                  ← change entry 1 to a sustain change
 ```
 
 Editing the currently-playing phrase is blocked.
@@ -156,6 +167,15 @@ rot
 ```
 
 Moves the last phrase to the front of the list.
+
+#### Reorder
+
+```
+up <id>
+down <id>
+```
+
+Moves any entry, including jumps and settings lines, by one slot.
 
 ---
 
@@ -197,6 +217,7 @@ z <id>          seek to phrase id without toggling pause
 ```
 save [file]     save current session to a .mq file
 load <file>     load a session from a .mq file
+clear           remove all sequence entries
 ```
 
 Example:
@@ -220,13 +241,13 @@ If a session has been loaded or previously saved, bare `save` reuses that path.
 ### Recording
 
 ```
-m               record one cycle to ~/maqam-<timestamp>.mp4
+m               record one cycle to ./maqam-<timestamp>.mp4
 m <n>           record n cycles
 ```
 
-The MP4 includes a grey waveform, a pitch ruler (1 pixel per cent, 0–1200¢),
-a yellow indicator tracking the current pitch, JI ratio labels below each
-pitch position, and the phrase list with a live beat cursor.
+The MP4 is written to the current directory. Its background is a dark scrolling
+tiling field informed by the phrase grid, with active/sustaining cells layered
+behind the phrase list and ruler.
 
 ---
 
@@ -242,6 +263,7 @@ octaves of the root at different gains, which can create a square-ish or
 triangle-ish impression through interference and speaker/headphone resonance.
 
 ```
+audition <Name>                          ← preview a jins in a slow loop
 ls                                      ← list all jins with ratios
 create <Name> <p/q> <p/q> …            ← create or overwrite a jins
 delete <Name>                           ← remove a jins
@@ -250,10 +272,21 @@ delete <Name>                           ← remove a jins
 Names are case-insensitive. `create` normalizes to title case.
 
 ```
+audition Hijaz                           ← preview Hijaz without changing the session
 create Zaba 1/1 12/11 32/27 11/8       ← add the "Zaba" jins
 create Saba 1/1 13/12 32/27 80/64      ← redefine Saba
 delete Zaba                             ← remove it
 ls                                      ← see the full list
+```
+
+---
+
+### Other
+
+```
+? / help        show command help
+q / quit        quit
+;               separate multiple commands on one line
 ```
 
 Built-in jins:
