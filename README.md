@@ -177,6 +177,10 @@ s *0.8
 vol 0.8
 ```
 
+`bpm ...` and `s ...` add settings entries to the sequence as well as updating
+the current global playback state, so they can be moved with `up`/`down` and
+saved directly into `.mq` sessions.
+
 ---
 
 ### Playback
@@ -191,7 +195,7 @@ z <id>          seek to phrase id without toggling pause
 ### Session files
 
 ```
-save <file>     save current session to a .mq file
+save [file]     save current session to a .mq file
 load <file>     load a session from a .mq file
 ```
 
@@ -205,9 +209,11 @@ bpm *2; s *0.8; save firstSong.mq
 ```
 
 Saved `.mq` files are command-line sessions (`MAQAM_SESSION_V2`), so you will
-see lines like `bpm *2` and `s *0.8` directly in the file.
+see lines like `bpm 240` and `s 1.0` directly in the file as sequence entries.
 Custom jins are also persisted as `create <Name> ...` lines and are restored
 on load.
+
+If a session has been loaded or previously saved, bare `save` reuses that path.
 
 ---
 
@@ -227,6 +233,13 @@ pitch position, and the phrase list with a live beat cursor.
 ### Jins registry
 
 The jins registry is live-editable at runtime.
+
+### Notes on sound
+
+The melody voice is additive, not true FM: it is a sine plus fixed 2nd and 3rd
+harmonics. The sub-bass is also pure sine, but each phrase start stacks several
+octaves of the root at different gains, which can create a square-ish or
+triangle-ish impression through interference and speaker/headphone resonance.
 
 ```
 ls                                      ← list all jins with ratios

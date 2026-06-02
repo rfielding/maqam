@@ -69,6 +69,7 @@ pub fn run(app: &mut App) -> anyhow::Result<()> {
                     KeyCode::Right => { app.cursor_right(); }
                     KeyCode::Home  => { app.cursor_home(); }
                     KeyCode::End   => { app.cursor_end(); }
+                    KeyCode::Tab   => { app.complete_input(); }
                     KeyCode::Delete => {
                         app.history_pos = None;
                         app.delete_char();

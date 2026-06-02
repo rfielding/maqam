@@ -189,8 +189,8 @@ with Bayati colour in the lower tetrachord.
 #### `AudioCmd`
 
 The enum of messages the TUI sends to the audio thread:
-`AddPhrase`, `RemovePhrase`, `SetBpm`, `SetSustain`, `Clear`, `SetVol`,
-`SetPaused`, `SetCurPhrase`.
+`AddPhrase`, `RemovePhrase`, `InsertPhrase`, `ReplacePhrase`, `Rotate`,
+`SetBpm`, `SetSustain`, `Clear`, `SetVol`, `SetPaused`, `SetCurPhrase`.
 
 ---
 
@@ -203,7 +203,8 @@ The grammar is:
 ```
 <root> <maqam> [groups] [, <root> <maqam>]…  [r<N>]
 j <id> [<times>]
-i <id> <phrase-or-jump>
+i <id> <command>
+up <id> / down <id>
 x <id> [<id>…]
 bpm <n> / s <n> / vol <n> / rot / z / clear / m [N] / ?
 ```
@@ -238,10 +239,10 @@ When you press Enter, `App::dispatch()` is called. It:
 2. Modifies `self.phrases` (the authoritative phrase list)
 3. Sends the appropriate `AudioCmd` messages to the audio thread
 
-**Why resend everything on insert/delete?** When a phrase is inserted or
-deleted, the audio thread needs to update its internal list. The simplest
-correct approach is to `Clear` the audio thread's list and re-add everything
-in order. This takes a few microseconds and is inaudible.
+**Why resend everything on reorder?** When an entry is moved with `up` or
+`down`, the app rebuilds the audio thread's list from the authoritative
+sequence in app state. This keeps reordering logic simple and ensures
+phrases, jumps, and settings entries all move the same way.
 
 **`rot`** (rotate) moves the last phrase to the front. Internally: pop the
 last element, insert it at position 0, then resend all phrases. The audio
@@ -327,13 +328,13 @@ lookahead — pure sample-by-sample synthesis.
 
 #### Voice kinds
 
-**Melody:** A sine wave with a mild frequency-modulation (FM) shimmer. The
-modulator frequency and depth are randomized per-voice to give each note a
-slightly different timbre. Gain envelope: instant attack, exponential decay.
+**Melody:** An additive tone: sine fundamental plus fixed 2nd and 3rd
+harmonics. Gain envelope: instant attack, exponential decay.
 
-**SubBass:** Pure sine, very low frequency, long sustain. Six octaves below
-the root are spawned simultaneously at different gains (see `spawn_sub_bass`
-in the file). The lowest may be below hearing range but is felt physically.
+**SubBass:** Pure sine, very low frequency, long sustain. Multiple octave
+layers of the root are spawned simultaneously at different gains (see
+`spawn_sub_bass` in the file). The interference between these layers can
+sound square-ish or triangle-ish even though each oscillator is sinusoidal.
 
 **FloorTom, Rimshot, Crash, PhraseChange:** Short percussive bursts using
 filtered noise + sine blend, modeled loosely after drum physics.
@@ -522,7 +523,7 @@ Here is what happens when you type `d nah 332` and press Enter:
    - tick_sequencer() advances bar_pos
    - when subdivision changes: lookup events[subdiv] → SubdivEvent::Kick(293.66)
    - synth.rs spawn_voices(): spawns FloorTom + melody voice at 293.66 Hz
-   - Voice::sample() computes sine + FM for each active voice
+   - Voice::sample() computes sine/additive partials for each active voice
    - all voice samples mixed together → written to audio output buffer
 
 5. ui.rs (25× per second):
@@ -591,4 +592,3 @@ cargo build --release
 winget install ffmpeg    # or download from ffmpeg.org, add to PATH
 cargo build --release
 ```
-

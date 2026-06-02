@@ -2,6 +2,7 @@
 
 use crossbeam_channel::Sender;
 use std::fs;
+use std::path::{Path, PathBuf};
 use crate::command::{self, Cmd, JinsSpec, ValueChange};
 use crate::record;
 use crate::sequencer::{build_control_entry, build_phrase, AudioCmd, BarSpec, ControlSpec, Phrase};
@@ -144,6 +145,29 @@ impl App {
             .map(|(b, _)| b)
             .unwrap_or(self.input.len());
         self.input.remove(byte_pos);
+    }
+
+    pub fn complete_input(&mut self) {
+        let Some((cmd, arg_start, partial)) = completion_target(&self.input) else { return; };
+        let matches = mq_matches(&partial);
+        if matches.is_empty() {
+            self.message = Some("✗ no .mq matches".into());
+            return;
+        }
+
+        let common = longest_common_prefix(&matches);
+        let replacement = if matches.len() == 1 {
+            matches[0].clone()
+        } else if common.len() > partial.len() {
+            common
+        } else {
+            self.message = Some(format!("{}: {}", cmd, matches.join("  ")));
+            return;
+        };
+
+        self.input.replace_range(arg_start..self.input.len(), &replacement);
+        self.cursor_pos = self.input.chars().count();
+        self.message = None;
     }
 
     // ── Render thread poll ────────────────────────────────────────────────
@@ -789,6 +813,63 @@ impl App {
         let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(0));
         Ok(())
     }
+}
+
+fn completion_target(input: &str) -> Option<(&str, usize, String)> {
+    let trimmed = input.trim_start();
+    let leading_ws = input.len().saturating_sub(trimmed.len());
+    let (cmd, rest) = trimmed.split_once(char::is_whitespace).unwrap_or((trimmed, ""));
+    if cmd != "save" && cmd != "load" { return None; }
+    let rest_start = leading_ws + cmd.len();
+    let arg = rest.trim_start();
+    let arg_start = input.len().saturating_sub(arg.len());
+    Some((cmd, arg_start.max(rest_start), arg.to_string()))
+}
+
+fn mq_matches(partial: &str) -> Vec<String> {
+    let partial_path = Path::new(partial);
+    let (dir, prefix) = match partial_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => (
+            PathBuf::from(parent),
+            partial_path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+        ),
+        _ => (PathBuf::from("."), partial),
+    };
+
+    let mut matches: Vec<String> = fs::read_dir(&dir)
+        .ok()
+        .into_iter()
+        .flat_map(|it| it.filter_map(Result::ok))
+        .filter_map(|entry| {
+            let path = entry.path();
+            if entry.file_type().ok()?.is_dir() { return None; }
+            if path.extension().and_then(|s| s.to_str()) != Some("mq") { return None; }
+            let name = path.file_name()?.to_str()?;
+            if !name.starts_with(prefix) { return None; }
+            if dir == Path::new(".") {
+                Some(name.to_string())
+            } else {
+                Some(dir.join(name).to_string_lossy().replace('\\', "/"))
+            }
+        })
+        .collect();
+    matches.sort();
+    matches
+}
+
+fn longest_common_prefix(items: &[String]) -> String {
+    let Some(first) = items.first() else { return String::new(); };
+    let mut prefix = first.clone();
+    for item in &items[1..] {
+        let mut keep = 0usize;
+        for (a, b) in prefix.chars().zip(item.chars()) {
+            if a != b { break; }
+            keep += a.len_utf8();
+        }
+        prefix.truncate(keep);
+        if prefix.is_empty() { break; }
+    }
+    prefix
 }
 
 fn resolve_rhythms(specs: Vec<JinsSpec>, default: &[u8]) -> Result<Vec<BarSpec>, String> {
