@@ -337,8 +337,8 @@ fn draw_help(f: &mut Frame, area: ratatui::layout::Rect) {
         Line::from(vec![Span::raw("")]),
 
         Line::from(vec![Span::styled("  SETTINGS", bright)]),
-        Line::from(vec![Span::styled("  bpm <n>   ", green), Span::styled("tempo (20–400)    ", dim),
-                        Span::styled("  s <n>     ", green), Span::styled("sustain seconds", dim)]),
+        Line::from(vec![Span::styled("  bpm <n>   ", green), Span::styled("tempo (20–400); + - * / supported    ", dim)]),
+        Line::from(vec![Span::styled("  s <n>     ", green), Span::styled("sustain sec; + - * / supported", dim)]),
         Line::from(vec![Span::styled("  vol <n>   ", green), Span::styled("volume (0–2)      ", dim),
                         Span::styled("  z         ", green), Span::styled("toggle pause", dim)]),
         Line::from(vec![Span::styled("  z <id>    ", green), Span::styled("seek to phrase id (no pause toggle)", dim)]),
@@ -351,6 +351,8 @@ fn draw_help(f: &mut Frame, area: ratatui::layout::Rect) {
         Line::from(vec![Span::styled("  OTHER", bright)]),
         Line::from(vec![Span::styled("  clear    ", green), Span::styled("remove all phrases    ", dim),
                         Span::styled("  q / Ctrl-C  ", green), Span::styled("quit", dim)]),
+        Line::from(vec![Span::styled("  save <file>  ", green), Span::styled("save session to file  ", dim),
+                        Span::styled("  load <file>  ", green), Span::styled("load session from file", dim)]),
         Line::from(vec![Span::styled("  ;        ", green), Span::styled("separate multiple commands on one line", dim)]),
         Line::from(vec![Span::raw("")]),
 

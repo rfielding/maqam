@@ -9,6 +9,44 @@ pub struct JinsSpec {
     pub groups: Option<Vec<u8>>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum ValueChange {
+    Set(f64),
+    Add(f64),
+    Mul(f64),
+    Div(f64),
+}
+
+impl ValueChange {
+    fn parse(token: &str, usage: &str) -> Result<Self, String> {
+        let t = token.trim();
+        if t.len() >= 2 {
+            let (op, rest) = t.split_at(1);
+            let n = rest.parse::<f64>().map_err(|_| usage.to_string())?;
+            return match op {
+                "+" => Ok(ValueChange::Add(n)),
+                "-" => Ok(ValueChange::Add(-n)),
+                "*" => Ok(ValueChange::Mul(n)),
+                "/" => Ok(ValueChange::Div(n)),
+                _ => Ok(ValueChange::Set(t.parse::<f64>().map_err(|_| usage.to_string())?)),
+            };
+        }
+        Ok(ValueChange::Set(t.parse::<f64>().map_err(|_| usage.to_string())?))
+    }
+
+    pub fn apply(self, current: f64) -> Result<f64, String> {
+        match self {
+            ValueChange::Set(n) => Ok(n),
+            ValueChange::Add(n) => Ok(current + n),
+            ValueChange::Mul(n) => Ok(current * n),
+            ValueChange::Div(n) => {
+                if n == 0.0 { return Err("division by zero".into()); }
+                Ok(current / n)
+            }
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub enum Cmd {
     AddPhrase { specs: Vec<JinsSpec>, repeat: usize },
@@ -19,14 +57,16 @@ pub enum Cmd {
     InsertJump { before: usize, to: usize, times: usize },
     DeleteBars(Vec<usize>),
     Rotate,
-    SetBpm(f64),
-    SetSustain(f64),
+    SetBpm(ValueChange),
+    SetSustain(ValueChange),
     SetVol(f32),
     Record(usize),
     TogglePause { start_id: Option<usize> },
     ListJins,
     CreateJins { name: String, ratios: Vec<(u32, u32)> },
     DeleteJins { name: String },
+    Save { path: String },
+    Load { path: String },
     Clear,
     Help,
     Quit,
@@ -149,20 +189,18 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
 
     // ── BPM ───────────────────────────────────────────────────────────────
     if al == "bpm" {
-        let n: f64 = input.split_whitespace().nth(1)
-            .and_then(|s| s.parse().ok())
-            .ok_or("usage: bpm <tempo>")?;
-        if !(20.0..=400.0).contains(&n) { return Err(format!("bpm {n} out of range")); }
-        return Ok(Cmd::SetBpm(n));
+        let tok = input.split_whitespace().nth(1)
+            .ok_or("usage: bpm <tempo|*k|/k|+n|-n>")?;
+        let change = ValueChange::parse(tok, "usage: bpm <tempo|*k|/k|+n|-n>")?;
+        return Ok(Cmd::SetBpm(change));
     }
 
     // ── SUSTAIN ───────────────────────────────────────────────────────────
     if (al == "s" || al == "sus") && digits.is_empty() {
-        let n: f64 = input.split_whitespace().nth(1)
-            .and_then(|s| s.parse().ok())
-            .ok_or("usage: s <secs>")?;
-        if !(0.05..=10.0).contains(&n) { return Err(format!("sustain {n}s out of range")); }
-        return Ok(Cmd::SetSustain(n));
+        let tok = input.split_whitespace().nth(1)
+            .ok_or("usage: s <secs|*k|/k|+n|-n>")?;
+        let change = ValueChange::parse(tok, "usage: s <secs|*k|/k|+n|-n>")?;
+        return Ok(Cmd::SetSustain(change));
     }
 
     // ── VOL ───────────────────────────────────────────────────────────────
@@ -213,6 +251,24 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
         let name = input.split_whitespace().nth(1)
             .ok_or("usage: delete <Name>")?.to_string();
         return Ok(Cmd::DeleteJins { name });
+    }
+
+    // ── SAVE / LOAD ───────────────────────────────────────────────────────
+    if al == "save" {
+        let path = input.splitn(2, char::is_whitespace).nth(1)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .ok_or("usage: save <path>")?
+            .to_string();
+        return Ok(Cmd::Save { path });
+    }
+    if al == "load" {
+        let path = input.splitn(2, char::is_whitespace).nth(1)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .ok_or("usage: load <path>")?
+            .to_string();
+        return Ok(Cmd::Load { path });
     }
 
     // ── ADD PHRASE ────────────────────────────────────────────────────────

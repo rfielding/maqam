@@ -163,13 +163,17 @@ Moves the last phrase to the front of the list.
 
 ```
 bpm <n>         tempo in BPM (20–400), default 120
+bpm <+n|-n|*k|/k>   relative tempo change from current BPM
 s <n>           sustain in seconds (0.05–10), default 1.25
+s <+n|-n|*k|/k>     relative sustain change from current value
 vol <n>         volume multiplier (0–2), default 1.0
 ```
 
 ```
 bpm 180
+bpm *2
 s 2
+s *0.8
 vol 0.8
 ```
 
@@ -181,6 +185,29 @@ vol 0.8
 z               toggle pause / play (restarts from phrase 0 on unpause)
 z <id>          seek to phrase id without toggling pause
 ```
+
+---
+
+### Session files
+
+```
+save <file>     save current session to a .mq file
+load <file>     load a session from a .mq file
+```
+
+Example:
+
+```
+save firstSong.mq
+load firstSong.mq
+load firstSong.mq; save firstSong.mq
+bpm *2; s *0.8; save firstSong.mq
+```
+
+Saved `.mq` files are command-line sessions (`MAQAM_SESSION_V2`), so you will
+see lines like `bpm *2` and `s *0.8` directly in the file.
+Custom jins are also persisted as `create <Name> ...` lines and are restored
+on load.
 
 ---
 

@@ -54,22 +54,24 @@ pub fn snap_to_oud_lattice(nominal_hz: f64) -> f64 {
 
 static REGISTRY: OnceLock<RwLock<HashMap<String, Vec<(u32, u32)>>>> = OnceLock::new();
 
+fn default_registry_map() -> HashMap<String, Vec<(u32, u32)>> {
+    let mut m: HashMap<String, Vec<(u32, u32)>> = HashMap::new();
+    m.insert("Nahawand".into(), vec![(1,1),(9,8),(32,27),(4,3),(3,2)]);
+    m.insert("Bayati".into(),   vec![(1,1),(12,11),(32,27),(4,3),(3,2)]);
+    m.insert("Hijaz".into(),    vec![(1,1),(256,243),(81,64),(4,3),(3,2)]);
+    m.insert("Rast".into(),     vec![(1,1),(9,8),(27,22),(4,3),(3,2)]);
+    m.insert("Kurd".into(),     vec![(1,1),(256,243),(32,27),(4,3),(3,2)]);
+    m.insert("Saba".into(),     vec![(1,1),(13,12),(32,27),(5,4)]);
+    m.insert("Zaba".into(),     vec![(1,1),(12,11),(32,27),(11,8)]);
+    m.insert("Ajam".into(),     vec![(1,1),(9,8),(5,4),(4,3),(3,2)]);
+    m.insert("Nikriz".into(),   vec![(1,1),(256,243),(81,64),(4,3),(3,2)]);
+    m.insert("Suznak".into(),   vec![(1,1),(9,8),(27,22),(4,3),(3,2)]);
+    m.insert("Jiharkah".into(), vec![(1,1),(9,8),(5,4),(4,3),(3,2)]);
+    m
+}
+
 fn registry() -> &'static RwLock<HashMap<String, Vec<(u32, u32)>>> {
-    REGISTRY.get_or_init(|| {
-        let mut m: HashMap<String, Vec<(u32, u32)>> = HashMap::new();
-        m.insert("Nahawand".into(), vec![(1,1),(9,8),(32,27),(4,3),(3,2)]);
-        m.insert("Bayati".into(),   vec![(1,1),(12,11),(32,27),(4,3),(3,2)]);
-        m.insert("Hijaz".into(),    vec![(1,1),(256,243),(81,64),(4,3),(3,2)]);
-        m.insert("Rast".into(),     vec![(1,1),(9,8),(27,22),(4,3),(3,2)]);
-        m.insert("Kurd".into(),     vec![(1,1),(256,243),(32,27),(4,3),(3,2)]);
-        m.insert("Saba".into(),     vec![(1,1),(13,12),(32,27),(5,4)]);
-        m.insert("Zaba".into(),     vec![(1,1),(12,11),(32,27),(11,8)]);
-        m.insert("Ajam".into(),     vec![(1,1),(9,8),(5,4),(4,3),(3,2)]);
-        m.insert("Nikriz".into(),   vec![(1,1),(256,243),(81,64),(4,3),(3,2)]);
-        m.insert("Suznak".into(),   vec![(1,1),(9,8),(27,22),(4,3),(3,2)]);
-        m.insert("Jiharkah".into(), vec![(1,1),(9,8),(5,4),(4,3),(3,2)]);
-        RwLock::new(m)
-    })
+    REGISTRY.get_or_init(|| RwLock::new(default_registry_map()))
 }
 
 // ── Maqam ─────────────────────────────────────────────────────────────────────
@@ -112,6 +114,18 @@ impl Maqam {
         v
     }
 
+    /// Sorted list of jins that differ from the built-in defaults.
+    pub fn list_custom() -> Vec<(String, Vec<(u32, u32)>)> {
+        let defaults = default_registry_map();
+        let reg = registry().read().unwrap();
+        let mut v: Vec<_> = reg.iter()
+            .filter(|(name, ratios)| defaults.get(*name) != Some(*ratios))
+            .map(|(name, ratios)| (name.clone(), ratios.clone()))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
     /// Create or overwrite a jins entry.
     pub fn create(name: &str, ratios: Vec<(u32, u32)>) {
         registry().write().unwrap().insert(name.to_string(), ratios);
@@ -120,6 +134,11 @@ impl Maqam {
     /// Delete a jins entry. Returns false if it didn't exist.
     pub fn delete(name: &str) -> bool {
         registry().write().unwrap().remove(name).is_some()
+    }
+
+    /// Replace the live registry with built-in defaults.
+    pub fn reset_to_defaults() {
+        *registry().write().unwrap() = default_registry_map();
     }
 
     #[allow(dead_code)]

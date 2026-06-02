@@ -1,7 +1,8 @@
 // app.rs — application state, phrases as top-level units
 
 use crossbeam_channel::Sender;
-use crate::command::{self, Cmd, JinsSpec};
+use std::fs;
+use crate::command::{self, Cmd, JinsSpec, ValueChange};
 use crate::record;
 use crate::sequencer::{build_phrase, AudioCmd, BarSpec, Phrase};
 
@@ -297,17 +298,39 @@ impl App {
                 }
             }
 
+            Cmd::Save { path } => {
+                match self.save_session(&path) {
+                    Ok(()) => self.message = Some(format!("saved session → {path}")),
+                    Err(e) => self.message = Some(format!("✗ save failed: {e}")),
+                }
+            }
+
+            Cmd::Load { path } => {
+                match self.load_session(&path) {
+                    Ok(()) => self.message = Some(format!("loaded session ← {path}")),
+                    Err(e) => self.message = Some(format!("✗ load failed: {e}")),
+                }
+            }
+
             Cmd::Clear => {
                 self.phrases.clear();
                 let _ = self.audio_tx.send(AudioCmd::Clear);
                 self.message = Some("cleared".into());
             }
-            Cmd::SetBpm(bpm) => {
+            Cmd::SetBpm(change) => {
+                let bpm = match apply_bpm_change(self.bpm, change) {
+                    Ok(v) => v,
+                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                };
                 self.bpm = bpm;
                 let _ = self.audio_tx.send(AudioCmd::SetBpm(bpm));
-                self.message = Some(format!("BPM → {bpm}"));
+                self.message = Some(format!("BPM → {bpm:.2}"));
             }
-            Cmd::SetSustain(secs) => {
+            Cmd::SetSustain(change) => {
+                let secs = match apply_sustain_change(self.sustain, change) {
+                    Ok(v) => v,
+                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                };
                 self.sustain = secs;
                 let _ = self.audio_tx.send(AudioCmd::SetSustain(secs));
                 self.message = Some(format!("sustain → {secs:.2}s"));
@@ -402,6 +425,248 @@ impl App {
             }
         }
     }
+
+    fn save_session(&self, path: &str) -> Result<(), String> {
+        let mut out = String::new();
+        out.push_str("MAQAM_SESSION_V2\n");
+        for (name, ratios) in crate::tuning::Maqam::list_custom() {
+            let ratios_s = ratios.iter()
+                .map(|(p, q)| format!("{p}/{q}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            out.push_str(&format!("create {name} {ratios_s}\n"));
+        }
+        out.push_str(&format!("bpm {}\n", self.bpm));
+        out.push_str(&format!("s {}\n", self.sustain));
+        out.push_str(&format!("vol {}\n", self.vol));
+        for p in &self.phrases {
+            if let Some(j) = &p.jump {
+                out.push_str(&format!("j {} {}\n", j.target_id, j.times));
+            } else {
+                if p.repeat > 1 {
+                    out.push_str(&format!("{} r{}\n", p.src, p.repeat));
+                } else {
+                    out.push_str(&format!("{}\n", p.src));
+                }
+            }
+        }
+        fs::write(path, out).map_err(|e| e.to_string())
+    }
+
+    fn load_session(&mut self, path: &str) -> Result<(), String> {
+        let src = fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let mut lines = src.lines();
+        let Some(header) = lines.next() else { return Err("empty file".into()); };
+        let header = header.trim();
+        if header == "MAQAM_SESSION_V2" {
+            return self.load_session_v2(lines);
+        }
+        if header == "MAQAM_SESSION_V1" {
+            return self.load_session_v1(lines);
+        }
+        Err("bad header (expected MAQAM_SESSION_V2 or MAQAM_SESSION_V1)".into())
+    }
+
+    fn load_session_v1<'a, I>(&mut self, lines: I) -> Result<(), String>
+    where
+        I: Iterator<Item = &'a str>
+    {
+        let mut new_bpm = self.bpm;
+        let mut new_sustain = self.sustain;
+        let mut new_vol = self.vol;
+        let mut loaded: Vec<Phrase> = Vec::new();
+        let mut max_id = 0usize;
+        let mut last_rhythm = vec![3, 3, 2];
+
+        for (line_idx, raw_line) in lines.enumerate() {
+            let line_no = line_idx + 2;
+            let line = raw_line.trim();
+            if line.is_empty() { continue; }
+
+            if line.starts_with("bpm ") {
+                let parsed = command::parse(line).map_err(|e| format!("line {line_no}: {e}"))?;
+                let Cmd::SetBpm(change) = parsed else {
+                    return Err(format!("line {line_no}: expected bpm line"));
+                };
+                new_bpm = apply_bpm_change(new_bpm, change)
+                    .map_err(|e| format!("line {line_no}: {e}"))?;
+                continue;
+            }
+            if line.starts_with("s ") || line.starts_with("sus ") {
+                let parsed = command::parse(line).map_err(|e| format!("line {line_no}: {e}"))?;
+                let Cmd::SetSustain(change) = parsed else {
+                    return Err(format!("line {line_no}: expected sustain line"));
+                };
+                new_sustain = apply_sustain_change(new_sustain, change)
+                    .map_err(|e| format!("line {line_no}: {e}"))?;
+                continue;
+            }
+            if let Some(v) = line.strip_prefix("vol ") {
+                new_vol = v.trim().parse::<f32>()
+                    .map_err(|_| format!("line {line_no}: bad volume"))?;
+                if !(0.0..=2.0).contains(&new_vol) {
+                    return Err(format!("line {line_no}: volume out of range"));
+                }
+                continue;
+            }
+
+            if let Some(payload) = line.strip_prefix("J|") {
+                let mut parts = payload.splitn(3, '|');
+                let id = parts.next().ok_or(format!("line {line_no}: missing jump id"))?
+                    .parse::<usize>().map_err(|_| format!("line {line_no}: bad jump id"))?;
+                let target = parts.next().ok_or(format!("line {line_no}: missing jump target"))?
+                    .parse::<usize>().map_err(|_| format!("line {line_no}: bad jump target"))?;
+                let times = parts.next().ok_or(format!("line {line_no}: missing jump times"))?
+                    .parse::<usize>().map_err(|_| format!("line {line_no}: bad jump times"))?;
+                max_id = max_id.max(id);
+                loaded.push(crate::sequencer::build_jump_entry(id, target, times.max(1)));
+                continue;
+            }
+
+            if let Some(payload) = line.strip_prefix("P|") {
+                let mut parts = payload.splitn(3, '|');
+                let id = parts.next().ok_or(format!("line {line_no}: missing phrase id"))?
+                    .parse::<usize>().map_err(|_| format!("line {line_no}: bad phrase id"))?;
+                let repeat = parts.next().ok_or(format!("line {line_no}: missing repeat"))?
+                    .parse::<usize>().map_err(|_| format!("line {line_no}: bad repeat"))?;
+                let src = parts.next().ok_or(format!("line {line_no}: missing phrase source"))?;
+                let cmd_src = if repeat > 1 {
+                    format!("{src} r{repeat}")
+                } else {
+                    src.to_string()
+                };
+                let parsed = command::parse(&cmd_src)
+                    .map_err(|e| format!("line {line_no}: {e}"))?;
+                let (specs, rep) = match parsed {
+                    Cmd::AddPhrase { specs, repeat } => (specs, repeat),
+                    _ => return Err(format!("line {line_no}: expected phrase command")),
+                };
+                let resolved = resolve_rhythms(specs, &last_rhythm)
+                    .map_err(|e| format!("line {line_no}: {e}"))?;
+                if let Some(r) = resolved.last() {
+                    last_rhythm = r.groups.clone();
+                }
+                let phrase = build_phrase(id, src.to_string(), resolved, 4, rep.max(1));
+                max_id = max_id.max(id);
+                loaded.push(phrase);
+                continue;
+            }
+
+            return Err(format!("line {line_no}: unrecognized line"));
+        }
+
+        for p in &loaded {
+            if let Some(j) = &p.jump {
+                if !loaded.iter().any(|q| q.id == j.target_id) {
+                    return Err(format!("jump id {} points to missing target {}", p.id, j.target_id));
+                }
+            }
+        }
+
+        self.phrases = loaded.clone();
+        self.next_phrase_id = max_id.saturating_add(1);
+        self.last_rhythm = last_rhythm;
+        self.bpm = new_bpm;
+        self.sustain = new_sustain;
+        self.vol = new_vol;
+        self.paused = false;
+
+        let _ = self.audio_tx.send(AudioCmd::Clear);
+        let _ = self.audio_tx.send(AudioCmd::SetBpm(self.bpm));
+        let _ = self.audio_tx.send(AudioCmd::SetSustain(self.sustain));
+        let _ = self.audio_tx.send(AudioCmd::SetVol(self.vol));
+        let _ = self.audio_tx.send(AudioCmd::SetPaused(false));
+        for p in loaded {
+            let _ = self.audio_tx.send(AudioCmd::AddPhrase(p));
+        }
+        let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(0));
+        Ok(())
+    }
+
+    fn load_session_v2<'a, I>(&mut self, lines: I) -> Result<(), String>
+    where
+        I: Iterator<Item = &'a str>
+    {
+        crate::tuning::Maqam::reset_to_defaults();
+        let mut new_bpm = 120.0f64;
+        let mut new_sustain = 1.25f64;
+        let mut new_vol = 1.0f32;
+        let mut loaded: Vec<Phrase> = Vec::new();
+        let mut next_id = 0usize;
+        let mut last_rhythm = vec![3, 3, 2];
+
+        for (line_idx, raw_line) in lines.enumerate() {
+            let line_no = line_idx + 2;
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') { continue; }
+            let cmd = command::parse(line).map_err(|e| format!("line {line_no}: {e}"))?;
+            match cmd {
+                Cmd::SetBpm(change) => {
+                    new_bpm = apply_bpm_change(new_bpm, change)
+                        .map_err(|e| format!("line {line_no}: {e}"))?;
+                }
+                Cmd::SetSustain(change) => {
+                    new_sustain = apply_sustain_change(new_sustain, change)
+                        .map_err(|e| format!("line {line_no}: {e}"))?;
+                }
+                Cmd::SetVol(v) => {
+                    new_vol = v;
+                }
+                Cmd::AddPhrase { specs, repeat } => {
+                    let resolved = resolve_rhythms(specs, &last_rhythm)
+                        .map_err(|e| format!("line {line_no}: {e}"))?;
+                    if let Some(r) = resolved.last() {
+                        last_rhythm = r.groups.clone();
+                    }
+                    let src = resolved.iter().map(|s| s.src.as_str()).collect::<Vec<_>>().join(", ");
+                    let phrase = build_phrase(next_id, src, resolved, 4, repeat.max(1));
+                    next_id += 1;
+                    loaded.push(phrase);
+                }
+                Cmd::Jump { to, times } => {
+                    if !loaded.iter().any(|p| p.id == to) {
+                        return Err(format!("line {line_no}: jump target {to} not found"));
+                    }
+                    let entry = crate::sequencer::build_jump_entry(next_id, to, times.max(1));
+                    next_id += 1;
+                    loaded.push(entry);
+                }
+                Cmd::Clear => {
+                    loaded.clear();
+                    next_id = 0;
+                    last_rhythm = vec![3, 3, 2];
+                }
+                Cmd::CreateJins { name, ratios } => {
+                    crate::tuning::Maqam::create(&name, ratios);
+                }
+                Cmd::DeleteJins { name } => {
+                    let _ = crate::tuning::Maqam::delete(&name);
+                }
+                _ => {
+                    return Err(format!("line {line_no}: unsupported command in session"));
+                }
+            }
+        }
+
+        self.phrases = loaded.clone();
+        self.next_phrase_id = next_id;
+        self.last_rhythm = last_rhythm;
+        self.bpm = new_bpm;
+        self.sustain = new_sustain;
+        self.vol = new_vol;
+        self.paused = false;
+
+        let _ = self.audio_tx.send(AudioCmd::Clear);
+        let _ = self.audio_tx.send(AudioCmd::SetBpm(self.bpm));
+        let _ = self.audio_tx.send(AudioCmd::SetSustain(self.sustain));
+        let _ = self.audio_tx.send(AudioCmd::SetVol(self.vol));
+        let _ = self.audio_tx.send(AudioCmd::SetPaused(false));
+        for p in loaded {
+            let _ = self.audio_tx.send(AudioCmd::AddPhrase(p));
+        }
+        let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(0));
+        Ok(())
+    }
 }
 
 fn resolve_rhythms(specs: Vec<JinsSpec>, default: &[u8]) -> Result<Vec<BarSpec>, String> {
@@ -421,4 +686,20 @@ fn resolve_rhythms(specs: Vec<JinsSpec>, default: &[u8]) -> Result<Vec<BarSpec>,
             groups: grp.unwrap_or_else(|| fallback.clone()),
         })
         .collect())
+}
+
+fn apply_bpm_change(current: f64, change: ValueChange) -> Result<f64, String> {
+    let next = change.apply(current)?;
+    if !(20.0..=400.0).contains(&next) {
+        return Err(format!("bpm {next} out of range"));
+    }
+    Ok(next)
+}
+
+fn apply_sustain_change(current: f64, change: ValueChange) -> Result<f64, String> {
+    let next = change.apply(current)?;
+    if !(0.05..=10.0).contains(&next) {
+        return Err(format!("sustain {next}s out of range"));
+    }
+    Ok(next)
 }
