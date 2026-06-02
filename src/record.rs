@@ -147,14 +147,43 @@ fn nearest_degree_index(hz: f64, freqs: &[f64]) -> usize {
     best
 }
 
-fn hex_points(cx: i32, cy: i32, rx: i32, ry: i32) -> [(i32, i32); 6] {
+fn normalized_octave_ratio(hz: f64, root_hz: f64) -> f64 {
+    let mut ratio = hz / root_hz.max(f64::MIN_POSITIVE);
+    while ratio >= 2.0 {
+        ratio *= 0.5;
+    }
+    while ratio < 1.0 {
+        ratio *= 2.0;
+    }
+    ratio
+}
+
+fn degree_shape_bias(hz: f64, root_hz: f64) -> (i32, i32) {
+    let ratio = normalized_octave_ratio(hz, root_hz);
+    let cents = ratio.log2() * 1200.0;
+    let wave = (cents / 1200.0) * std::f64::consts::TAU;
+    let lift = (wave.sin() * 7.0).round() as i32;
+    let skew = (wave.cos() * 5.0).round() as i32;
+    (lift, skew)
+}
+
+fn column_shape_bias(hz: f64, root_hz: f64, col_idx: usize) -> (i32, i32) {
+    let ratio = normalized_octave_ratio(hz, root_hz);
+    let cents = ratio.log2() * 1200.0;
+    let phase = (cents / 1200.0) * std::f64::consts::TAU + col_idx as f64 * 0.45;
+    let lift = (phase.sin() * 4.0).round() as i32;
+    let skew = (phase.cos() * 3.0).round() as i32;
+    (lift, skew)
+}
+
+fn hex_points(cx: i32, cy: i32, rx: i32, ry: i32, skew: i32) -> [(i32, i32); 6] {
     [
         (cx - rx, cy),
-        (cx - rx / 2, cy - ry),
-        (cx + rx / 2, cy - ry),
+        (cx - rx / 2 + skew, cy - ry),
+        (cx + rx / 2 + skew, cy - ry),
         (cx + rx, cy),
-        (cx + rx / 2, cy + ry),
-        (cx - rx / 2, cy + ry),
+        (cx + rx / 2 - skew, cy + ry),
+        (cx - rx / 2 - skew, cy + ry),
     ]
 }
 
@@ -227,10 +256,10 @@ fn write_tiling_background(
     fill_rect(&mut buf, buf_w, 0, 0, buf_w, 220, [2, 16, 8]);
     fill_rect(&mut buf, buf_w, 0, 560, buf_w, 160, [2, 16, 8]);
 
-    let line_main = [62, 66, 72];
-    let line_accent = [126, 132, 138];
-    let fill_main = [18, 20, 22];
-    let fill_accent = [44, 48, 54];
+    let line_main = [58, 62, 68];
+    let line_accent = [90, 96, 104];
+    let fill_main = [14, 16, 18];
+    let fill_accent = [56, 60, 66];
     let start_x = BG_START_X;
     let mut x = start_x as i32;
     let sustain_steps = ((sustain / subdiv_secs).ceil() as usize).clamp(1, 12);
@@ -245,6 +274,11 @@ fn write_tiling_background(
         if active_until.len() != rows {
             active_until = vec![0; rows];
         }
+        let degree_biases: Vec<(i32, i32)> = bar
+            .frequencies
+            .iter()
+            .map(|&f| degree_shape_bias(f, bar.root_hz))
+            .collect();
         let top = 230i32;
         let bottom = 530i32;
         let usable = bottom - top;
@@ -256,22 +290,24 @@ fn write_tiling_background(
                 SubdivEvent::Kick(hz) | SubdivEvent::Snare(hz) => *hz,
             };
             let row = nearest_degree_index(hz, &bar.frequencies);
+            let (col_lift, col_skew) = column_shape_bias(hz, bar.root_hz, col_idx);
             active_until[row] = col_idx + sustain_steps;
             for r in 0..rows {
-                let cy = top + y_offset + ry + r as i32 * base_gap;
-                let pts = hex_points(x, cy, rx, ry);
+                let (row_lift, row_skew) = degree_biases[r];
+                let cy = top + y_offset + ry + r as i32 * base_gap + row_lift + col_lift;
+                let pts = hex_points(x, cy, rx, ry, row_skew + col_skew);
                 let fade = if active_until[r] > col_idx {
                     ((active_until[r] - col_idx) as f32 / sustain_steps as f32).clamp(0.15, 1.0)
                 } else { 0.0 };
                 if fade > 0.0 {
                     let rgb = if r == row { fill_accent } else { fill_main };
-                    let alpha = if r == row { 0.28 + fade * 0.22 } else { 0.04 + fade * 0.07 };
+                    let alpha = if r == row { 0.20 + fade * 0.12 } else { 0.03 + fade * 0.05 };
                     fill_polygon(&mut buf, buf_w, &pts, rgb, alpha);
                 }
                 draw_polygon_outline(
                     &mut buf, buf_w, &pts,
                     if r == row { line_accent } else { line_main },
-                    if r == row { 0.82 } else { 0.40 },
+                    if r == row { 0.60 } else { 0.36 },
                     if r == row { 3 } else { 1 },
                 );
             }
@@ -743,7 +779,7 @@ pub fn record_cycle(
     const BG_STEP_X: usize = 22;
 
     let start_x = BG_START_X;
-    let right_margin = 10usize;
+    let right_margin = 28usize;
     let latest_target = 1280usize.saturating_sub(right_margin);
     let scroll_expr = if scroll_range == 0 {
         "0".to_string()
