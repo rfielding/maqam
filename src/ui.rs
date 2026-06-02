@@ -363,6 +363,7 @@ fn draw_help(f: &mut Frame, area: ratatui::layout::Rect) {
         Line::from(vec![Span::styled("  j <id> [n]              ", green), Span::styled("jump to phrase id, n times total", dim)]),
         Line::from(vec![Span::styled("  i <id> <phrase>         ", green), Span::styled("insert phrase before id", dim)]),
         Line::from(vec![Span::styled("  i <id> j <target> [n]   ", green), Span::styled("insert jump entry before id", dim)]),
+        Line::from(vec![Span::styled("  up <id> / down <id>     ", green), Span::styled("move entry by one slot", dim)]),
         Line::from(vec![Span::styled("  x <id> [id…]            ", green), Span::styled("delete by id  (blocked if playing)", dim)]),
         Line::from(vec![Span::styled("  edit <id> <phrase>      ", green), Span::styled("replace phrase content  (blocked if playing)", dim)]),
         Line::from(vec![Span::styled("  edit <id> j <tgt> [n]   ", green), Span::styled("replace phrase with jump entry", dim)]),

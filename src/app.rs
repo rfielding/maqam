@@ -165,6 +165,21 @@ impl App {
         }
     }
 
+    fn resync_audio_sequence(&mut self, focus_id: Option<usize>) {
+        let target_pos = focus_id.and_then(|id| self.phrases.iter().position(|p| p.id == id)).unwrap_or(0);
+        let _ = self.audio_tx.send(AudioCmd::Clear);
+        let _ = self.audio_tx.send(AudioCmd::SetBpm(self.bpm));
+        let _ = self.audio_tx.send(AudioCmd::SetSustain(self.sustain));
+        let _ = self.audio_tx.send(AudioCmd::SetVol(self.vol));
+        let _ = self.audio_tx.send(AudioCmd::SetPaused(self.paused));
+        for p in self.phrases.iter().cloned() {
+            let _ = self.audio_tx.send(AudioCmd::AddPhrase(p));
+        }
+        if !self.phrases.is_empty() {
+            let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(target_pos.min(self.phrases.len() - 1)));
+        }
+    }
+
     // ── Commands ──────────────────────────────────────────────────────────
 
     pub fn handle_command(&mut self, raw: &str) {
@@ -317,6 +332,46 @@ impl App {
                     let _ = self.audio_tx.send(AudioCmd::Rotate);
                     self.message = None;
                 }
+            }
+
+            Cmd::MoveUp(id) => {
+                let Some(pos) = self.phrases.iter().position(|p| p.id == id) else {
+                    self.message = Some(format!("✗ no phrase id {id}"));
+                    return;
+                };
+                if pos == 0 {
+                    self.message = Some(format!("id {id} is already at top"));
+                    return;
+                }
+                let focus_id = if self.paused {
+                    Some(id)
+                } else {
+                    let cur_pos = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
+                    self.phrases.get(cur_pos).map(|p| p.id).or(Some(id))
+                };
+                self.phrases.swap(pos - 1, pos);
+                self.resync_audio_sequence(focus_id);
+                self.message = Some(format!("moved {id} up"));
+            }
+
+            Cmd::MoveDown(id) => {
+                let Some(pos) = self.phrases.iter().position(|p| p.id == id) else {
+                    self.message = Some(format!("✗ no phrase id {id}"));
+                    return;
+                };
+                if pos + 1 >= self.phrases.len() {
+                    self.message = Some(format!("id {id} is already at bottom"));
+                    return;
+                }
+                let focus_id = if self.paused {
+                    Some(id)
+                } else {
+                    let cur_pos = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
+                    self.phrases.get(cur_pos).map(|p| p.id).or(Some(id))
+                };
+                self.phrases.swap(pos, pos + 1);
+                self.resync_audio_sequence(focus_id);
+                self.message = Some(format!("moved {id} down"));
             }
 
             Cmd::ListJins => { self.show_jins = true; }

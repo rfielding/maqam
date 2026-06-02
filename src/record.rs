@@ -34,7 +34,9 @@ const IND_W:    i32 = 12;
 const IND_H:    i32 = 12;
 const RAIL_Y:   i32 = 603;
 const RAIL_H:   i32 = 16;
+#[allow(dead_code)]
 const BOUND_Y:  i32 = 591;
+#[allow(dead_code)]
 const TICK_W:   i32 = 2;
 const LABEL_Y:  i32 = 621;
 const RULER_X0: i32 = 40;

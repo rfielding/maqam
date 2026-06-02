@@ -54,6 +54,8 @@ pub enum Cmd {
     Insert { before: usize, specs: Vec<JinsSpec>, repeat: usize },
     InsertBpm { before: usize, change: ValueChange },
     InsertSustain { before: usize, change: ValueChange },
+    MoveUp(usize),
+    MoveDown(usize),
     Edit   { id: usize, specs: Vec<JinsSpec>, repeat: usize },
     EditJump { id: usize, to: usize, times: usize },
     InsertJump { before: usize, to: usize, times: usize },
@@ -157,6 +159,20 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
         let specs: Result<Vec<JinsSpec>, String> = phrase_part
             .split(',').map(|p| parse_jins_spec(p.trim())).collect();
         return Ok(Cmd::Edit { id, specs: specs?, repeat });
+    }
+
+    // ── REORDER: up/down <id> ─────────────────────────────────────────────
+    if al == "up" {
+        let id = input.split_whitespace().nth(1)
+            .and_then(|s| s.parse().ok())
+            .ok_or("usage: up <id>")?;
+        return Ok(Cmd::MoveUp(id));
+    }
+    if al == "down" {
+        let id = input.split_whitespace().nth(1)
+            .and_then(|s| s.parse().ok())
+            .ok_or("usage: down <id>")?;
+        return Ok(Cmd::MoveDown(id));
     }
 
     // ── INSERT: i<pos> <cmd> ──────────────────────────────────────────────

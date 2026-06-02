@@ -24,6 +24,7 @@ pub struct Bar {
     pub root_hz:       f64,            // actual 5-limit snapped root Hz
     #[allow(dead_code)]
     pub maqam:         Maqam,          // first jins maqam — for display
+    #[allow(dead_code)]
     pub maqam_names:   Vec<String>,    // all jins names — kept for debugging
     pub ratio_strs:    Vec<String>,    // actual JI ratios per jins — for display
     pub groups:        Vec<u8>,        // rhythm groups
