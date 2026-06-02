@@ -52,6 +52,8 @@ pub enum Cmd {
     AddPhrase { specs: Vec<JinsSpec>, repeat: usize },
     Jump   { to: usize, times: usize },
     Insert { before: usize, specs: Vec<JinsSpec>, repeat: usize },
+    InsertBpm { before: usize, change: ValueChange },
+    InsertSustain { before: usize, change: ValueChange },
     Edit   { id: usize, specs: Vec<JinsSpec>, repeat: usize },
     EditJump { id: usize, to: usize, times: usize },
     InsertJump { before: usize, to: usize, times: usize },
@@ -65,7 +67,7 @@ pub enum Cmd {
     ListJins,
     CreateJins { name: String, ratios: Vec<(u32, u32)> },
     DeleteJins { name: String },
-    Save { path: String },
+    Save { path: Option<String> },
     Load { path: String },
     Clear,
     Help,
@@ -162,29 +164,24 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
         let before: usize;
         let rest: &str;
         if !digits.is_empty() {
-            before = digits.parse().map_err(|_| "usage: i<pos> <phrase|j target times>")?;
+            before = digits.parse().map_err(|_| "usage: i<pos> <phrase|j target times|bpm n|s n>")?;
             rest   = input[first.len()..].trim();
         } else {
             let mut toks = input.splitn(3, char::is_whitespace);
             toks.next();
             before = toks.next().and_then(|s| s.parse().ok())
-                .ok_or("usage: i <pos> <phrase|j target times>")?;
+                .ok_or("usage: i <pos> <phrase|j target times|bpm n|s n>")?;
             rest   = toks.next().unwrap_or("").trim();
         }
-        if rest.is_empty() { return Err("usage: i <pos> <phrase|j target times>".into()); }
+        if rest.is_empty() { return Err("usage: i <pos> <phrase|j target times|bpm n|s n>".into()); }
 
-        let rest_toks: Vec<&str> = rest.split_whitespace().collect();
-        if rest_toks.first().map(|s| s.eq_ignore_ascii_case("j")).unwrap_or(false) {
-            let to: usize = rest_toks.get(1).and_then(|s| s.parse().ok())
-                .ok_or("usage: i <pos> j <target_id> [times]")?;
-            let times: usize = rest_toks.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
-            return Ok(Cmd::InsertJump { before, to, times: times.max(1) });
-        }
-
-        let (phrase_part, repeat) = strip_repeat(rest);
-        let specs: Result<Vec<JinsSpec>, String> = phrase_part
-            .split(',').map(|p| parse_jins_spec(p.trim())).collect();
-        return Ok(Cmd::Insert { before, specs: specs?, repeat });
+        return match parse(rest)? {
+            Cmd::AddPhrase { specs, repeat } => Ok(Cmd::Insert { before, specs, repeat }),
+            Cmd::Jump { to, times } => Ok(Cmd::InsertJump { before, to, times }),
+            Cmd::SetBpm(change) => Ok(Cmd::InsertBpm { before, change }),
+            Cmd::SetSustain(change) => Ok(Cmd::InsertSustain { before, change }),
+            _ => Err("unsupported command after insert".into()),
+        };
     }
 
     // ── BPM ───────────────────────────────────────────────────────────────
@@ -258,8 +255,7 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
         let path = input.splitn(2, char::is_whitespace).nth(1)
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
-            .ok_or("usage: save <path>")?
-            .to_string();
+            .map(|s| s.to_string());
         return Ok(Cmd::Save { path });
     }
     if al == "load" {

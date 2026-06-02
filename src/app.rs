@@ -4,7 +4,7 @@ use crossbeam_channel::Sender;
 use std::fs;
 use crate::command::{self, Cmd, JinsSpec, ValueChange};
 use crate::record;
-use crate::sequencer::{build_phrase, AudioCmd, BarSpec, Phrase};
+use crate::sequencer::{build_control_entry, build_phrase, AudioCmd, BarSpec, ControlSpec, Phrase};
 
 pub struct App {
     pub phrases:     Vec<Phrase>,
@@ -23,6 +23,7 @@ pub struct App {
     pub saved_input: String,
     pub cursor_pos:  usize,
     pub rec_rx:      Option<crossbeam_channel::Receiver<Result<String, String>>>,
+    session_path:    Option<String>,
     next_phrase_id:  usize,
     last_rhythm:     Vec<u8>,
     audio_tx:        Sender<AudioCmd>,
@@ -47,6 +48,7 @@ impl App {
             saved_input:    String::new(),
             cursor_pos:     0,
             rec_rx:         None,
+            session_path:   None,
             next_phrase_id: 0,
             last_rhythm:    vec![3, 3, 2],
             audio_tx,
@@ -62,6 +64,10 @@ impl App {
         }
         self.history_pos = None;
         self.saved_input.clear();
+    }
+
+    pub fn last_history(&self) -> Option<&str> {
+        self.history.last().map(|s| s.as_str())
     }
 
     pub fn history_up(&mut self) {
@@ -225,6 +231,36 @@ impl App {
                 self.message = None;
             }
 
+            Cmd::InsertBpm { before, change } => {
+                let bpm = match apply_bpm_change(self.bpm, change) {
+                    Ok(v) => v,
+                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                };
+                let insert_pos = self.phrases.iter().position(|p| p.id == before)
+                    .unwrap_or(self.phrases.len());
+                let id = self.next_phrase_id;
+                self.next_phrase_id += 1;
+                let entry = build_control_entry(id, format!("bpm {bpm}"), ControlSpec::SetBpm(bpm));
+                self.phrases.insert(insert_pos, entry.clone());
+                let _ = self.audio_tx.send(AudioCmd::InsertPhrase { pos: insert_pos, phrase: entry });
+                self.message = Some(format!("inserted bpm at {insert_pos}"));
+            }
+
+            Cmd::InsertSustain { before, change } => {
+                let secs = match apply_sustain_change(self.sustain, change) {
+                    Ok(v) => v,
+                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                };
+                let insert_pos = self.phrases.iter().position(|p| p.id == before)
+                    .unwrap_or(self.phrases.len());
+                let id = self.next_phrase_id;
+                self.next_phrase_id += 1;
+                let entry = build_control_entry(id, format!("s {secs}"), ControlSpec::SetSustain(secs));
+                self.phrases.insert(insert_pos, entry.clone());
+                let _ = self.audio_tx.send(AudioCmd::InsertPhrase { pos: insert_pos, phrase: entry });
+                self.message = Some(format!("inserted sustain at {insert_pos}"));
+            }
+
             Cmd::TogglePause { start_id } => {
                 if let Some(id) = start_id {
                     // z <id>: seek to phrase, no pause toggle
@@ -299,15 +335,28 @@ impl App {
             }
 
             Cmd::Save { path } => {
+                let path = match path.or_else(|| self.session_path.clone()) {
+                    Some(path) => path,
+                    None => {
+                        self.message = Some("✗ usage: save <path>".into());
+                        return;
+                    }
+                };
                 match self.save_session(&path) {
-                    Ok(()) => self.message = Some(format!("saved session → {path}")),
+                    Ok(()) => {
+                        self.session_path = Some(path.clone());
+                        self.message = Some(format!("saved session → {path}"));
+                    }
                     Err(e) => self.message = Some(format!("✗ save failed: {e}")),
                 }
             }
 
             Cmd::Load { path } => {
                 match self.load_session(&path) {
-                    Ok(()) => self.message = Some(format!("loaded session ← {path}")),
+                    Ok(()) => {
+                        self.session_path = Some(path.clone());
+                        self.message = Some(format!("loaded session ← {path}"));
+                    }
                     Err(e) => self.message = Some(format!("✗ load failed: {e}")),
                 }
             }
@@ -322,18 +371,28 @@ impl App {
                     Ok(v) => v,
                     Err(e) => { self.message = Some(format!("✗ {e}")); return; }
                 };
+                let id = self.next_phrase_id;
+                self.next_phrase_id += 1;
+                let entry = build_control_entry(id, format!("bpm {bpm}"), ControlSpec::SetBpm(bpm));
+                self.phrases.push(entry.clone());
                 self.bpm = bpm;
+                let _ = self.audio_tx.send(AudioCmd::AddPhrase(entry));
                 let _ = self.audio_tx.send(AudioCmd::SetBpm(bpm));
-                self.message = Some(format!("BPM → {bpm:.2}"));
+                self.message = Some(format!("BPM line → {bpm:.2}"));
             }
             Cmd::SetSustain(change) => {
                 let secs = match apply_sustain_change(self.sustain, change) {
                     Ok(v) => v,
                     Err(e) => { self.message = Some(format!("✗ {e}")); return; }
                 };
+                let id = self.next_phrase_id;
+                self.next_phrase_id += 1;
+                let entry = build_control_entry(id, format!("s {secs}"), ControlSpec::SetSustain(secs));
+                self.phrases.push(entry.clone());
                 self.sustain = secs;
+                let _ = self.audio_tx.send(AudioCmd::AddPhrase(entry));
                 let _ = self.audio_tx.send(AudioCmd::SetSustain(secs));
-                self.message = Some(format!("sustain → {secs:.2}s"));
+                self.message = Some(format!("s line → {secs:.2}s"));
             }
 
             Cmd::EditJump { id, to, times } => {
@@ -364,6 +423,10 @@ impl App {
                 };
                 if self.phrases[pos].jump.is_some() {
                     self.message = Some(format!("✗ id {id} is a jump entry — use x then j"));
+                    return;
+                }
+                if self.phrases[pos].control.is_some() {
+                    self.message = Some(format!("✗ id {id} is a settings entry — use x then bpm/s"));
                     return;
                 }
                 let resolved = match resolve_rhythms(specs, &self.last_rhythm) {
@@ -436,12 +499,15 @@ impl App {
                 .join(" ");
             out.push_str(&format!("create {name} {ratios_s}\n"));
         }
-        out.push_str(&format!("bpm {}\n", self.bpm));
-        out.push_str(&format!("s {}\n", self.sustain));
         out.push_str(&format!("vol {}\n", self.vol));
         for p in &self.phrases {
             if let Some(j) = &p.jump {
                 out.push_str(&format!("j {} {}\n", j.target_id, j.times));
+            } else if let Some(ctrl) = p.control {
+                match ctrl {
+                    ControlSpec::SetBpm(v) => out.push_str(&format!("bpm {v}\n")),
+                    ControlSpec::SetSustain(v) => out.push_str(&format!("s {v}\n")),
+                }
             } else {
                 if p.repeat > 1 {
                     out.push_str(&format!("{} r{}\n", p.src, p.repeat));
@@ -490,6 +556,9 @@ impl App {
                 };
                 new_bpm = apply_bpm_change(new_bpm, change)
                     .map_err(|e| format!("line {line_no}: {e}"))?;
+                let entry = build_control_entry(max_id, format!("bpm {new_bpm}"), ControlSpec::SetBpm(new_bpm));
+                loaded.push(entry);
+                max_id += 1;
                 continue;
             }
             if line.starts_with("s ") || line.starts_with("sus ") {
@@ -499,6 +568,9 @@ impl App {
                 };
                 new_sustain = apply_sustain_change(new_sustain, change)
                     .map_err(|e| format!("line {line_no}: {e}"))?;
+                let entry = build_control_entry(max_id, format!("s {new_sustain}"), ControlSpec::SetSustain(new_sustain));
+                loaded.push(entry);
+                max_id += 1;
                 continue;
             }
             if let Some(v) = line.strip_prefix("vol ") {
@@ -555,14 +627,6 @@ impl App {
             return Err(format!("line {line_no}: unrecognized line"));
         }
 
-        for p in &loaded {
-            if let Some(j) = &p.jump {
-                if !loaded.iter().any(|q| q.id == j.target_id) {
-                    return Err(format!("jump id {} points to missing target {}", p.id, j.target_id));
-                }
-            }
-        }
-
         self.phrases = loaded.clone();
         self.next_phrase_id = max_id.saturating_add(1);
         self.last_rhythm = last_rhythm;
@@ -604,10 +668,16 @@ impl App {
                 Cmd::SetBpm(change) => {
                     new_bpm = apply_bpm_change(new_bpm, change)
                         .map_err(|e| format!("line {line_no}: {e}"))?;
+                    let entry = build_control_entry(next_id, format!("bpm {new_bpm}"), ControlSpec::SetBpm(new_bpm));
+                    next_id += 1;
+                    loaded.push(entry);
                 }
                 Cmd::SetSustain(change) => {
                     new_sustain = apply_sustain_change(new_sustain, change)
                         .map_err(|e| format!("line {line_no}: {e}"))?;
+                    let entry = build_control_entry(next_id, format!("s {new_sustain}"), ControlSpec::SetSustain(new_sustain));
+                    next_id += 1;
+                    loaded.push(entry);
                 }
                 Cmd::SetVol(v) => {
                     new_vol = v;
@@ -624,9 +694,6 @@ impl App {
                     loaded.push(phrase);
                 }
                 Cmd::Jump { to, times } => {
-                    if !loaded.iter().any(|p| p.id == to) {
-                        return Err(format!("line {line_no}: jump target {to} not found"));
-                    }
                     let entry = crate::sequencer::build_jump_entry(next_id, to, times.max(1));
                     next_id += 1;
                     loaded.push(entry);

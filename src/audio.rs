@@ -8,7 +8,7 @@
 use crossbeam_channel::Receiver;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::sequencer::{AudioCmd, Phrase, SubdivEvent};
+use crate::sequencer::{AudioCmd, ControlSpec, Phrase, SubdivEvent};
 use crate::synth::{evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Milestone, Voice};
 
 // ── Playback state ────────────────────────────────────────────────────────────
@@ -47,6 +47,12 @@ impl PlayingPhrase {
             bs.last_subdiv = None;
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum PendingControl {
+    SetBpm(f64),
+    SetSustain(f64),
 }
 
 fn make_bar_states(phrase: &Phrase, sr: f64, bpm: f64) -> Vec<BarState> {
@@ -121,6 +127,8 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                             pp.phrase.src    = p.src;
                             pp.phrase.bar    = p.bar;
                             pp.phrase.repeat = p.repeat;
+                            pp.phrase.jump   = p.jump;
+                            pp.phrase.control = p.control;
                             pp.rebuild(sr, bpm);
                         }
                     }
@@ -159,10 +167,20 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
             // ── per-sample loop ────────────────────────────────────────────
             for frame in data.chunks_mut(ch) {
 
-                let (event, milestone) = tick_sequencer(
-                    &mut phrases, &mut cur_phrase, bpm, sr, sustain, &mut voices,
+                let (event, milestone, pending_control) = tick_sequencer(
+                    &mut phrases, &mut cur_phrase, sr, &mut voices,
                     &mut jump_counters
                 );
+
+                if let Some(ctrl) = pending_control {
+                    match ctrl {
+                        PendingControl::SetBpm(v) => {
+                            bpm = v;
+                            for pp in phrases.iter_mut() { pp.rebuild(sr, bpm); }
+                        }
+                        PendingControl::SetSustain(v) => { sustain = v; }
+                    }
+                }
 
                 if milestone == Milestone::PhraseStart && !paused {
                     if let Some(pp) = phrases.get(cur_phrase) {
@@ -217,13 +235,11 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
 fn tick_sequencer(
     phrases:       &mut Vec<PlayingPhrase>,
     cur_phrase:    &mut usize,
-    _bpm:          f64,
     _sr:           f64,
-    _sustain:      f64,
     _voices:       &mut Vec<Voice>,
     jump_counters: &mut std::collections::HashMap<usize, usize>,
-) -> (Option<SubdivEvent>, Milestone) {
-    if phrases.is_empty() { return (None, Milestone::None); }
+) -> (Option<SubdivEvent>, Milestone, Option<PendingControl>) {
+    if phrases.is_empty() { return (None, Milestone::None, None); }
 
     let max_iter = phrases.len() + 1;
     for _ in 0..max_iter {
@@ -259,6 +275,17 @@ fn tick_sequencer(
             }
             continue;
         }
+        let control = phrases[*cur_phrase].phrase.control;
+        if let Some(ctrl) = control {
+            let pending = match ctrl {
+                ControlSpec::SetBpm(v) => PendingControl::SetBpm(v),
+                ControlSpec::SetSustain(v) => PendingControl::SetSustain(v),
+            };
+            *cur_phrase += 1;
+            if *cur_phrase >= phrases.len() { *cur_phrase = 0; }
+            crate::CUR_PHRASE.store(*cur_phrase, std::sync::atomic::Ordering::Relaxed);
+            return (None, Milestone::None, Some(pending));
+        }
         break;
     }
 
@@ -286,6 +313,8 @@ fn tick_sequencer(
                     result = phrases[target].phrase.id != curr_id;
                     break;
                 }
+                pos = (pos + 1) % n;
+            } else if p.control.is_some() {
                 pos = (pos + 1) % n;
             } else {
                 result = p.id != curr_id;
@@ -344,5 +373,5 @@ fn tick_sequencer(
         }
     }
 
-    (ev, milestone)
+    (ev, milestone, None)
 }

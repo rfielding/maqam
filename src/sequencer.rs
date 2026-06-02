@@ -57,6 +57,12 @@ pub struct JumpSpec {
     pub times:     usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum ControlSpec {
+    SetBpm(f64),
+    SetSustain(f64),
+}
+
 #[derive(Debug, Clone)]
 pub struct Phrase {
     pub id:     usize,
@@ -65,6 +71,8 @@ pub struct Phrase {
     pub repeat: usize,
     /// If Some, this is a control-flow entry (no audio).
     pub jump:   Option<JumpSpec>,
+    /// If Some, this is a settings/timeline entry (no audio).
+    pub control: Option<ControlSpec>,
 }
 
 impl Phrase {
@@ -73,10 +81,8 @@ impl Phrase {
     pub fn is_jump(&self) -> bool { self.jump.is_some() }
 }
 
-/// Build a jump-entry phrase (no audio — pure sequencer control flow).
-pub fn build_jump_entry(id: usize, target_id: usize, times: usize) -> Phrase {
-    // Empty bar — zero subdivisions, never played
-    let bar = Bar {
+fn empty_bar() -> Bar {
+    Bar {
         root: Pitch { letter: 'd', accidental: 0, octave: 4 },
         root_hz: 293.6648,
         maqam: Maqam::new("Nahawand"),
@@ -88,13 +94,29 @@ pub fn build_jump_entry(id: usize, target_id: usize, times: usize) -> Phrase {
         degrees: vec![],
         events: vec![],
         total_subdivs: 0,
-    };
+    }
+}
+
+/// Build a jump-entry phrase (no audio — pure sequencer control flow).
+pub fn build_jump_entry(id: usize, target_id: usize, times: usize) -> Phrase {
     Phrase {
         id,
         src: format!("j {target_id} {times}"),
-        bar,
+        bar: empty_bar(),
         repeat: 1,
         jump: Some(JumpSpec { target_id, times }),
+        control: None,
+    }
+}
+
+pub fn build_control_entry(id: usize, src: String, control: ControlSpec) -> Phrase {
+    Phrase {
+        id,
+        src,
+        bar: empty_bar(),
+        repeat: 1,
+        jump: None,
+        control: Some(control),
     }
 }
 
@@ -204,7 +226,7 @@ pub fn build_phrase(
         total_subdivs,
     };
 
-    Phrase { id: phrase_id, src, bar, repeat, jump: None }
+    Phrase { id: phrase_id, src, bar, repeat, jump: None, control: None }
 }
 
 // ── Event computation ─────────────────────────────────────────────────────────

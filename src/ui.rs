@@ -53,7 +53,11 @@ pub fn run(app: &mut App) -> anyhow::Result<()> {
                     { app.should_quit = true; }
 
                     KeyCode::Enter => {
-                        let cmd = app.input.clone();
+                        let cmd = if app.input.trim().is_empty() {
+                            app.last_history().unwrap_or("").to_string()
+                        } else {
+                            app.input.clone()
+                        };
                         app.history_push(&cmd);
                         app.input.clear();
                         app.cursor_pos = 0;
@@ -132,6 +136,7 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
         // Jump entries — show live counter for every jump, not just the playing one
         if let Some(ref js) = phrase.jump {
+            let valid_target = app.phrases.iter().any(|p| p.id == js.target_id);
             // Read counter from the shared map (written by audio thread)
             let remaining = crate::jump_counters().lock()
                 .ok()
@@ -141,21 +146,37 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             let total   = js.times;
             let counter = format!("  [{}/{}]", pass, total);
 
-            let col_src = if playing {
+            let col_src = if !valid_target {
+                Color::Rgb(255, 80, 80)
+            } else if playing {
                 Color::Rgb(255, 210, 80)   // bright amber when active
             } else {
                 Color::Rgb(110, 95, 40)    // dim amber otherwise
             };
-            let col_ctr = if playing {
+            let col_ctr = if !valid_target {
+                Color::Rgb(255, 120, 120)
+            } else if playing {
                 Color::Rgb(255, 255, 150)  // bright counter when active
             } else {
                 Color::Rgb(160, 140, 70)   // visible but subdued when inactive
             };
+            let err = if valid_target { "" } else { "  [missing target]" };
             return ListItem::new(Line::from(vec![
                 Span::styled(marker,             Style::default().fg(ACCENT).bg(BG).add_modifier(Modifier::BOLD)),
                 Span::styled(id_str,             Style::default().fg(DIM).bg(BG)),
                 Span::styled(phrase.src.clone(), Style::default().fg(col_src).bg(BG).add_modifier(Modifier::BOLD)),
                 Span::styled(counter,            Style::default().fg(col_ctr).bg(BG).add_modifier(Modifier::BOLD)),
+                Span::styled(err,                Style::default().fg(Color::Rgb(255, 100, 100)).bg(BG).add_modifier(Modifier::BOLD)),
+            ]));
+        }
+
+        if phrase.control.is_some() {
+            let col = if playing { Color::Rgb(120, 220, 255) } else { Color::Rgb(70, 120, 140) };
+            return ListItem::new(Line::from(vec![
+                Span::styled(marker,             Style::default().fg(ACCENT).bg(BG).add_modifier(Modifier::BOLD)),
+                Span::styled(id_str,             Style::default().fg(DIM).bg(BG)),
+                Span::styled(phrase.src.clone(), Style::default().fg(col).bg(BG).add_modifier(Modifier::BOLD)),
+                Span::styled("  [settings]",     Style::default().fg(Color::Rgb(90, 140, 150)).bg(BG)),
             ]));
         }
 
@@ -227,8 +248,20 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 fn draw_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let chars: Vec<char> = app.input.chars().collect();
     let mut spans = vec![Span::styled("> ", Style::default().fg(DIM).bg(BG))];
-    for &ch in chars.iter() {
-        spans.push(Span::styled(ch.to_string(), Style::default().fg(CMD).bg(BG)));
+    let cursor = app.cursor_pos.min(chars.len());
+    for (idx, &ch) in chars.iter().enumerate() {
+        let style = if idx == cursor {
+            Style::default().fg(BG).bg(CMD).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(CMD).bg(BG)
+        };
+        spans.push(Span::styled(ch.to_string(), style));
+    }
+    if cursor >= chars.len() {
+        spans.push(Span::styled(
+            " ",
+            Style::default().fg(BG).bg(CMD).add_modifier(Modifier::BOLD),
+        ));
     }
     let para = Paragraph::new(Line::from(spans))
         .style(Style::default().bg(BG))
@@ -238,9 +271,9 @@ fn draw_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             .border_style(Style::default().fg(BORDER).bg(BG)));
     f.render_widget(para, area);
 
-    // Position the real terminal cursor — blinking block, always visible.
+    // Keep the real terminal cursor aligned with the painted inverse cursor cell.
     // area.x + 1 (border) + 2 ("> ") + cursor_pos columns
-    let cx = area.x + 1 + 2 + app.cursor_pos as u16;
+    let cx = area.x + 1 + 2 + cursor as u16;
     let cy = area.y + 1; // +1 for top border
     f.set_cursor_position((cx, cy));
 }
