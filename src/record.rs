@@ -194,6 +194,10 @@ fn expand_one_cycle(phrases: &[Phrase])
             }
             continue;
         }
+        if phrase.control.is_some() {
+            cur += 1;
+            continue;
+        }
         let snap: HashMap<usize, (usize, usize)> = phrases.iter()
             .filter_map(|p| p.jump.as_ref().map(|js| {
                 let remaining = jc.get(&p.id).copied().unwrap_or(js.times.saturating_sub(1));
