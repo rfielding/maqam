@@ -69,7 +69,7 @@ pub enum Cmd {
     Record(usize),
     TogglePause { start_id: Option<isize> },
     ListJins,
-    AuditionJins { name: String },
+    AuditionJins { root: Option<Pitch>, name: String },
     CreateJins { name: String, ratios: Vec<(u32, u32)> },
     DeleteJins { name: String },
     Save { path: Option<String> },
@@ -245,10 +245,16 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
 
     // ── AUDITION: audition <Name> ────────────────────────────────────────
     if al == "audition" {
-        let name = input.split_whitespace().nth(1)
-            .ok_or("usage: audition <Name>")?
-            .to_string();
-        return Ok(Cmd::AuditionJins { name });
+        let mut toks = input.split_whitespace();
+        toks.next();
+        let first = toks.next().ok_or("usage: audition <Name> | audition <root> <Name>")?;
+        let second = toks.next();
+        if let Some(name) = second {
+            let root = Pitch::parse(first)
+                .ok_or_else(|| format!("unknown pitch '{first}'"))?;
+            return Ok(Cmd::AuditionJins { root: Some(root), name: name.to_string() });
+        }
+        return Ok(Cmd::AuditionJins { root: None, name: first.to_string() });
     }
 
     // ── CREATE: create <Name> <p/q> <p/q> … ──────────────────────────────

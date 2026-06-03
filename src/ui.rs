@@ -460,7 +460,7 @@ fn draw_jins_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Line::from(vec![Span::styled("  Esc closes, Up/Down scroll", dim)]),
         Line::from(vec![Span::raw("")]),
         Line::from(vec![Span::styled(
-            "  audition <Name>   create <Name> <p/q> …   delete <Name>   ls",
+            "  audition <Name>|<root> <Name>   create <Name> <p/q> …   delete <Name>   ls",
             Style::default().fg(Color::Rgb(0,160,0)).bg(BG),
         )]),
         Line::from(vec![Span::raw("")]),
