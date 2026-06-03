@@ -363,73 +363,32 @@ fn draw_help(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     use ratatui::widgets::{Block, Borders, Paragraph};
     use ratatui::text::{Line, Span};
 
-    let green   = Style::default().fg(ACCENT).bg(BG);
     let bright  = Style::default().fg(Color::Rgb(0,255,0)).bg(BG).add_modifier(Modifier::BOLD);
     let dim     = Style::default().fg(DIM).bg(BG);
     let heading = Style::default().fg(Color::Rgb(0,255,0)).bg(BG).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-
-    let lines: Vec<Line> = vec![
-        Line::from(vec![Span::styled("  maqam-live — command reference", heading)]),
+    let mut lines: Vec<Line> = vec![
+        Line::from(vec![Span::styled("  maqam-live — README", heading)]),
         Line::from(vec![Span::styled("  Esc closes, Up/Down scroll", dim)]),
         Line::from(vec![Span::raw("")]),
-
-        Line::from(vec![Span::styled("  ADD A PHRASE", bright)]),
-        Line::from(vec![Span::styled("  <root> <maqam> [groups] [, <root> <maqam>…] [r<N>]", green)]),
-        Line::from(vec![Span::styled("    roots:   c  d  e  f  g  a  b   (append + or - for sharp/flat)", dim)]),
-        Line::from(vec![Span::styled("    maqams:  nah  bay  hij  ras  kur  sab  aja  nik  suz  jih", dim)]),
-        Line::from(vec![Span::styled("             nahawand bayati hijaz rast kurd saba ajam nikriz suznak jiharkah", dim)]),
-        Line::from(vec![Span::styled("    groups:  332  44  3322  4431  (additive 8th-note rhythm)", dim)]),
-        Line::from(vec![Span::styled("    r<N>:    r4 = repeat 4 times before advancing", dim)]),
-        Line::from(vec![Span::styled("    comma:   stack ajnas into one scale  (d bay, a nah)", dim)]),
-        Line::from(vec![Span::raw("")]),
-
-        Line::from(vec![Span::styled("  SEQUENCE CONTROL", bright)]),
-        Line::from(vec![Span::styled("  j <id> [n]              ", green), Span::styled("jump to phrase id, n times total", dim)]),
-        Line::from(vec![Span::styled("  i <id> <phrase>         ", green), Span::styled("insert phrase before id", dim)]),
-        Line::from(vec![Span::styled("  i <id> j <target> [n]   ", green), Span::styled("insert jump entry before id", dim)]),
-        Line::from(vec![Span::styled("  up <id> / down <id>     ", green), Span::styled("move entry by one slot", dim)]),
-        Line::from(vec![Span::styled("  x <id> [id…]            ", green), Span::styled("delete by id  (blocked if playing)", dim)]),
-        Line::from(vec![Span::styled("  edit <id> <phrase>      ", green), Span::styled("replace with phrase  (blocked if playing)", dim)]),
-        Line::from(vec![Span::styled("  edit <id> j <tgt> [n]   ", green), Span::styled("replace with jump entry", dim)]),
-        Line::from(vec![Span::styled("  edit <id> bpm <n>       ", green), Span::styled("replace with BPM settings entry", dim)]),
-        Line::from(vec![Span::styled("  edit <id> s <n>         ", green), Span::styled("replace with sustain settings entry", dim)]),
-        Line::from(vec![Span::styled("  rot                     ", green), Span::styled("move last phrase to front", dim)]),
-        Line::from(vec![Span::raw("")]),
-
-        Line::from(vec![Span::styled("  SETTINGS", bright)]),
-        Line::from(vec![Span::styled("  bpm <n>   ", green), Span::styled("tempo (20–400); + - * / supported    ", dim)]),
-        Line::from(vec![Span::styled("  s <n>     ", green), Span::styled("sustain sec; + - * / supported", dim)]),
-        Line::from(vec![Span::styled("  vol <n>   ", green), Span::styled("volume (0–2)      ", dim),
-                        Span::styled("  z         ", green), Span::styled("toggle pause", dim)]),
-        Line::from(vec![Span::styled("  z <id>    ", green), Span::styled("seek to phrase id (no pause toggle)", dim)]),
-        Line::from(vec![Span::raw("")]),
-
-        Line::from(vec![Span::styled("  RECORDING", bright)]),
-        Line::from(vec![Span::styled("  m [n]    ", green), Span::styled("record n cycles to ./maqam-<ts>.mp4", dim)]),
-        Line::from(vec![Span::raw("")]),
-
-        Line::from(vec![Span::styled("  OTHER", bright)]),
-        Line::from(vec![Span::styled("  clear    ", green), Span::styled("remove all phrases    ", dim),
-                        Span::styled("  q / Ctrl-C  ", green), Span::styled("quit", dim)]),
-        Line::from(vec![Span::styled("  save <file>  ", green), Span::styled("save session to file  ", dim),
-                        Span::styled("  load <file>  ", green), Span::styled("load session from file", dim)]),
-        Line::from(vec![Span::styled("  ;        ", green), Span::styled("separate multiple commands on one line", dim)]),
-        Line::from(vec![Span::raw("")]),
-
-        Line::from(vec![Span::styled("  SESSION EXAMPLES", bright)]),
-        Line::from(vec![Span::styled("  simple loop:", dim)]),
-        Line::from(vec![Span::styled("    d bayati 332; j 0 4", green)]),
-        Line::from(vec![Span::styled("  phrase + settings timeline:", dim)]),
-        Line::from(vec![Span::styled("    bpm 140; s 1.5; d hijaz 4444; j 2 3", green)]),
-        Line::from(vec![Span::styled("  stacked ajnas then record:", dim)]),
-        Line::from(vec![Span::styled("    d bayati, a nahawand 332; j 0 2; m 2", green)]),
-        Line::from(vec![Span::styled("  registry preview:", dim)]),
-        Line::from(vec![Span::styled("    audition hijaz; create hijaz2 8/9 1/1 15/14 6/5 4/3 3/2", green)]),
-        Line::from(vec![Span::raw("")]),
-
-        Line::from(vec![Span::styled("  Music theory: maqamworld.com", dim)]),
-        Line::from(vec![Span::styled("  Source:       https://github.com/rfielding/maqam", dim)]),
     ];
+
+    for raw in include_str!("../README.md").lines() {
+        let line = raw.trim_end();
+        if line == "```" {
+            continue;
+        }
+        if line.starts_with("![") {
+            lines.push(Line::from(vec![Span::styled(format!("  {line}"), dim)]));
+        } else if line.starts_with("### ") {
+            lines.push(Line::from(vec![Span::styled(format!("  {}", line.trim_start_matches("### ")), bright)]));
+        } else if line.starts_with("## ") || line.starts_with("# ") {
+            lines.push(Line::from(vec![Span::styled(format!("  {}", line.trim_start_matches('#').trim()), heading)]));
+        } else if line.starts_with("- ") {
+            lines.push(Line::from(vec![Span::styled(format!("  {line}"), dim)]));
+        } else {
+            lines.push(Line::from(vec![Span::raw(format!("  {line}"))]));
+        }
+    }
 
     let block = Block::default()
         .borders(Borders::ALL)
