@@ -643,11 +643,13 @@ pub fn record_cycle(
         writeln!(f, "WrapStyle: 0")?;
         writeln!(f, "[V4+ Styles]")?;
         writeln!(f, "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,Strikeout,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding")?;
-        writeln!(f, "Style: Line,Courier New,20,&H0000FF00,&H0000FF00,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,7,20,20,10,1")?;
+        // Temporary Apple IIe-ish look: bold blocky monospace, phosphor green,
+        // dark outline, and a touch of horizontal stretch.
+        writeln!(f, "Style: Line,Courier New,22,&H0088FF88,&H0088FF88,&H00081402,&H00081402,-1,0,0,0,108,100,0,0,1,3,0,7,20,20,10,1")?;
         // URL: MarginV=38 → baseline y≈682, text top y≈657, well below ruler labels
-        writeln!(f, "Style: URL,Courier New,18,&H0000FF00,&H0000FF00,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,1,20,20,38,1")?;
-        // Ratio labels: small teal, \pos positioned — plain text, no drawing
-        writeln!(f, "Style: RulerLabel,Courier New,11,&H0044BB44,&H0044BB44,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,1,0,0,0,1")?;
+        writeln!(f, "Style: URL,Courier New,18,&H0066CC66,&H0066CC66,&H00081402,&H00081402,-1,0,0,0,106,100,0,0,1,2,0,1,20,20,38,1")?;
+        // Ratio labels: dimmer green so they feel like monitor overlay text too
+        writeln!(f, "Style: RulerLabel,Courier New,12,&H004FA84F,&H004FA84F,&H00081402,&H00081402,-1,0,0,0,104,100,0,0,1,1,0,1,0,0,0,1")?;
         writeln!(f, "[Events]")?;
         writeln!(f, "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text")?;
 

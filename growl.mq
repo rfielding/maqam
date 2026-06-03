@@ -5,9 +5,9 @@ create bayati2 8/9 1/1 12/11 32/27 4/3 3/2
 vol 1
 bpm 180
 s 1.2
-g hijaz2 4444
+g hijaz 4444
 j 2 3
-g bayati2 332332
-g saba2 664
+g bayati 332332
+g saba 664
 j 5 4
 j 0 4
