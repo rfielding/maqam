@@ -222,9 +222,10 @@ impl App {
 
     fn resync_audio_sequence(&mut self, focus_id: Option<usize>) {
         let target_pos = focus_id.and_then(|id| self.phrases.iter().position(|p| p.id == id)).unwrap_or(0);
+        let (start_bpm, start_sustain) = self.sequence_start_settings();
         let _ = self.audio_tx.send(AudioCmd::Clear);
-        let _ = self.audio_tx.send(AudioCmd::SetBpm(self.bpm));
-        let _ = self.audio_tx.send(AudioCmd::SetSustain(self.sustain));
+        let _ = self.audio_tx.send(AudioCmd::SetBpm(start_bpm));
+        let _ = self.audio_tx.send(AudioCmd::SetSustain(start_sustain));
         let _ = self.audio_tx.send(AudioCmd::SetVol(self.vol));
         let _ = self.audio_tx.send(AudioCmd::SetPaused(self.paused));
         for p in self.phrases.iter().cloned() {
@@ -238,6 +239,32 @@ impl App {
 
     fn resolve_id_ref(&self, id_ref: isize) -> Option<usize> {
         resolve_id_ref_in_phrases(&self.phrases, id_ref)
+    }
+
+    fn is_playing_phrase_id(&self, id: usize) -> bool {
+        if self.paused {
+            return false;
+        }
+        let cur_pos = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
+        self.phrases.get(cur_pos).map(|p| p.id) == Some(id)
+    }
+
+    fn sequence_start_settings(&self) -> (f64, f64) {
+        let mut bpm = 120.0f64;
+        let mut sustain = 1.25f64;
+        for phrase in &self.phrases {
+            if let Some(ctrl) = phrase.control {
+                match ctrl {
+                    ControlSpec::SetBpm(v) => bpm = v,
+                    ControlSpec::SetSustain(v) => sustain = v,
+                }
+                continue;
+            }
+            if phrase.jump.is_none() {
+                break;
+            }
+        }
+        (bpm, sustain)
     }
 
     fn audition_jins(&mut self, name: &str) -> Result<(), String> {
@@ -445,8 +472,7 @@ impl App {
                     return;
                 }
                 let phrases = self.phrases.clone();
-                let bpm     = self.bpm;
-                let sustain = self.sustain;
+                let (bpm, sustain) = self.sequence_start_settings();
                 let (tx, rx) = crossbeam_channel::bounded(1);
                 self.rec_rx  = Some(rx);
                 self.message = Some(format!("◉ rendering {}×…", reps));
@@ -612,9 +638,7 @@ impl App {
                 if !self.phrases.iter().any(|p| p.id == to) {
                     self.message = Some(format!("✗ no phrase id {to}")); return;
                 }
-                let cur_pos    = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
-                let playing_id = self.phrases.get(cur_pos).map(|p| p.id);
-                if playing_id == Some(id) {
+                if self.is_playing_phrase_id(id) {
                     self.message = Some(format!("✗ phrase {id} is playing — cannot edit"));
                     return;
                 }
@@ -633,9 +657,7 @@ impl App {
                 let Some(id) = self.resolve_id_ref(id) else {
                     self.message = Some(format!("✗ no phrase id {id}")); return;
                 };
-                let cur_pos    = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
-                let playing_id = self.phrases.get(cur_pos).map(|p| p.id);
-                if playing_id == Some(id) {
+                if self.is_playing_phrase_id(id) {
                     self.message = Some(format!("✗ phrase {id} is playing — cannot edit"));
                     return;
                 }
@@ -660,9 +682,7 @@ impl App {
                 let Some(id) = self.resolve_id_ref(id) else {
                     self.message = Some(format!("✗ no phrase id {id}")); return;
                 };
-                let cur_pos    = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
-                let playing_id = self.phrases.get(cur_pos).map(|p| p.id);
-                if playing_id == Some(id) {
+                if self.is_playing_phrase_id(id) {
                     self.message = Some(format!("✗ phrase {id} is playing — cannot edit"));
                     return;
                 }
@@ -684,9 +704,7 @@ impl App {
                 let Some(id) = self.resolve_id_ref(id) else {
                     self.message = Some(format!("✗ no phrase id {id}")); return;
                 };
-                let cur_pos    = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
-                let playing_id = self.phrases.get(cur_pos).map(|p| p.id);
-                if playing_id == Some(id) {
+                if self.is_playing_phrase_id(id) {
                     self.message = Some(format!("✗ phrase {id} is playing — cannot edit"));
                     return;
                 }
@@ -900,10 +918,11 @@ impl App {
         self.sustain = new_sustain;
         self.vol = new_vol;
         self.paused = false;
+        let (start_bpm, start_sustain) = self.sequence_start_settings();
 
         let _ = self.audio_tx.send(AudioCmd::Clear);
-        let _ = self.audio_tx.send(AudioCmd::SetBpm(self.bpm));
-        let _ = self.audio_tx.send(AudioCmd::SetSustain(self.sustain));
+        let _ = self.audio_tx.send(AudioCmd::SetBpm(start_bpm));
+        let _ = self.audio_tx.send(AudioCmd::SetSustain(start_sustain));
         let _ = self.audio_tx.send(AudioCmd::SetVol(self.vol));
         let _ = self.audio_tx.send(AudioCmd::SetPaused(false));
         for p in loaded {
@@ -993,10 +1012,11 @@ impl App {
         self.sustain = new_sustain;
         self.vol = new_vol;
         self.paused = false;
+        let (start_bpm, start_sustain) = self.sequence_start_settings();
 
         let _ = self.audio_tx.send(AudioCmd::Clear);
-        let _ = self.audio_tx.send(AudioCmd::SetBpm(self.bpm));
-        let _ = self.audio_tx.send(AudioCmd::SetSustain(self.sustain));
+        let _ = self.audio_tx.send(AudioCmd::SetBpm(start_bpm));
+        let _ = self.audio_tx.send(AudioCmd::SetSustain(start_sustain));
         let _ = self.audio_tx.send(AudioCmd::SetVol(self.vol));
         let _ = self.audio_tx.send(AudioCmd::SetPaused(false));
         for p in loaded {

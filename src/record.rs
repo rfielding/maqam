@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use crate::sequencer::{Phrase, SubdivEvent};
+use crate::sequencer::{ControlSpec, Phrase, SubdivEvent};
 use crate::synth::{evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Milestone, Voice};
 
 const SR: f64 = 44100.0;
@@ -23,6 +23,23 @@ fn ffmpeg_status(cmd: &mut Command) -> anyhow::Result<bool> {
         }
         Err(err) => Err(err.into()),
     }
+}
+
+#[derive(Clone, Copy)]
+struct RenderOccurrence {
+    phrase_idx: usize,
+    snap_idx: usize,
+    bpm: f64,
+    sustain: f64,
+}
+
+#[derive(Clone, Copy)]
+struct RenderEntry {
+    phrase_idx: usize,
+    play_num: usize,
+    snap_idx: usize,
+    bpm: f64,
+    sustain: f64,
 }
 
 // ── Ruler geometry (1280×720, x: 40..1240 = 1200px = 1px/¢) ─────────────────
@@ -247,17 +264,15 @@ fn draw_polygon_outline(
 }
 
 fn write_tiling_background(
-    full_seq: &[(usize, usize, usize)],
+    full_seq: &[RenderEntry],
     phrases: &[Phrase],
-    subdiv_secs: f64,
-    sustain: f64,
 ) -> anyhow::Result<(String, usize, usize)> {
     const BG_START_X: usize = 1100;
     const BG_STEP_X: usize = 22;
 
     let path = temp_path("maqam-tiling.ppm");
     let tick_count: usize = full_seq.iter()
-        .map(|&(phrase_idx, _, _)| phrases[phrase_idx].bar.events.len().max(1))
+        .map(|entry| phrases[entry.phrase_idx].bar.events.len().max(1))
         .sum();
     let step_x = 42usize;
     let buf_w = (tick_count * step_x + 640).max(1600);
@@ -272,18 +287,19 @@ fn write_tiling_background(
     let fill_accent = [56, 60, 66];
     let start_x = BG_START_X;
     let mut x = start_x as i32;
-    let sustain_steps = ((sustain / subdiv_secs).ceil() as usize).clamp(1, 12);
     let mut active_until: Vec<usize> = Vec::new();
     let rx = 18i32;
     let step_x = BG_STEP_X as i32;
     let mut col_idx = 0usize;
 
-    for &(phrase_idx, _play, _snap) in full_seq {
+    for entry in full_seq {
+        let phrase_idx = entry.phrase_idx;
         let bar = &phrases[phrase_idx].bar;
         let rows = bar.frequencies.len().max(1);
         if active_until.len() != rows {
             active_until = vec![0; rows];
         }
+        let sustain_steps = ((entry.sustain / (60.0 / (entry.bpm * 2.0))).ceil() as usize).clamp(1, 12);
         let degree_biases: Vec<(i32, i32)> = bar
             .frequencies
             .iter()
@@ -410,13 +426,18 @@ fn build_ruler_boxes(
 
 // ── Sequence expansion ────────────────────────────────────────────────────────
 
-fn expand_one_cycle(phrases: &[Phrase])
-    -> (Vec<usize>, Vec<HashMap<usize, (usize, usize)>>)
+fn expand_one_cycle(
+    phrases: &[Phrase],
+    start_bpm: f64,
+    start_sustain: f64,
+) -> (Vec<RenderOccurrence>, Vec<HashMap<usize, (usize, usize)>>)
 {
-    let mut out:       Vec<usize> = Vec::new();
+    let mut out:       Vec<RenderOccurrence> = Vec::new();
     let mut snapshots: Vec<HashMap<usize, (usize, usize)>> = Vec::new();
     let mut cur: usize = 0;
     let mut jc: HashMap<usize, usize> = HashMap::new();
+    let mut bpm = start_bpm;
+    let mut sustain = start_sustain;
     let max_items = phrases.len() * 512 + 1;
 
     while out.len() < max_items {
@@ -441,7 +462,11 @@ fn expand_one_cycle(phrases: &[Phrase])
             }
             continue;
         }
-        if phrase.control.is_some() {
+        if let Some(ctrl) = phrase.control {
+            match ctrl {
+                ControlSpec::SetBpm(v) => bpm = v,
+                ControlSpec::SetSustain(v) => sustain = v,
+            }
             cur += 1;
             continue;
         }
@@ -452,7 +477,12 @@ fn expand_one_cycle(phrases: &[Phrase])
                 (p.id, (pass, js.times))
             }))
             .collect();
-        out.push(cur);
+        out.push(RenderOccurrence {
+            phrase_idx: cur,
+            snap_idx: snapshots.len(),
+            bpm,
+            sustain,
+        });
         snapshots.push(snap);
         cur += 1;
         if cur >= phrases.len() { break; }
@@ -473,34 +503,41 @@ pub fn record_cycle(
         return Err(anyhow::anyhow!("nothing to record"));
     }
 
-    let subdiv_secs    = 60.0 / (bpm * 2.0);
-    let subdiv_samples = SR * subdiv_secs;
-
-    let bar_samples_for = |idx: usize| -> usize {
+    let bar_samples_for = |idx: usize, bpm: f64| -> usize {
+        let subdiv_secs = 60.0 / (bpm * 2.0);
+        let subdiv_samples = SR * subdiv_secs;
         ((subdiv_samples * phrases[idx].bar.total_subdivs as f64).round() as usize).max(1)
     };
 
-    let (one_cycle_seq, one_cycle_snaps) = expand_one_cycle(&phrases);
+    let (one_cycle_seq, one_cycle_snaps) = expand_one_cycle(&phrases, bpm, sustain);
     let _ = &one_cycle_snaps;
     if one_cycle_seq.is_empty() {
         return Err(anyhow::anyhow!("no musical phrases to render"));
     }
 
     let cycles       = cycle_repeat.max(1);
-    let tail_samples = (SR * (sustain + 1.0)) as usize;
-
-    let mut full_seq: Vec<(usize, usize, usize)> = Vec::new();
+    let mut tail_sustain = sustain;
+    let mut full_seq: Vec<RenderEntry> = Vec::new();
     for _ in 0..cycles {
-        for (si, &idx) in one_cycle_seq.iter().enumerate() {
+        for occ in &one_cycle_seq {
+            let idx = occ.phrase_idx;
+            tail_sustain = occ.sustain;
             for play in 0..phrases[idx].repeat.max(1) {
-                full_seq.push((idx, play, si));
+                full_seq.push(RenderEntry {
+                    phrase_idx: idx,
+                    play_num: play,
+                    snap_idx: occ.snap_idx,
+                    bpm: occ.bpm,
+                    sustain: occ.sustain,
+                });
             }
         }
     }
+    let tail_samples = (SR * (tail_sustain + 1.0)) as usize;
 
     // ── Progress setup ────────────────────────────────────────────────────
     let render_samples: usize = full_seq.iter()
-        .map(|&(idx, _, _)| bar_samples_for(idx))
+        .map(|entry| bar_samples_for(entry.phrase_idx, entry.bpm))
         .sum::<usize>()
         + tail_samples;
     crate::REC_SAMPLES_TOTAL.store(render_samples, std::sync::atomic::Ordering::Relaxed);
@@ -513,10 +550,15 @@ pub fn record_cycle(
     let mut left_buf:  Vec<f32> = Vec::new();
     let mut right_buf: Vec<f32> = Vec::new();
 
-    for (seq_pos, &(phrase_idx, play_num, _snap_idx)) in full_seq.iter().enumerate() {
-        let bs       = bar_samples_for(phrase_idx);
+    for (seq_pos, entry) in full_seq.iter().enumerate() {
+        let phrase_idx = entry.phrase_idx;
+        let play_num = entry.play_num;
+        let bs       = bar_samples_for(phrase_idx, entry.bpm);
         let is_first = play_num == 0;
         let repeats  = phrases_v[phrase_idx].repeat.max(1);
+        let subdiv_secs = 60.0 / (entry.bpm * 2.0);
+        let subdiv_samples = SR * subdiv_secs;
+        let sustain = entry.sustain;
 
         if is_first {
             let root_hz = phrases_v[phrase_idx].bar.root_hz;
@@ -539,7 +581,7 @@ pub fn record_cycle(
                     let is_last_subdiv = curr + 1 >= total_subdivs;
                     // Look ahead in full_seq: is next entry a different phrase?
                     let next_is_different = full_seq.get(seq_pos + 1)
-                        .map_or(false, |&(next_idx, _, _)| next_idx != phrase_idx);
+                        .map_or(false, |next| next.phrase_idx != phrase_idx);
                     let milestone = if is_first && curr == 0 {
                         Milestone::PhraseStart
                     } else if is_last_play && is_last_subdiv {
@@ -578,10 +620,10 @@ pub fn record_cycle(
         let _ = seq_pos;
     }
 
-    if let Some(&(first_idx, _, _)) = full_seq.first() {
-        let root_hz = phrases_v[first_idx].bar.root_hz;
-        spawn_phrase_start(root_hz, sustain, &mut voices);
-        spawn_sub_bass(root_hz, sustain.min(2.0), &mut voices);
+    if let Some(first) = full_seq.first() {
+        let root_hz = phrases_v[first.phrase_idx].bar.root_hz;
+        spawn_phrase_start(root_hz, first.sustain, &mut voices);
+        spawn_sub_bass(root_hz, first.sustain.min(2.0), &mut voices);
     }
     for _ in 0..tail_samples {
         let (mut l, mut r) = (0f32, 0f32);
@@ -654,7 +696,7 @@ pub fn record_cycle(
         writeln!(f, "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text")?;
 
         let one_len: usize = one_cycle_seq.iter()
-            .map(|&idx| phrases[idx].repeat.max(1)).sum();
+            .map(|occ| phrases[occ.phrase_idx].repeat.max(1)).sum();
 
         let fmt_t = |s: f64| -> String {
             let hh=(s/3600.0) as u32; let mm=((s%3600.0)/60.0) as u32;
@@ -663,8 +705,11 @@ pub fn record_cycle(
         };
 
         let mut sample: usize = 0;
-        for (i, &(phrase_idx, play_num, snap_idx)) in full_seq.iter().enumerate() {
-            let bs      = bar_samples_for(phrase_idx);
+        for (i, entry) in full_seq.iter().enumerate() {
+            let phrase_idx = entry.phrase_idx;
+            let play_num = entry.play_num;
+            let snap_idx = entry.snap_idx;
+            let bs      = bar_samples_for(phrase_idx, entry.bpm);
             let start_s = sample as f64 / SR;
             let end_s   = if i + 1 < full_seq.len() {
                 (sample + bs) as f64 / SR
@@ -677,8 +722,9 @@ pub fn record_cycle(
                 format!("  cycle {}/{}", cycle_num + 1, cycles)
             } else { String::new() };
 
+            let subdiv_secs = 60.0 / (entry.bpm * 2.0);
             let hdr = format!("   bpm:{:<4} sus:{:.1}s{}",
-                (60.0 / (subdiv_secs * 2.0)) as u32, sustain, cycle_disp);
+                entry.bpm.round() as u32, entry.sustain, cycle_disp);
             writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,0,,{hdr}")?;
             writeln!(f, "Dialogue: 0,{t0},{t1},URL,,0,0,0,,https://github.com/rfielding/maqam")?;
 
@@ -786,10 +832,13 @@ pub fn record_cycle(
 
     let result = (|| -> anyhow::Result<String> {
         // ── Build filter complex ──────────────────────────────────────────────
-        let (bg_path, bg_w, content_right) = write_tiling_background(&full_seq, &phrases, subdiv_secs, sustain)?;
+        let (bg_path, bg_w, content_right) = write_tiling_background(&full_seq, &phrases)?;
         let scroll_range = bg_w.saturating_sub(1280);
         const BG_START_X: usize = 1100;
         const BG_STEP_X: usize = 22;
+        let base_subdiv_secs = full_seq.first()
+            .map(|entry| 60.0 / (entry.bpm * 2.0))
+            .unwrap_or(0.5);
 
         let start_x = BG_START_X;
         let right_margin = 28usize;
@@ -800,7 +849,7 @@ pub fn record_cycle(
             let max_follow = content_right.saturating_sub(latest_target).min(scroll_range);
             format!(
                 "min(max(0,({start_x}+{step}*floor(t/{:.6}))-{latest_target}),{max_follow})",
-                subdiv_secs.max(0.001),
+                base_subdiv_secs.max(0.001),
                 step = BG_STEP_X
             )
         };
