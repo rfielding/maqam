@@ -139,6 +139,7 @@ pub fn build_phrase(
     repeat:      usize,
 ) -> Phrase {
     assert!(!specs.is_empty());
+    let root_hz_0 = snap_to_oud_lattice(specs[0].root.to_hz());
 
     // ── Tetrachord stacking ───────────────────────────────────────────────
     //
@@ -188,6 +189,11 @@ pub fn build_phrase(
     }
 
     deduped.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    if let Some(tonic_idx) = deduped.iter().position(|&f| (f / root_hz_0).log2().abs() < 1.0 / 1200.0) {
+        // Keep the tonic as degree 0 so lower leading tones like 8/9 wrap to the
+        // end of the scale instead of redefining the melodic center.
+        deduped.rotate_left(tonic_idx);
+    }
 
     let groups    = specs.last().map(|s| s.groups.clone()).unwrap_or_else(|| vec![4]);
     let n_groups  = groups.len();
@@ -212,7 +218,6 @@ pub fn build_phrase(
             .join(" "))
         .collect();
 
-    let root_hz_0 = snap_to_oud_lattice(specs[0].root.to_hz());
     let bar = Bar {
         root:         specs[0].root,
         root_hz:      root_hz_0,

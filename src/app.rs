@@ -13,6 +13,8 @@ pub struct App {
     pub message:     Option<String>,
     pub show_help:    bool,
     pub show_jins:    bool,
+    pub help_scroll:  u16,
+    pub jins_scroll:  u16,
     pub bpm:         f64,
     pub sustain:     f64,
     pub vol:         f32,
@@ -39,6 +41,8 @@ impl App {
             message:        Some("? for help".into()),
             show_help:      false,
             show_jins:      false,
+            help_scroll:    0,
+            jins_scroll:    0,
             bpm:            120.0,
             sustain:        1.25,
             vol:            1.0,
@@ -170,6 +174,31 @@ impl App {
         self.input.replace_range(arg_start..self.input.len(), &replacement);
         self.cursor_pos = self.input.chars().count();
         self.message = None;
+    }
+
+    pub fn overlay_scroll_up(&mut self) {
+        if self.show_help {
+            self.help_scroll = self.help_scroll.saturating_sub(1);
+        } else if self.show_jins {
+            self.jins_scroll = self.jins_scroll.saturating_sub(1);
+        }
+    }
+
+    pub fn overlay_scroll_down(&mut self) {
+        if self.show_help {
+            self.help_scroll = self.help_scroll.saturating_add(1);
+        } else if self.show_jins {
+            self.jins_scroll = self.jins_scroll.saturating_add(1);
+        }
+    }
+
+    pub fn overlay_scroll_home(&mut self) {
+        if self.show_help {
+            self.help_scroll = 0;
+        }
+        if self.show_jins {
+            self.jins_scroll = 0;
+        }
     }
 
     // ── Render thread poll ────────────────────────────────────────────────
@@ -457,8 +486,10 @@ impl App {
             }
 
             Cmd::CreateJins { name, ratios } => {
-                crate::tuning::Maqam::create(&name, ratios);
-                self.message = Some(format!("created jins {name}"));
+                match crate::tuning::Maqam::create(&name, ratios) {
+                    Ok(()) => self.message = Some(format!("created jins {name}")),
+                    Err(e) => self.message = Some(format!("✗ {e}")),
+                }
             }
 
             Cmd::DeleteJins { name } => {
@@ -498,6 +529,7 @@ impl App {
 
             Cmd::Clear => {
                 self.phrases.clear();
+                self.next_phrase_id = 0;
                 let _ = self.audio_tx.send(AudioCmd::Clear);
                 self.message = Some("cleared".into());
             }
@@ -879,7 +911,8 @@ impl App {
                     last_rhythm = vec![3, 3, 2];
                 }
                 Cmd::CreateJins { name, ratios } => {
-                    crate::tuning::Maqam::create(&name, ratios);
+                    crate::tuning::Maqam::create(&name, ratios)
+                        .map_err(|e| format!("line {line_no}: {e}"))?;
                 }
                 Cmd::DeleteJins { name } => {
                     let _ = crate::tuning::Maqam::delete(&name);

@@ -1,12 +1,13 @@
 MAQAM_SESSION_V2
 create hijaz2 8/9 1/1 15/14 6/5 4/3 3/2
 create saba2 8/9 1/1 13/12 5/4 6/5 11/8 3/2
+create bayati2 8/9 1/1 12/11 32/27 4/3 3/2
 vol 1
 bpm 180
 s 1.2
-d hijaz 4444
+g hijaz2 4444
 j 2 3
-d bayati 332332
-d saba 664
+g bayati2 332332
+g saba2 664
 j 5 4
 j 0 4

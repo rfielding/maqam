@@ -15,6 +15,16 @@ fn temp_path(name: &str) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
+fn ffmpeg_status(cmd: &mut Command) -> anyhow::Result<bool> {
+    match cmd.status() {
+        Ok(status) => Ok(status.success()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("video rendering requires ffmpeg on your PATH; install ffmpeg and try again")
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
 // ── Ruler geometry (1280×720, x: 40..1240 = 1200px = 1px/¢) ─────────────────
 //
 //  y=588  ┌─ pitch indicator ───┐  h=12 → bottom 600
@@ -700,7 +710,7 @@ pub fn record_cycle(
                     let snap = one_cycle_snaps.get(snap_idx % one_cycle_snaps.len().max(1));
                     let (pass, total) = snap.and_then(|s| s.get(&p.id)).copied()
                         .unwrap_or((0, js.times));
-                    let text = format!("- {id}: j {} [{}/{}]", js.target_id, pass, total);
+                    let text = format!("- {id}: {:<20} [{}/{}]", p.src, pass, total);
                     writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,{margin_v},,{text}")?;
 
                 } else if active {
@@ -772,115 +782,116 @@ pub fn record_cycle(
         f.flush()?;
     }
 
-    // ── Build filter complex ──────────────────────────────────────────────
-    let (bg_path, bg_w, content_right) = write_tiling_background(&full_seq, &phrases, subdiv_secs, sustain)?;
-    let scroll_range = bg_w.saturating_sub(1280);
-    const BG_START_X: usize = 1100;
-    const BG_STEP_X: usize = 22;
+    let result = (|| -> anyhow::Result<String> {
+        // ── Build filter complex ──────────────────────────────────────────────
+        let (bg_path, bg_w, content_right) = write_tiling_background(&full_seq, &phrases, subdiv_secs, sustain)?;
+        let scroll_range = bg_w.saturating_sub(1280);
+        const BG_START_X: usize = 1100;
+        const BG_STEP_X: usize = 22;
 
-    let start_x = BG_START_X;
-    let right_margin = 28usize;
-    let latest_target = 1280usize.saturating_sub(right_margin);
-    let scroll_expr = if scroll_range == 0 {
-        "0".to_string()
-    } else {
-        let max_follow = content_right.saturating_sub(latest_target).min(scroll_range);
-        format!(
-            "min(max(0,({start_x}+{step}*floor(t/{:.6}))-{latest_target}),{max_follow})",
-            subdiv_secs.max(0.001)
-            ,
-            step = BG_STEP_X
-        )
-    };
+        let start_x = BG_START_X;
+        let right_margin = 28usize;
+        let latest_target = 1280usize.saturating_sub(right_margin);
+        let scroll_expr = if scroll_range == 0 {
+            "0".to_string()
+        } else {
+            let max_follow = content_right.saturating_sub(latest_target).min(scroll_range);
+            format!(
+                "min(max(0,({start_x}+{step}*floor(t/{:.6}))-{latest_target}),{max_follow})",
+                subdiv_secs.max(0.001),
+                step = BG_STEP_X
+            )
+        };
 
-    let filter_with_subs = format!(
-        "[1:v]crop=1280:720:x='{scroll_expr}':y=0[bg];\
-         [bg]subtitles={ass_path}[v]"
-    );
-    let filter_plain = format!(
-        "[1:v]crop=1280:720:x='{scroll_expr}':y=0[bg];\
-         [bg]null[v]"
-    );
-    let filter_bare =
-        format!("[1:v]crop=1280:720:x='{scroll_expr}':y=0[v]");
+        let filter_with_subs = format!(
+            "[1:v]crop=1280:720:x='{scroll_expr}':y=0[bg];\
+             [bg]subtitles={ass_path}[v]"
+        );
+        let filter_plain = format!(
+            "[1:v]crop=1280:720:x='{scroll_expr}':y=0[bg];\
+             [bg]null[v]"
+        );
+        let filter_bare =
+            format!("[1:v]crop=1280:720:x='{scroll_expr}':y=0[v]");
 
-    // Write to script file to sidestep OS command-line length limits.
-    let fscript_path = temp_path("maqam-filter.txt");
-    std::fs::write(&fscript_path, &filter_with_subs)?;
+        // Write to script file to sidestep OS command-line length limits.
+        let fscript_path = temp_path("maqam-filter.txt");
+        std::fs::write(&fscript_path, &filter_with_subs)?;
 
-    let ts   = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    let out  = format!("./maqam-{ts}.mp4");
+        let ts   = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let out  = format!("./maqam-{ts}.mp4");
 
-    let log_path = temp_path("maqam-ffmpeg.log");
+        let log_path = temp_path("maqam-ffmpeg.log");
 
-    // Pass 1: script file (ruler + subtitles)
-    let ok1 = Command::new("ffmpeg")
-        .args(["-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &bg_path,
-               "-filter_complex_script", &fscript_path,
-               "-map", "[v]", "-map", "0:a",
-               "-c:v", "libx264", "-crf", "18",
-               "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-               "-c:a", "aac", "-b:a", "320k",
-               "-r", "30", "-shortest", &out])
-        .stdout(Stdio::null())
-        .stderr(std::fs::File::create(&log_path).map(Stdio::from)
-            .unwrap_or(Stdio::null()))
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if !ok1 {
-        // Pass 2: inline (ruler + subtitles)
-        let ok2 = Command::new("ffmpeg")
-            .args(["-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &bg_path,
-                   "-filter_complex", &filter_with_subs,
-                   "-map", "[v]", "-map", "0:a",
-                   "-c:v", "libx264", "-crf", "18",
-                   "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                   "-c:a", "aac", "-b:a", "320k",
-                   "-r", "30", "-shortest", &out])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-
-        if !ok2 {
-            // Pass 3: ruler, no subtitles
-            let ok3 = Command::new("ffmpeg")
+        // Pass 1: script file (ruler + subtitles)
+        let ok1 = ffmpeg_status(
+            Command::new("ffmpeg")
                 .args(["-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &bg_path,
-                       "-filter_complex", &filter_plain,
-                       "-map", "[v]", "-map", "0:a",
-                       "-c:v", "libx264", "-crf", "18",
-                       "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                       "-c:a", "aac", "-b:a", "320k",
-                       "-r", "30", "-shortest", &out])
+                    "-filter_complex_script", &fscript_path,
+                    "-map", "[v]", "-map", "0:a",
+                    "-c:v", "libx264", "-crf", "18",
+                    "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                    "-c:a", "aac", "-b:a", "320k",
+                    "-r", "30", "-shortest", &out])
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+                .stderr(std::fs::File::create(&log_path).map(Stdio::from)
+                    .unwrap_or(Stdio::null()))
+        )?;
 
-            if !ok3 {
-                // Pass 4: plain waveform
+        if !ok1 {
+            // Pass 2: inline (ruler + subtitles)
+            let ok2 = ffmpeg_status(
                 Command::new("ffmpeg")
                     .args(["-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &bg_path,
-                           "-filter_complex", &filter_bare,
-                           "-map", "[v]", "-map", "0:a",
-                           "-c:v", "libx264", "-crf", "18",
-                           "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                           "-c:a", "aac", "-b:a", "320k",
-                           "-r", "30", "-shortest", &out])
+                        "-filter_complex", &filter_with_subs,
+                        "-map", "[v]", "-map", "0:a",
+                        "-c:v", "libx264", "-crf", "18",
+                        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                        "-c:a", "aac", "-b:a", "320k",
+                        "-r", "30", "-shortest", &out])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
-                    .status()?;
+            )?;
+
+            if !ok2 {
+                // Pass 3: ruler, no subtitles
+                let ok3 = ffmpeg_status(
+                    Command::new("ffmpeg")
+                        .args(["-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &bg_path,
+                            "-filter_complex", &filter_plain,
+                            "-map", "[v]", "-map", "0:a",
+                            "-c:v", "libx264", "-crf", "18",
+                            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                            "-c:a", "aac", "-b:a", "320k",
+                            "-r", "30", "-shortest", &out])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                )?;
+
+                if !ok3 {
+                    // Pass 4: plain background, no subtitles
+                    ffmpeg_status(
+                        Command::new("ffmpeg")
+                            .args(["-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &bg_path,
+                                "-filter_complex", &filter_bare,
+                                "-map", "[v]", "-map", "0:a",
+                                "-c:v", "libx264", "-crf", "18",
+                                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                                "-c:a", "aac", "-b:a", "320k",
+                                "-r", "30", "-shortest", &out])
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                    )?;
+                }
             }
         }
-    }
+
+        Ok(out)
+    })();
 
     crate::REC_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
     crate::REC_SAMPLES_DONE.store(render_samples, std::sync::atomic::Ordering::Relaxed);
 
-    Ok(out)
+    result
 }

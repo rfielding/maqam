@@ -38,13 +38,36 @@ pub fn run(app: &mut App) -> anyhow::Result<()> {
 
         if event::poll(std::time::Duration::from_millis(40))? {
             if let Event::Key(key) = event::read()? {
-                // Any key dismisses the help overlay
                 if app.show_help {
-                    app.show_help = false;
+                    match key.code {
+                        KeyCode::Up => app.overlay_scroll_up(),
+                        KeyCode::Down => app.overlay_scroll_down(),
+                        KeyCode::Home => app.overlay_scroll_home(),
+                        KeyCode::Esc | KeyCode::Char('?') => {
+                            app.show_help = false;
+                            app.help_scroll = 0;
+                        }
+                        _ => {
+                            app.show_help = false;
+                            app.help_scroll = 0;
+                        }
+                    }
                     continue;
                 }
                 if app.show_jins {
-                    app.show_jins = false;
+                    match key.code {
+                        KeyCode::Up => app.overlay_scroll_up(),
+                        KeyCode::Down => app.overlay_scroll_down(),
+                        KeyCode::Home => app.overlay_scroll_home(),
+                        KeyCode::Esc => {
+                            app.show_jins = false;
+                            app.jins_scroll = 0;
+                        }
+                        _ => {
+                            app.show_jins = false;
+                            app.jins_scroll = 0;
+                        }
+                    }
                     continue;
                 }
                 match key.code {
@@ -105,11 +128,11 @@ fn draw(f: &mut Frame, app: &App) {
     f.render_widget(ratatui::widgets::Clear, area);
     f.render_widget(ratatui::widgets::Block::default().style(Style::default().bg(BG)), area);
     if app.show_help {
-        draw_help(f, area);
+        draw_help(f, app, area);
         return;
     }
     if app.show_jins {
-        draw_jins_list(f, area);
+        draw_jins_list(f, app, area);
         return;
     }
     let chunks = Layout::default()
@@ -328,7 +351,7 @@ fn draw_recording(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                     Style::default().fg(Color::Rgb(160, 160, 180))),
             ]),
             None => Line::from(vec![
-                Span::styled("  m → record cycle to ~/maqam-<ts>.mp4",
+                Span::styled("  m → record cycle to ./maqam-<ts>.mp4",
                     Style::default().fg(Color::Rgb(55, 55, 70))),
             ]),
         }
@@ -336,7 +359,7 @@ fn draw_recording(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     f.render_widget(Paragraph::new(text).style(Style::default().bg(BG)), area);
 }
 
-fn draw_help(f: &mut Frame, area: ratatui::layout::Rect) {
+fn draw_help(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     use ratatui::widgets::{Block, Borders, Paragraph};
     use ratatui::text::{Line, Span};
 
@@ -347,7 +370,7 @@ fn draw_help(f: &mut Frame, area: ratatui::layout::Rect) {
 
     let lines: Vec<Line> = vec![
         Line::from(vec![Span::styled("  maqam-live — command reference", heading)]),
-        Line::from(vec![Span::styled("  press any key to close", dim)]),
+        Line::from(vec![Span::styled("  Esc closes, Up/Down scroll", dim)]),
         Line::from(vec![Span::raw("")]),
 
         Line::from(vec![Span::styled("  ADD A PHRASE", bright)]),
@@ -366,8 +389,10 @@ fn draw_help(f: &mut Frame, area: ratatui::layout::Rect) {
         Line::from(vec![Span::styled("  i <id> j <target> [n]   ", green), Span::styled("insert jump entry before id", dim)]),
         Line::from(vec![Span::styled("  up <id> / down <id>     ", green), Span::styled("move entry by one slot", dim)]),
         Line::from(vec![Span::styled("  x <id> [id…]            ", green), Span::styled("delete by id  (blocked if playing)", dim)]),
-        Line::from(vec![Span::styled("  edit <id> <phrase>      ", green), Span::styled("replace phrase content  (blocked if playing)", dim)]),
-        Line::from(vec![Span::styled("  edit <id> j <tgt> [n]   ", green), Span::styled("replace phrase with jump entry", dim)]),
+        Line::from(vec![Span::styled("  edit <id> <phrase>      ", green), Span::styled("replace with phrase  (blocked if playing)", dim)]),
+        Line::from(vec![Span::styled("  edit <id> j <tgt> [n]   ", green), Span::styled("replace with jump entry", dim)]),
+        Line::from(vec![Span::styled("  edit <id> bpm <n>       ", green), Span::styled("replace with BPM settings entry", dim)]),
+        Line::from(vec![Span::styled("  edit <id> s <n>         ", green), Span::styled("replace with sustain settings entry", dim)]),
         Line::from(vec![Span::styled("  rot                     ", green), Span::styled("move last phrase to front", dim)]),
         Line::from(vec![Span::raw("")]),
 
@@ -380,7 +405,7 @@ fn draw_help(f: &mut Frame, area: ratatui::layout::Rect) {
         Line::from(vec![Span::raw("")]),
 
         Line::from(vec![Span::styled("  RECORDING", bright)]),
-        Line::from(vec![Span::styled("  m [n]    ", green), Span::styled("record n cycles to ~/maqam-<ts>.mp4", dim)]),
+        Line::from(vec![Span::styled("  m [n]    ", green), Span::styled("record n cycles to ./maqam-<ts>.mp4", dim)]),
         Line::from(vec![Span::raw("")]),
 
         Line::from(vec![Span::styled("  OTHER", bright)]),
@@ -389,6 +414,17 @@ fn draw_help(f: &mut Frame, area: ratatui::layout::Rect) {
         Line::from(vec![Span::styled("  save <file>  ", green), Span::styled("save session to file  ", dim),
                         Span::styled("  load <file>  ", green), Span::styled("load session from file", dim)]),
         Line::from(vec![Span::styled("  ;        ", green), Span::styled("separate multiple commands on one line", dim)]),
+        Line::from(vec![Span::raw("")]),
+
+        Line::from(vec![Span::styled("  SESSION EXAMPLES", bright)]),
+        Line::from(vec![Span::styled("  simple loop:", dim)]),
+        Line::from(vec![Span::styled("    d bayati 332; j 0 4", green)]),
+        Line::from(vec![Span::styled("  phrase + settings timeline:", dim)]),
+        Line::from(vec![Span::styled("    bpm 140; s 1.5; d hijaz 4444; j 2 3", green)]),
+        Line::from(vec![Span::styled("  stacked ajnas then record:", dim)]),
+        Line::from(vec![Span::styled("    d bayati, a nahawand 332; j 0 2; m 2", green)]),
+        Line::from(vec![Span::styled("  registry preview:", dim)]),
+        Line::from(vec![Span::styled("    audition hijaz; create hijaz2 8/9 1/1 15/14 6/5 4/3 3/2", green)]),
         Line::from(vec![Span::raw("")]),
 
         Line::from(vec![Span::styled("  Music theory: maqamworld.com", dim)]),
@@ -402,12 +438,13 @@ fn draw_help(f: &mut Frame, area: ratatui::layout::Rect) {
 
     let para = Paragraph::new(lines)
         .block(block)
-        .style(Style::default().fg(ACCENT).bg(BG));
+        .style(Style::default().fg(ACCENT).bg(BG))
+        .scroll((app.help_scroll, 0));
 
     f.render_widget(para, area);
 }
 
-fn draw_jins_list(f: &mut Frame, area: ratatui::layout::Rect) {
+fn draw_jins_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     use ratatui::widgets::{Block, Borders, Paragraph};
     use ratatui::text::{Line, Span};
     use crate::tuning::Maqam;
@@ -420,7 +457,7 @@ fn draw_jins_list(f: &mut Frame, area: ratatui::layout::Rect) {
 
     let mut lines = vec![
         Line::from(vec![Span::styled("  maqam-live — jins registry", heading)]),
-        Line::from(vec![Span::styled("  press any key to close", dim)]),
+        Line::from(vec![Span::styled("  Esc closes, Up/Down scroll", dim)]),
         Line::from(vec![Span::raw("")]),
         Line::from(vec![Span::styled(
             "  audition <Name>   create <Name> <p/q> …   delete <Name>   ls",
@@ -445,7 +482,8 @@ fn draw_jins_list(f: &mut Frame, area: ratatui::layout::Rect) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(ACCENT).bg(BG))
             .style(Style::default().bg(BG)))
-        .style(Style::default().fg(ACCENT).bg(BG));
+        .style(Style::default().fg(ACCENT).bg(BG))
+        .scroll((app.jins_scroll, 0));
 
     f.render_widget(para, area);
 }

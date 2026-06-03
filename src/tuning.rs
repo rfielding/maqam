@@ -101,6 +101,29 @@ impl Maqam {
 
     pub fn name(&self) -> &str { &self.0 }
 
+    pub fn validate_ratios(ratios: &[(u32, u32)]) -> Result<(), String> {
+        if ratios.is_empty() {
+            return Err("need at least one ratio".into());
+        }
+        if !ratios.iter().any(|&(p, q)| p == q) {
+            return Err("scale must include 1/1".into());
+        }
+        let mut prev = None::<f64>;
+        for &(p, q) in ratios {
+            if q == 0 {
+                return Err("ratio denominator cannot be zero".into());
+            }
+            let cur = p as f64 / q as f64;
+            if let Some(last) = prev {
+                if cur <= last {
+                    return Err("scale ratios must be strictly ascending".into());
+                }
+            }
+            prev = Some(cur);
+        }
+        Ok(())
+    }
+
     /// Ratios from the live registry — reflects runtime create/delete.
     pub fn ratios(&self) -> Vec<(u32, u32)> {
         registry().read().unwrap().get(&self.0).cloned().unwrap_or_default()
@@ -127,8 +150,10 @@ impl Maqam {
     }
 
     /// Create or overwrite a jins entry.
-    pub fn create(name: &str, ratios: Vec<(u32, u32)>) {
+    pub fn create(name: &str, ratios: Vec<(u32, u32)>) -> Result<(), String> {
+        Self::validate_ratios(&ratios)?;
         registry().write().unwrap().insert(name.to_string(), ratios);
+        Ok(())
     }
 
     /// Delete a jins entry. Returns false if it didn't exist.
