@@ -69,7 +69,7 @@ pub enum Cmd {
     Record(usize),
     TogglePause { start_id: Option<isize> },
     ListJins,
-    AuditionJins { root: Option<Pitch>, name: String },
+    AuditionJins { specs: Vec<JinsSpec> },
     CreateJins { name: String, ratios: Vec<(u32, u32)> },
     DeleteJins { name: String },
     Save { path: Option<String> },
@@ -243,18 +243,26 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
     // ── LS: list all jins ─────────────────────────────────────────────────
     if input == "ls" { return Ok(Cmd::ListJins); }
 
-    // ── AUDITION: audition <Name> ────────────────────────────────────────
+    // ── AUDITION: audition <phrase-spec> ─────────────────────────────────
     if al == "audition" {
-        let mut toks = input.split_whitespace();
-        toks.next();
-        let first = toks.next().ok_or("usage: audition <Name> | audition <root> <Name>")?;
-        let second = toks.next();
-        if let Some(name) = second {
-            let root = Pitch::parse(first)
-                .ok_or_else(|| format!("unknown pitch '{first}'"))?;
-            return Ok(Cmd::AuditionJins { root: Some(root), name: name.to_string() });
-        }
-        return Ok(Cmd::AuditionJins { root: None, name: first.to_string() });
+        let rest = input.splitn(2, char::is_whitespace).nth(1)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or("usage: audition <Name> | audition <root> <Name> [, <root> <Name> ...]")?;
+
+        let specs: Result<Vec<JinsSpec>, String> = if Pitch::parse(rest.split_whitespace().next().unwrap_or("")).is_some() {
+            rest.split(',').map(|p| parse_jins_spec(p.trim())).collect()
+        } else {
+            let maqam = Maqam::parse(rest)
+                .ok_or_else(|| format!("unknown maqam '{rest}'"))?;
+            Ok(vec![JinsSpec {
+                src: format!("d {}", maqam.name()),
+                root: Pitch { letter: 'd', accidental: 0, octave: 4 },
+                maqam,
+                groups: None,
+            }])
+        };
+        return Ok(Cmd::AuditionJins { specs: specs? });
     }
 
     // ── CREATE: create <Name> <p/q> <p/q> … ──────────────────────────────

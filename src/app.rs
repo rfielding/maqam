@@ -267,19 +267,10 @@ impl App {
         (bpm, sustain)
     }
 
-    fn audition_jins(&mut self, root: Option<crate::tuning::Pitch>, name: &str) -> Result<(), String> {
-        let maqam = crate::tuning::Maqam::parse(name)
-            .ok_or_else(|| format!("unknown jins '{name}'"))?;
-        let display_name = maqam.name().to_string();
-        let root = root.unwrap_or(crate::tuning::Pitch { letter: 'd', accidental: 0, octave: 4 });
-        let root_src = root.display().to_ascii_lowercase();
-        let spec = BarSpec {
-            src: format!("{root_src} {display_name}"),
-            root,
-            maqam,
-            groups: vec![1],
-        };
-        let mut phrase = build_phrase(usize::MAX, format!("[preview] {root_src} {display_name}"), vec![spec], 4, 1);
+    fn audition_jins(&mut self, specs: Vec<JinsSpec>) -> Result<(), String> {
+        let resolved = resolve_rhythms(specs, &[1])?;
+        let src = resolved.iter().map(|s| s.src.as_str()).collect::<Vec<_>>().join(", ");
+        let mut phrase = build_phrase(usize::MAX, format!("[preview] {src}"), resolved, 4, 1);
         let n_freqs = phrase.bar.frequencies.len().max(1);
         let mut walk = Vec::with_capacity(n_freqs * 4);
         for degree in 0..n_freqs {
@@ -545,9 +536,10 @@ impl App {
 
             Cmd::ListJins => { self.show_jins = true; }
 
-            Cmd::AuditionJins { root, name } => {
-                match self.audition_jins(root, &name) {
-                    Ok(()) => self.message = Some(format!("auditioning {}", name)),
+            Cmd::AuditionJins { specs } => {
+                let label = specs.iter().map(|s| s.src.as_str()).collect::<Vec<_>>().join(", ");
+                match self.audition_jins(specs) {
+                    Ok(()) => self.message = Some(format!("auditioning {label}")),
                     Err(e) => self.message = Some(format!("✗ {e}")),
                 }
             }
