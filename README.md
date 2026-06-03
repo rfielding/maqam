@@ -3,6 +3,8 @@
 A real-time terminal sequencer for Arabic maqam music using just intonation synthesis.
 Live-code phrases of stacked jins, record to MP4 with a synchronized pitch ruler.
 
+![maqam-live screenshot](screenshot1.png)
+
 ```
 ┌─ maqam-live ──────────────────────────────────────────────────────────────────┐
 │ ▶  0: d bayati 332          X..X..X.  1/1 12/11 32/27 4/3 3/2               │
@@ -264,6 +266,7 @@ triangle-ish impression through interference and speaker/headphone resonance.
 
 ```
 audition <Name>                          ← preview a jins in a slow loop
+audition <root> <Name>[, <root> <Name>] ← preview a stacked mixed scale
 ls                                      ← list all jins with ratios
 create <Name> <p/q> <p/q> …            ← create or overwrite a jins
 delete <Name>                           ← remove a jins
@@ -273,6 +276,7 @@ Names are case-insensitive. `create` normalizes to title case.
 
 ```
 audition Hijaz                           ← preview Hijaz without changing the session
+audition d bayati, f hijaz              ← preview a mixed Bayati/Hijaz stack
 create Zaba 1/1 12/11 32/27 11/8       ← add the "Zaba" jins
 create Saba 1/1 13/12 32/27 80/64      ← redefine Saba
 delete Zaba                             ← remove it
