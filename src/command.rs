@@ -50,24 +50,24 @@ impl ValueChange {
 #[allow(dead_code)]
 pub enum Cmd {
     AddPhrase { specs: Vec<JinsSpec>, repeat: usize },
-    Jump   { to: usize, times: usize },
-    Insert { before: usize, specs: Vec<JinsSpec>, repeat: usize },
-    InsertBpm { before: usize, change: ValueChange },
-    InsertSustain { before: usize, change: ValueChange },
-    MoveUp(usize),
-    MoveDown(usize),
-    Edit   { id: usize, specs: Vec<JinsSpec>, repeat: usize },
-    EditJump { id: usize, to: usize, times: usize },
-    EditBpm { id: usize, change: ValueChange },
-    EditSustain { id: usize, change: ValueChange },
-    InsertJump { before: usize, to: usize, times: usize },
-    DeleteBars(Vec<usize>),
+    Jump   { to: isize, times: usize },
+    Insert { before: isize, specs: Vec<JinsSpec>, repeat: usize },
+    InsertBpm { before: isize, change: ValueChange },
+    InsertSustain { before: isize, change: ValueChange },
+    MoveUp(isize),
+    MoveDown(isize),
+    Edit   { id: isize, specs: Vec<JinsSpec>, repeat: usize },
+    EditJump { id: isize, to: isize, times: usize },
+    EditBpm { id: isize, change: ValueChange },
+    EditSustain { id: isize, change: ValueChange },
+    InsertJump { before: isize, to: isize, times: usize },
+    DeleteBars(Vec<isize>),
     Rotate,
     SetBpm(ValueChange),
     SetSustain(ValueChange),
     SetVol(f32),
     Record(usize),
-    TogglePause { start_id: Option<usize> },
+    TogglePause { start_id: Option<isize> },
     ListJins,
     AuditionJins { name: String },
     CreateJins { name: String, ratios: Vec<(u32, u32)> },
@@ -117,21 +117,21 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
 
     // ── PAUSE: z [phrase-id] ──────────────────────────────────────────────
     if al == "z" {
-        let start_id: Option<usize> = if !digits.is_empty() {
-            Some(digits.parse().map_err(|_| "usage: z [phrase-id]")?)
+        let start_id: Option<isize> = if !digits.is_empty() {
+            Some(parse_id_ref(&digits, "usage: z [phrase-id]")?)
         } else {
-            input.split_whitespace().nth(1).and_then(|s| s.parse().ok())
+            input.split_whitespace().nth(1).and_then(|s| s.parse::<isize>().ok())
         };
         return Ok(Cmd::TogglePause { start_id });
     }
 
     // ── JUMP: j <pos> [<times>] ───────────────────────────────────────────
     if al == "j" {
-        let to: usize = if !digits.is_empty() {
-            digits.parse().map_err(|_| "usage: j <pos> [times]")?
+        let to: isize = if !digits.is_empty() {
+            parse_id_ref(&digits, "usage: j <pos> [times]")?
         } else {
             input.split_whitespace().nth(1)
-                .and_then(|s| s.parse().ok())
+                .and_then(|s| s.parse::<isize>().ok())
                 .ok_or("usage: j <pos> [times]")?
         };
         let times_idx = if digits.is_empty() { 2 } else { 1 };
@@ -144,7 +144,7 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
     if al == "edit" {
         let mut toks = input.splitn(3, char::is_whitespace);
         toks.next(); // skip "edit"
-        let id: usize = toks.next().and_then(|s| s.parse().ok())
+        let id: isize = toks.next().and_then(|s| s.parse().ok())
             .ok_or("usage: edit <id> <phrase|j target [times]|bpm n|s n>")?;
         let rest = toks.next().unwrap_or("").trim();
         if rest.is_empty() { return Err("usage: edit <id> <phrase|j target [times]|bpm n|s n>".into()); }
@@ -161,28 +161,28 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
     // ── REORDER: up/down <id> ─────────────────────────────────────────────
     if al == "up" {
         let id = input.split_whitespace().nth(1)
-            .and_then(|s| s.parse().ok())
+            .and_then(|s| s.parse::<isize>().ok())
             .ok_or("usage: up <id>")?;
         return Ok(Cmd::MoveUp(id));
     }
     if al == "down" {
         let id = input.split_whitespace().nth(1)
-            .and_then(|s| s.parse().ok())
+            .and_then(|s| s.parse::<isize>().ok())
             .ok_or("usage: down <id>")?;
         return Ok(Cmd::MoveDown(id));
     }
 
     // ── INSERT: i<pos> <cmd> ──────────────────────────────────────────────
     if al == "i" {
-        let before: usize;
+        let before: isize;
         let rest: &str;
         if !digits.is_empty() {
-            before = digits.parse().map_err(|_| "usage: i<pos> <phrase|j target times|bpm n|s n>")?;
+            before = parse_id_ref(&digits, "usage: i<pos> <phrase|j target times|bpm n|s n>")?;
             rest   = input[first.len()..].trim();
         } else {
             let mut toks = input.splitn(3, char::is_whitespace);
             toks.next();
-            before = toks.next().and_then(|s| s.parse().ok())
+            before = toks.next().and_then(|s| s.parse::<isize>().ok())
                 .ok_or("usage: i <pos> <phrase|j target times|bpm n|s n>")?;
             rest   = toks.next().unwrap_or("").trim();
         }
@@ -227,9 +227,9 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
 
     // ── DELETE: x<N> [N …] ───────────────────────────────────────────────
     if al == "x" {
-        let mut ids: Vec<usize> = Vec::new();
+        let mut ids: Vec<isize> = Vec::new();
         if !digits.is_empty() {
-            ids.push(digits.parse().map_err(|_| "usage: x<N> [N …]")?);
+            ids.push(parse_id_ref(&digits, "usage: x<N> [N …]")?);
         }
         let mut toks = input.split_whitespace();
         toks.next();
@@ -294,6 +294,10 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
     let specs: Result<Vec<JinsSpec>, String> = phrase_part
         .split(',').map(|p| parse_jins_spec(p.trim())).collect();
     Ok(Cmd::AddPhrase { specs: specs?, repeat })
+}
+
+fn parse_id_ref(token: &str, usage: &str) -> Result<isize, String> {
+    token.parse::<isize>().map_err(|_| usage.to_string())
 }
 
 fn strip_repeat(input: &str) -> (&str, usize) {

@@ -236,6 +236,10 @@ impl App {
         self.auditioning_jins = false;
     }
 
+    fn resolve_id_ref(&self, id_ref: isize) -> Option<usize> {
+        resolve_id_ref_in_phrases(&self.phrases, id_ref)
+    }
+
     fn audition_jins(&mut self, name: &str) -> Result<(), String> {
         let maqam = crate::tuning::Maqam::parse(name)
             .ok_or_else(|| format!("unknown jins '{name}'"))?;
@@ -300,6 +304,10 @@ impl App {
             Cmd::Quit  => self.should_quit = true,
             Cmd::Help => { self.show_help = true; }
             Cmd::Jump { to, times } => {
+                let Some(to) = self.resolve_id_ref(to) else {
+                    self.message = Some(format!("✗ no phrase id {to}"));
+                    return;
+                };
                 if !self.phrases.iter().any(|p| p.id == to) {
                     self.message = Some(format!("✗ no phrase id {to}"));
                     return;
@@ -327,19 +335,31 @@ impl App {
                 let id  = self.next_phrase_id;
                 self.next_phrase_id += 1;
                 let phrase = build_phrase(id, src, resolved, peak, repeat.max(1));
-                let pos = self.phrases.iter().position(|p| p.id == before)
-                    .unwrap_or(self.phrases.len());
+                let pos = match self.resolve_id_ref(before) {
+                    Some(before_id) => self.phrases.iter().position(|p| p.id == before_id).unwrap_or(self.phrases.len()),
+                    None => {
+                        self.message = Some(format!("✗ no phrase id {before}"));
+                        return;
+                    }
+                };
                 self.phrases.insert(pos, phrase.clone());
                 let _ = self.audio_tx.send(AudioCmd::InsertPhrase { pos, phrase });
                 self.message = Some(format!("inserted at {pos}"));
             }
 
             Cmd::InsertJump { before, to, times } => {
+                let Some(to) = self.resolve_id_ref(to) else {
+                    self.message = Some(format!("✗ no phrase id {to}")); return;
+                };
                 if !self.phrases.iter().any(|p| p.id == to) {
                     self.message = Some(format!("✗ no phrase id {to}")); return;
                 }
-                let insert_pos = self.phrases.iter().position(|p| p.id == before)
-                    .unwrap_or(self.phrases.len());
+                let insert_pos = match self.resolve_id_ref(before) {
+                    Some(before_id) => self.phrases.iter().position(|p| p.id == before_id).unwrap_or(self.phrases.len()),
+                    None => {
+                        self.message = Some(format!("✗ no phrase id {before}")); return;
+                    }
+                };
                 let id    = self.next_phrase_id;
                 self.next_phrase_id += 1;
                 let entry = crate::sequencer::build_jump_entry(id, to, times);
@@ -353,8 +373,12 @@ impl App {
                     Ok(v) => v,
                     Err(e) => { self.message = Some(format!("✗ {e}")); return; }
                 };
-                let insert_pos = self.phrases.iter().position(|p| p.id == before)
-                    .unwrap_or(self.phrases.len());
+                let insert_pos = match self.resolve_id_ref(before) {
+                    Some(before_id) => self.phrases.iter().position(|p| p.id == before_id).unwrap_or(self.phrases.len()),
+                    None => {
+                        self.message = Some(format!("✗ no phrase id {before}")); return;
+                    }
+                };
                 let id = self.next_phrase_id;
                 self.next_phrase_id += 1;
                 let entry = build_control_entry(id, format!("bpm {bpm}"), ControlSpec::SetBpm(bpm));
@@ -368,8 +392,12 @@ impl App {
                     Ok(v) => v,
                     Err(e) => { self.message = Some(format!("✗ {e}")); return; }
                 };
-                let insert_pos = self.phrases.iter().position(|p| p.id == before)
-                    .unwrap_or(self.phrases.len());
+                let insert_pos = match self.resolve_id_ref(before) {
+                    Some(before_id) => self.phrases.iter().position(|p| p.id == before_id).unwrap_or(self.phrases.len()),
+                    None => {
+                        self.message = Some(format!("✗ no phrase id {before}")); return;
+                    }
+                };
                 let id = self.next_phrase_id;
                 self.next_phrase_id += 1;
                 let entry = build_control_entry(id, format!("s {secs}"), ControlSpec::SetSustain(secs));
@@ -380,6 +408,10 @@ impl App {
 
             Cmd::TogglePause { start_id } => {
                 if let Some(id) = start_id {
+                    let Some(id) = self.resolve_id_ref(id) else {
+                        self.message = Some(format!("✗ no phrase id {id}"));
+                        return;
+                    };
                     // z <id>: seek to phrase, no pause toggle
                     match self.phrases.iter().position(|p| p.id == id) {
                         Some(pos) => {
@@ -437,6 +469,10 @@ impl App {
             }
 
             Cmd::MoveUp(id) => {
+                let Some(id) = self.resolve_id_ref(id) else {
+                    self.message = Some(format!("✗ no phrase id {id}"));
+                    return;
+                };
                 let Some(pos) = self.phrases.iter().position(|p| p.id == id) else {
                     self.message = Some(format!("✗ no phrase id {id}"));
                     return;
@@ -457,6 +493,10 @@ impl App {
             }
 
             Cmd::MoveDown(id) => {
+                let Some(id) = self.resolve_id_ref(id) else {
+                    self.message = Some(format!("✗ no phrase id {id}"));
+                    return;
+                };
                 let Some(pos) = self.phrases.iter().position(|p| p.id == id) else {
                     self.message = Some(format!("✗ no phrase id {id}"));
                     return;
@@ -563,6 +603,12 @@ impl App {
             }
 
             Cmd::EditJump { id, to, times } => {
+                let Some(id) = self.resolve_id_ref(id) else {
+                    self.message = Some(format!("✗ no phrase id {id}")); return;
+                };
+                let Some(to) = self.resolve_id_ref(to) else {
+                    self.message = Some(format!("✗ no phrase id {to}")); return;
+                };
                 if !self.phrases.iter().any(|p| p.id == to) {
                     self.message = Some(format!("✗ no phrase id {to}")); return;
                 }
@@ -584,6 +630,9 @@ impl App {
             }
 
             Cmd::Edit { id, specs, repeat } => {
+                let Some(id) = self.resolve_id_ref(id) else {
+                    self.message = Some(format!("✗ no phrase id {id}")); return;
+                };
                 let cur_pos    = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
                 let playing_id = self.phrases.get(cur_pos).map(|p| p.id);
                 if playing_id == Some(id) {
@@ -608,6 +657,9 @@ impl App {
             }
 
             Cmd::EditBpm { id, change } => {
+                let Some(id) = self.resolve_id_ref(id) else {
+                    self.message = Some(format!("✗ no phrase id {id}")); return;
+                };
                 let cur_pos    = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
                 let playing_id = self.phrases.get(cur_pos).map(|p| p.id);
                 if playing_id == Some(id) {
@@ -629,6 +681,9 @@ impl App {
             }
 
             Cmd::EditSustain { id, change } => {
+                let Some(id) = self.resolve_id_ref(id) else {
+                    self.message = Some(format!("✗ no phrase id {id}")); return;
+                };
                 let cur_pos    = crate::CUR_PHRASE.load(std::sync::atomic::Ordering::Relaxed);
                 let playing_id = self.phrases.get(cur_pos).map(|p| p.id);
                 if playing_id == Some(id) {
@@ -651,12 +706,16 @@ impl App {
 
             Cmd::DeleteBars(ids) => {
                 let mut not_found = Vec::new();
-                for id in &ids {
-                    if let Some(pos) = self.phrases.iter().position(|p| p.id == *id) {
+                for id_ref in &ids {
+                    let Some(id) = self.resolve_id_ref(*id_ref) else {
+                        not_found.push(*id_ref);
+                        continue;
+                    };
+                    if let Some(pos) = self.phrases.iter().position(|p| p.id == id) {
                         let removed = self.phrases.remove(pos);
                         let _ = self.audio_tx.send(AudioCmd::RemovePhrase(removed.id));
                     } else {
-                        not_found.push(*id);
+                        not_found.push(*id_ref);
                     }
                 }
                 if !not_found.is_empty() {
@@ -901,7 +960,11 @@ impl App {
                     loaded.push(phrase);
                 }
                 Cmd::Jump { to, times } => {
-                    let entry = crate::sequencer::build_jump_entry(next_id, to, times.max(1));
+                    if to < 0 {
+                        return Err(format!("line {line_no}: negative ids are only supported in interactive commands"));
+                    }
+                    let target = to as usize;
+                    let entry = crate::sequencer::build_jump_entry(next_id, target, times.max(1));
                     next_id += 1;
                     loaded.push(entry);
                 }
@@ -1034,4 +1097,15 @@ fn apply_sustain_change(current: f64, change: ValueChange) -> Result<f64, String
         return Err(format!("sustain {next}s out of range"));
     }
     Ok(next)
+}
+
+fn resolve_id_ref_in_phrases(phrases: &[Phrase], id_ref: isize) -> Option<usize> {
+    if id_ref >= 0 {
+        return Some(id_ref as usize);
+    }
+    let back = id_ref.unsigned_abs();
+    if back == 0 || back > phrases.len() {
+        return None;
+    }
+    phrases.get(phrases.len() - back).map(|p| p.id)
 }
