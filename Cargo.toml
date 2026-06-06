@@ -12,7 +12,6 @@ ratatui           = "0.28"
 crossterm         = "0.28"
 crossbeam-channel = "0.5"
 anyhow            = "1.0"
-image             = "0.25"
 
 [target.'cfg(windows)'.dependencies]
 # cpal uses WASAPI on Windows - no extra deps needed
