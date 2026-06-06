@@ -2,6 +2,7 @@
 
 mod app;
 mod audio;
+mod carpet;
 mod command;
 mod sequencer;
 mod tuning;
