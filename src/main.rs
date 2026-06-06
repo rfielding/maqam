@@ -6,6 +6,7 @@ mod command;
 mod sequencer;
 mod tuning;
 mod record;
+mod renderer;
 mod synth;
 mod ui;
 
