@@ -61,6 +61,9 @@ fn cli_commands(args: &[String]) -> Vec<String> {
 }
 
 fn run_cli(commands: Vec<String>) -> anyhow::Result<()> {
+    eprintln!("carpet-guided-background: controlled branch active");
+    eprintln!("carpet-guided-background: src/carpet.rs is present; record.rs wiring is next");
+
     let (tx, rx) = bounded::<sequencer::AudioCmd>(512);
     let _stream = audio::start_audio(rx)?;
     let mut app = app::App::new(tx);
