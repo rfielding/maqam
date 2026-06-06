@@ -1,57 +1,79 @@
-# MQ carpet renderer prototype
+# MQ carpet reference pipeline
 
 Branch: `carpet-guided-background`
 
-This branch adds a deterministic source-level carpet renderer prototype at:
+This branch now preserves the **working visual direction** instead of pretending the failed Rust prototype was useful.
 
-```bash
-src/bin/mq_carpet.rs
+## Canonical reference artifacts
+
+These are the visual and motion targets:
+
+```text
+embroidered_map_of_musical_territories.png
+    still carpet target
+
+embroidered_map_guided_180bpm_bright_redraw_fixed.mp4
+    guided-reading motion target
 ```
 
-It renders a `.mq` session as a symbolic carpet, not as an expanded performance trace.
+The still image is the target for the carpet language:
 
-## Run
+- continuous woven territories
+- no obvious boxes
+- dense ornament everywhere
+- seams as geography
+- dark enough to work as a terminal/background texture
 
-Generate a terminal-safe dark still image as PPM:
+The MP4 behavior is the target for reading/playback:
 
-```bash
-cargo run --release --bin mq_carpet -- growl.mq growl-carpet.ppm
-```
+- carpet stays fixed and centered
+- no pan or zoom
+- no ring cursor
+- no dot cursor
+- current position is shown by a **brighter re-draw of the carpet itself**
+- background remains dark enough for text legibility
 
-Convert to PNG:
-
-```bash
-ffmpeg -y -i growl-carpet.ppm growl-carpet.png
-```
-
-Generate a brighter art-mode still:
-
-```bash
-cargo run --release --bin mq_carpet -- growl.mq growl-carpet-art.ppm --art
-ffmpeg -y -i growl-carpet-art.ppm growl-carpet-art.png
-```
-
-Generate a guided-reading MP4:
+## Reference script
 
 ```bash
-cargo run --release --bin mq_carpet -- growl.mq growl-tour.mp4
+python3 scripts/make_guided_redraw_mp4.py \
+  reference/carpet/embroidered_map_of_musical_territories.png \
+  carpet_guided_redraw.mp4
 ```
 
-The MP4 keeps the carpet static and centered. The current reading location is shown by a brightened re-draw of the carpet under the current position, not by a cursor ring or dot.
+Optional flags:
 
-## Current visual rules
+```bash
+--bpm 180
+--seconds 20
+--fps 30
+--width 1280
+--height 720
+```
 
-- Phrase commands become organic woven territories.
-- Rhythm digits modulate internal bands and subdivision dots.
-- JI ratios become small harmonic stitch constellations.
-- 81/80 comma pairs get a brighter local stitch when present.
-- Jump commands are symbolic seams/knots; loop counts are not expanded.
-- Terminal mode darkens the final carpet so it can be used as a background behind light text.
+Dependencies:
 
-## Important limitation
+```bash
+pip install pillow imageio imageio-ffmpeg numpy
+```
 
-This is a deterministic prototype, not yet the final surreal AI-carpet style. It is meant to provide the Rust geometry pipeline and MP4 reading-cursor behavior so the style can be iterated in code.
+`ffmpeg` and `ffprobe` should also be on `PATH`.
+
+## Rust status
+
+`src/bin/mq_carpet.rs` is intentionally disabled.
+
+The first Rust attempt produced sparse color cells and disconnected squiggle lines. That is the wrong aesthetic and should not be merged as a renderer.
+
+The Rust port should only resume after matching the preserved reference behavior:
+
+1. Use the reference PNG as the still carpet target.
+2. Use `scripts/make_guided_redraw_mp4.py` as the motion target.
+3. Port the bright-redraw behavior first.
+4. Only then attempt deterministic source-derived carpet generation.
 
 ## Design invariant
 
-The still carpet is the source representation. Playback, pan/zoom/highlight, and the MP4 tour are just guided reading state.
+The still carpet is the score-like source representation.
+
+Playback state should not create new geometry. It should only guide the eye through the existing carpet by locally brightening/re-drawing the manuscript.
