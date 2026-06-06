@@ -40,7 +40,61 @@ pub fn jump_counters() -> &'static std::sync::Mutex<std::collections::HashMap<us
 
 use crossbeam_channel::bounded;
 
+fn cli_commands(args: &[String]) -> Vec<String> {
+    let mut commands = Vec::new();
+    let mut cur: Vec<String> = Vec::new();
+    for arg in args {
+        if arg == "--" {
+            if !cur.is_empty() {
+                commands.push(cur.join(" "));
+                cur.clear();
+            }
+        } else {
+            cur.push(arg.clone());
+        }
+    }
+    if !cur.is_empty() {
+        commands.push(cur.join(" "));
+    }
+    commands
+}
+
+fn run_cli(commands: Vec<String>) -> anyhow::Result<()> {
+    let (tx, rx) = bounded::<sequencer::AudioCmd>(512);
+    let _stream = audio::start_audio(rx)?;
+    let mut app = app::App::new(tx);
+
+    for cmd in &commands {
+        eprintln!("> {cmd}");
+        app.handle_command(cmd);
+        app.tick();
+        if let Some(msg) = &app.message {
+            eprintln!("{msg}");
+        }
+    }
+
+    // `m` records on a worker thread. In CLI mode, wait for it and print the path.
+    while app.rec_rx.is_some() || REC_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+        app.tick();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    app.tick();
+
+    if let Some(path) = &app.last_recording {
+        println!("{path}");
+    } else if let Some(msg) = &app.message {
+        println!("{msg}");
+    }
+
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.is_empty() {
+        return run_cli(cli_commands(&args));
+    }
+
     let (tx, rx) = bounded::<sequencer::AudioCmd>(512);
 
     // Keep the stream alive for the lifetime of the app.
