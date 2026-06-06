@@ -2,6 +2,7 @@
 name = "maqam-live"
 version = "1.1.0"
 edition = "2021"
+default-run = "maqam-live"
 description = "Live-coding terminal sequencer for Arabic maqam music, built on just intonation"
 license = "MIT"
 
