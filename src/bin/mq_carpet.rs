@@ -1,12 +1,12 @@
 // mq_carpet.rs — deterministic symbolic carpet renderer for .mq sessions
 //
-// Dependency-free prototype.  It writes PPM stills directly and MP4 tours by
-// streaming raw RGB frames to ffmpeg.
+// Dependency-free prototype.  It writes PPM directly, PNG through ffmpeg, and
+// MP4 tours by streaming raw RGB frames to ffmpeg.
 //
 // Usage:
-//   cargo run --release --bin mq_carpet -- magiccarpet.mq magiccarpet.ppm
-//   ffmpeg -y -i magiccarpet.ppm magiccarpet.png
+//   cargo run --release --bin mq_carpet -- magiccarpet.mq magiccarpet.png
 //   cargo run --release --bin mq_carpet -- magiccarpet.mq magiccarpet.mp4
+//   cargo run --release --bin mq_carpet -- magiccarpet.mq magiccarpet-art.png --art
 
 use std::collections::HashMap;
 use std::env;
@@ -62,7 +62,7 @@ struct Session {
 #[derive(Clone, Copy, Debug)]
 struct Pt { x: f64, y: f64 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Territory {
     node_idx: usize,
     c: Pt,
@@ -111,7 +111,7 @@ impl Image {
 
     fn brightened(&self) -> Self {
         let mut out = self.clone();
-        for c in &mut out.rgb { *c = (*c as f32 * 1.35 + 9.0).round().clamp(0.0, 255.0) as u8; }
+        for c in &mut out.rgb { *c = (*c as f32 * 1.38 + 10.0).round().clamp(0.0, 255.0) as u8; }
         out
     }
 
@@ -209,39 +209,55 @@ fn builtin_maqams() -> HashMap<String, Vec<Ratio>> {
 }
 
 fn build_geometry(s: &Session) -> Geometry {
-    let phrase_idxs: Vec<usize> = s.nodes.iter().enumerate()
+    let mut source_idxs: Vec<usize> = s.nodes.iter().enumerate()
         .filter(|(_, n)| matches!(&n.kind, Kind::Phrase { .. }))
         .map(|(i, _)| i)
         .collect();
-    let n = phrase_idxs.len().max(1);
+
+    // If a file only has create/settings lines, still render a carpet.
+    if source_idxs.is_empty() {
+        source_idxs = s.nodes.iter().enumerate()
+            .filter(|(_, n)| matches!(&n.kind, Kind::Create { .. }))
+            .map(|(i, _)| i)
+            .collect();
+    }
+
+    let n = source_idxs.len().max(1);
     let mut node_pos = vec![Pt { x: W as f64 / 2.0, y: H as f64 / 2.0 }; s.nodes.len()];
     let mut territories = Vec::new();
 
-    for (rank, idx) in phrase_idxs.iter().copied().enumerate() {
-        let theta = -0.75 + TAU * rank as f64 / n as f64;
+    for (rank, idx) in source_idxs.iter().copied().enumerate() {
+        let theta = -0.85 + TAU * rank as f64 / n as f64;
         let mut seed = hash(&s.nodes[idx].line);
         let c = Pt {
-            x: W as f64 * 0.50 + W as f64 * 0.27 * theta.cos() + (rand01(&mut seed) - 0.5) * 80.0,
-            y: H as f64 * 0.50 + H as f64 * 0.26 * theta.sin() + (rand01(&mut seed) - 0.5) * 55.0,
+            x: W as f64 * 0.50 + W as f64 * 0.29 * theta.cos() + (rand01(&mut seed) - 0.5) * 95.0,
+            y: H as f64 * 0.50 + H as f64 * 0.28 * theta.sin() + (rand01(&mut seed) - 0.5) * 72.0,
         };
         node_pos[idx] = c;
-        if let Kind::Phrase { maqams, rhythm } = &s.nodes[idx].kind {
-            let beats: usize = rhythm.chars().filter_map(|c| c.to_digit(10)).map(|d| d as usize).sum();
-            let color = palette(maqams.first().map(String::as_str).unwrap_or("unknown"), idx);
-            territories.push(Territory {
-                node_idx: idx,
-                c,
-                rx: 145.0 + beats as f64 * 4.8 + maqams.len() as f64 * 24.0,
-                ry: 105.0 + beats as f64 * 2.8,
-                color,
-            });
-        }
+
+        let (color, beats, maqam_count) = match &s.nodes[idx].kind {
+            Kind::Phrase { maqams, rhythm } => {
+                let beats: usize = rhythm.chars().filter_map(|c| c.to_digit(10)).map(|d| d as usize).sum();
+                let name = maqams.first().map(String::as_str).unwrap_or("unknown");
+                (palette(name, idx), beats.max(4), maqams.len().max(1))
+            }
+            Kind::Create { name, ratios } => (palette(name, idx), ratios.len().max(4), 1),
+            _ => (palette("unknown", idx), 8, 1),
+        };
+
+        territories.push(Territory {
+            node_idx: idx,
+            c,
+            rx: 170.0 + beats as f64 * 5.2 + maqam_count as f64 * 28.0,
+            ry: 118.0 + beats as f64 * 3.3,
+            color,
+        });
     }
 
     for i in 0..s.nodes.len() {
-        if matches!(&s.nodes[i].kind, Kind::Phrase { .. }) { continue; }
-        let prev = (0..i).rev().find(|&j| matches!(&s.nodes[j].kind, Kind::Phrase { .. })).map(|j| node_pos[j]);
-        let next = (i + 1..s.nodes.len()).find(|&j| matches!(&s.nodes[j].kind, Kind::Phrase { .. })).map(|j| node_pos[j]);
+        if source_idxs.contains(&i) { continue; }
+        let prev = (0..i).rev().find(|j| source_idxs.contains(j)).map(|j| node_pos[j]);
+        let next = (i + 1..s.nodes.len()).find(|j| source_idxs.contains(j)).map(|j| node_pos[j]);
         node_pos[i] = match (prev, next) {
             (Some(a), Some(b)) => Pt { x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5 },
             (Some(a), None) => a,
@@ -261,49 +277,132 @@ fn build_geometry(s: &Session) -> Geometry {
             _ => {}
         }
     }
+    if path.is_empty() { path.extend(territories.iter().map(|t| t.c)); }
     if path.is_empty() { path.push(Pt { x: W as f64 * 0.5, y: H as f64 * 0.5 }); }
 
     Geometry { territories, node_pos, path }
 }
 
 fn render_carpet(s: &Session, g: &Geometry, terminal_safe: bool) -> Image {
-    let mut img = Image::new(if terminal_safe { [5, 5, 9] } else { [10, 8, 14] });
-    draw_backing(&mut img);
-    for t in &g.territories { draw_territory(&mut img, s, *t, terminal_safe); }
+    let mut img = Image::new(if terminal_safe { [4, 4, 8] } else { [10, 8, 14] });
+    if g.territories.is_empty() { return img; }
+
+    draw_voronoi_fabric(&mut img, s, g, terminal_safe);
+    draw_global_weave(&mut img, terminal_safe);
+    draw_territory_motifs(&mut img, s, g, terminal_safe);
     draw_seams(&mut img, s, g, terminal_safe);
-    if terminal_safe { img.darkened(0.68) } else { img }
+
+    if terminal_safe { img.darkened(0.78) } else { img }
 }
 
-fn draw_backing(img: &mut Image) {
-    for y in (0..H).step_by(12) {
-        for x in 0..W as i32 { img.blend_px(x, y as i32, [36, 34, 50], 0.11); }
-    }
-    for x in (0..W).step_by(17) {
-        for y in 0..H as i32 { img.blend_px(x as i32, y, [28, 32, 42], 0.08); }
-    }
-}
-
-fn draw_territory(img: &mut Image, s: &Session, t: Territory, terminal_safe: bool) {
-    let Kind::Phrase { maqams, rhythm } = &s.nodes[t.node_idx].kind else { return; };
-    let base = t.color;
-    let xmin = (t.c.x - t.rx * 1.25).max(0.0) as i32;
-    let xmax = (t.c.x + t.rx * 1.25).min((W - 1) as f64) as i32;
-    let ymin = (t.c.y - t.ry * 1.25).max(0.0) as i32;
-    let ymax = (t.c.y + t.ry * 1.25).min((H - 1) as f64) as i32;
-    for y in ymin..=ymax {
-        for x in xmin..=xmax {
-            let dx = (x as f64 - t.c.x) / t.rx;
-            let dy = (y as f64 - t.c.y) / t.ry;
-            let wob = 0.10 * (dx * 9.0 + dy * 4.0 + t.node_idx as f64).sin()
-                + 0.06 * (dx * 17.0 - dy * 6.0).cos();
-            let d2 = dx * dx + dy * dy;
-            if d2 < 1.0 + wob {
-                let edge = (1.0 - d2).max(0.0) as f32;
-                img.blend_px(x, y, base, if terminal_safe { 0.11 + edge * 0.10 } else { 0.20 + edge * 0.23 });
+fn draw_voronoi_fabric(img: &mut Image, s: &Session, g: &Geometry, terminal_safe: bool) {
+    // This is the main carpet layer: every pixel belongs to a woven territory.
+    // The previous version only drew local ellipses, so it could collapse into
+    // a squiggly seam sketch.  This cannot: the whole frame is fabric.
+    for y in 0..H {
+        for x in 0..W {
+            let fx = x as f64;
+            let fy = y as f64;
+            let warp_x = 18.0 * (fy * 0.018).sin() + 8.0 * ((fx + fy) * 0.009).cos();
+            let warp_y = 14.0 * (fx * 0.015).cos() + 6.0 * ((fx - fy) * 0.011).sin();
+            let mut best_i = 0usize;
+            let mut best_d = f64::MAX;
+            let mut second_d = f64::MAX;
+            for (i, t) in g.territories.iter().enumerate() {
+                let dx = (fx + warp_x - t.c.x) / t.rx;
+                let dy = (fy + warp_y - t.c.y) / t.ry;
+                let d = dx * dx + dy * dy + 0.10 * ((dx * 5.0 + dy * 3.0 + i as f64).sin());
+                if d < best_d {
+                    second_d = best_d;
+                    best_d = d;
+                    best_i = i;
+                } else if d < second_d {
+                    second_d = d;
+                }
             }
+            let t = g.territories[best_i];
+            let mut col = t.color;
+
+            // Dense textile modulation: threads, knots, rhythm cadence.
+            let rhythm_period = rhythm_period(&s.nodes[t.node_idx]);
+            let thread_a = ((fx * 0.90 + fy * 0.32 + t.node_idx as f64 * 17.0) / rhythm_period).sin();
+            let thread_b = ((fx * -0.42 + fy * 1.05 + t.node_idx as f64 * 11.0) / (rhythm_period * 0.72)).sin();
+            let micro = ((x as i32 ^ (y as i32 * 31) ^ (t.node_idx as i32 * 911)) & 15) as i16 - 7;
+            let seam = ((second_d - best_d) * 8.0).clamp(0.0, 1.0) as f32;
+            let light = (11.0 * thread_a + 8.0 * thread_b + micro as f64) as i16;
+            col = tint(col, light);
+
+            // Voronoi boundaries are woven seams, not visible rectangles.
+            if seam < 0.18 {
+                col = mix(col, [178, 145, 82], if terminal_safe { 0.32 } else { 0.48 });
+            }
+            let darken = if terminal_safe { 0.54 } else { 0.80 };
+            let idx = (y * W + x) * 3;
+            img.rgb[idx] = (col[0] as f32 * darken) as u8;
+            img.rgb[idx + 1] = (col[1] as f32 * darken) as u8;
+            img.rgb[idx + 2] = (col[2] as f32 * darken) as u8;
         }
     }
+}
 
+fn rhythm_period(node: &Node) -> f64 {
+    match &node.kind {
+        Kind::Phrase { rhythm, .. } => {
+            let sum: usize = rhythm.chars().filter_map(|c| c.to_digit(10)).map(|d| d as usize).sum();
+            9.0 + sum.max(1) as f64 * 0.85
+        }
+        Kind::Create { ratios, .. } => 10.0 + ratios.len() as f64,
+        _ => 16.0,
+    }
+}
+
+fn draw_global_weave(img: &mut Image, terminal_safe: bool) {
+    let alpha_h = if terminal_safe { 0.055 } else { 0.095 };
+    let alpha_v = if terminal_safe { 0.040 } else { 0.075 };
+    for y in (0..H).step_by(7) {
+        for x in 0..W as i32 { img.blend_px(x, y as i32, [230, 210, 155], alpha_h); }
+    }
+    for x in (0..W).step_by(9) {
+        for y in 0..H as i32 { img.blend_px(x as i32, y, [30, 24, 36], alpha_v); }
+    }
+}
+
+fn draw_territory_motifs(img: &mut Image, s: &Session, g: &Geometry, terminal_safe: bool) {
+    for t in &g.territories {
+        let node = &s.nodes[t.node_idx];
+        match &node.kind {
+            Kind::Phrase { maqams, rhythm } => {
+                draw_rhythm_bands(img, *t, rhythm, terminal_safe);
+                for (mi, maqam) in maqams.iter().enumerate() {
+                    if let Some(ratios) = s.maqams.get(maqam) {
+                        let cx = t.c.x + (mi as f64 - (maqams.len() as f64 - 1.0) * 0.5) * t.rx * 0.42;
+                        let cy = t.c.y + t.ry * 0.20;
+                        ratio_cloud(img, ratios, cx, cy, t.rx.min(t.ry) * 0.20, terminal_safe);
+                    }
+                }
+            }
+            Kind::Create { ratios, .. } => ratio_cloud(img, ratios, t.c.x, t.c.y, t.rx.min(t.ry) * 0.24, terminal_safe),
+            _ => {}
+        }
+
+        let mut seed = hash(&node.line);
+        let count = if terminal_safe { 500 } else { 900 };
+        for _ in 0..count {
+            let a = rand01(&mut seed) * TAU;
+            let r = rand01(&mut seed).sqrt();
+            let x = t.c.x + a.cos() * r * t.rx * 0.92;
+            let y = t.c.y + a.sin() * r * t.ry * 0.92;
+            let len = 4.0 + rand01(&mut seed) * 16.0;
+            let th = a + (rand01(&mut seed) - 0.5) * 1.3;
+            line(img,
+                 Pt { x: x - th.cos() * len * 0.5, y: y - th.sin() * len * 0.5 },
+                 Pt { x: x + th.cos() * len * 0.5, y: y + th.sin() * len * 0.5 },
+                 tint(t.color, 50), if terminal_safe { 0.075 } else { 0.16 }, 1);
+        }
+    }
+}
+
+fn draw_rhythm_bands(img: &mut Image, t: Territory, rhythm: &str, terminal_safe: bool) {
     let groups: Vec<usize> = rhythm.chars().filter_map(|c| c.to_digit(10)).map(|d| d as usize).collect();
     let n_groups = groups.len().max(1);
     let total = groups.iter().sum::<usize>().max(1);
@@ -311,36 +410,16 @@ fn draw_territory(img: &mut Image, s: &Session, t: Territory, terminal_safe: boo
     for (gi, group) in groups.iter().copied().enumerate() {
         let mid = (acc as f64 + group as f64 * 0.5) / total as f64;
         acc += group;
-        let y = t.c.y - t.ry * 0.47 + (gi as f64 + 0.5) * (t.ry * 0.94 / n_groups as f64);
-        let len = t.rx * (0.7 + group as f64 * 0.04);
+        let y = t.c.y - t.ry * 0.46 + (gi as f64 + 0.5) * (t.ry * 0.92 / n_groups as f64);
+        let len = t.rx * (0.72 + group as f64 * 0.05);
         let angle = -0.55 + mid * 1.9;
         let a = Pt { x: t.c.x - len * angle.cos() * 0.5, y: y - len * angle.sin() * 0.20 };
         let b = Pt { x: t.c.x + len * angle.cos() * 0.5, y: y + len * angle.sin() * 0.20 };
-        line(img, a, b, tint(base, 45), if terminal_safe { 0.20 } else { 0.36 }, 3 + group as i32);
+        line(img, a, b, tint(t.color, 72), if terminal_safe { 0.18 } else { 0.34 }, 3 + group as i32);
         for k in 0..group {
             let u = (k as f64 + 0.5) / group as f64;
-            disc(img, a.x * (1.0 - u) + b.x * u, a.y * (1.0 - u) + b.y * u, 2.4, [220, 205, 150], if terminal_safe { 0.18 } else { 0.38 });
+            disc(img, a.x * (1.0 - u) + b.x * u, a.y * (1.0 - u) + b.y * u, 2.5, [225, 208, 146], if terminal_safe { 0.16 } else { 0.36 });
         }
-    }
-
-    for (mi, maqam) in maqams.iter().enumerate() {
-        if let Some(ratios) = s.maqams.get(maqam) {
-            let cx = t.c.x + (mi as f64 - (maqams.len() as f64 - 1.0) * 0.5) * t.rx * 0.42;
-            let cy = t.c.y + t.ry * 0.20;
-            ratio_cloud(img, ratios, cx, cy, t.rx.min(t.ry) * 0.18, terminal_safe);
-        }
-    }
-
-    let mut seed = hash(&s.nodes[t.node_idx].line);
-    let count = if terminal_safe { 230 } else { 420 };
-    for _ in 0..count {
-        let a = rand01(&mut seed) * TAU;
-        let r = rand01(&mut seed).sqrt();
-        let x = t.c.x + a.cos() * r * t.rx * 0.95;
-        let y = t.c.y + a.sin() * r * t.ry * 0.95;
-        let len = 5.0 + rand01(&mut seed) * 17.0;
-        let th = a + (rand01(&mut seed) - 0.5) * 1.2;
-        line(img, Pt { x: x - th.cos() * len * 0.5, y: y - th.sin() * len * 0.5 }, Pt { x: x + th.cos() * len * 0.5, y: y + th.sin() * len * 0.5 }, tint(base, 34), if terminal_safe { 0.10 } else { 0.20 }, 1);
     }
 }
 
@@ -350,7 +429,7 @@ fn ratio_cloud(img: &mut Image, ratios: &[Ratio], cx: f64, cy: f64, scale: f64, 
         let (x, y) = harmonic_offset(r, scale);
         let p = Pt { x: cx + x, y: cy + y };
         pts.push((r, p));
-        disc(img, p.x, p.y, if r.p == 1 && r.q == 1 { 4.3 } else { 3.2 }, ratio_color(r), if terminal_safe { 0.22 } else { 0.50 });
+        disc(img, p.x, p.y, if r.p == 1 && r.q == 1 { 4.5 } else { 3.4 }, ratio_color(r), if terminal_safe { 0.22 } else { 0.50 });
     }
     for i in 0..pts.len() {
         for j in i + 1..pts.len() {
@@ -385,18 +464,18 @@ fn harmonic_offset(r: Ratio, scale: f64) -> (f64, f64) {
 }
 
 fn draw_seams(img: &mut Image, s: &Session, g: &Geometry, terminal_safe: bool) {
-    let col = if terminal_safe { [115, 100, 64] } else { [220, 188, 92] };
+    let col = if terminal_safe { [110, 92, 56] } else { [220, 188, 92] };
     let phrase_positions: Vec<Pt> = s.nodes.iter().enumerate()
         .filter(|(_, n)| matches!(&n.kind, Kind::Phrase { .. }))
         .map(|(i, _)| g.node_pos[i])
         .collect();
-    for w in phrase_positions.windows(2) { curve(img, w[0], w[1], col, if terminal_safe { 0.18 } else { 0.34 }, 5); }
+    for w in phrase_positions.windows(2) { curve(img, w[0], w[1], col, if terminal_safe { 0.14 } else { 0.30 }, 4); }
     for node in &s.nodes {
         if let Kind::Jump { target, count } = &node.kind {
             if let Some(ti) = s.nodes.iter().position(|n| n.id == *target) {
                 let from = g.node_pos[node.id];
                 let to = g.node_pos[ti];
-                curve(img, from, to, col, if terminal_safe { 0.26 } else { 0.56 }, 8);
+                curve(img, from, to, col, if terminal_safe { 0.22 } else { 0.48 }, 7);
                 knot(img, from, (*count).clamp(1, 9), col, terminal_safe);
             }
         }
@@ -425,7 +504,7 @@ fn knot(img: &mut Image, p: Pt, loops: usize, rgb: [u8; 3], terminal_safe: bool)
         for i in 1..=48 {
             let a = TAU * i as f64 / 48.0;
             let q = Pt { x: p.x + r * a.cos(), y: p.y + r * 0.62 * a.sin() };
-            line(img, prev, q, rgb, if terminal_safe { 0.17 } else { 0.42 }, 2);
+            line(img, prev, q, rgb, if terminal_safe { 0.16 } else { 0.40 }, 2);
             prev = q;
         }
     }
@@ -506,30 +585,45 @@ fn render_mp4(s: &Session, g: &Geometry, output: &str) -> io::Result<()> {
     Ok(())
 }
 
+fn write_still(img: &Image, output: &str) -> io::Result<()> {
+    if output.ends_with(".png") {
+        let ppm = format!("{output}.tmp.ppm");
+        img.write_ppm(&ppm)?;
+        let status = Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-i", &ppm, output])
+            .status()?;
+        let _ = fs::remove_file(&ppm);
+        if !status.success() { return Err(io::Error::new(io::ErrorKind::Other, "ffmpeg PNG conversion failed")); }
+        Ok(())
+    } else {
+        img.write_ppm(output)
+    }
+}
+
 fn palette(name: &str, id: usize) -> [u8; 3] {
     match name {
-        "hijaz" | "hijaz2" => [170, 68, 112],
-        "bayati" | "bayati2" => [74, 150, 105],
-        "saba" | "saba2" | "zaba" => [62, 128, 150],
-        "rast" | "suznak" => [155, 125, 58],
-        "nahawand" | "kurd" => [95, 90, 165],
-        "ajam" | "jiharkah" => [160, 135, 78],
-        _ => { let h = hash(name).wrapping_add(id as u64 * 7919); [55 + (h & 63) as u8, 65 + ((h >> 8) & 79) as u8, 85 + ((h >> 16) & 75) as u8] }
+        "hijaz" | "hijaz2" => [176, 70, 116],
+        "bayati" | "bayati2" => [78, 158, 108],
+        "saba" | "saba2" | "zaba" => [66, 136, 158],
+        "rast" | "suznak" => [164, 132, 60],
+        "nahawand" | "kurd" => [100, 92, 174],
+        "ajam" | "jiharkah" => [168, 140, 78],
+        _ => { let h = hash(name).wrapping_add(id as u64 * 7919); [62 + (h & 70) as u8, 70 + ((h >> 8) & 84) as u8, 88 + ((h >> 16) & 82) as u8] }
     }
 }
 
 fn ratio_color(r: Ratio) -> [u8; 3] {
     match (r.p, r.q) {
-        (1, 1) => [210, 195, 135],
-        (13, 12) => [205, 78, 128],
-        (12, 11) => [210, 95, 165],
-        (32, 27) => [88, 145, 210],
-        (6, 5) => [115, 210, 130],
-        (5, 4) => [95, 190, 115],
-        (4, 3) => [85, 165, 215],
-        (3, 2) => [190, 160, 220],
-        (9, 8) => [140, 195, 90],
-        _ => [175, 145, 190],
+        (1, 1) => [215, 198, 135],
+        (13, 12) => [210, 78, 132],
+        (12, 11) => [214, 94, 166],
+        (32, 27) => [88, 148, 215],
+        (6, 5) => [116, 214, 132],
+        (5, 4) => [96, 194, 116],
+        (4, 3) => [86, 168, 218],
+        (3, 2) => [194, 164, 224],
+        (9, 8) => [144, 200, 92],
+        _ => [178, 148, 194],
     }
 }
 
@@ -538,6 +632,14 @@ fn tint(rgb: [u8; 3], lift: i16) -> [u8; 3] {
         (rgb[0] as i16 + lift).clamp(0, 255) as u8,
         (rgb[1] as i16 + lift).clamp(0, 255) as u8,
         (rgb[2] as i16 + lift).clamp(0, 255) as u8,
+    ]
+}
+
+fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    [
+        (a[0] as f32 * (1.0 - t) + b[0] as f32 * t).round() as u8,
+        (a[1] as f32 * (1.0 - t) + b[1] as f32 * t).round() as u8,
+        (a[2] as f32 * (1.0 - t) + b[2] as f32 * t).round() as u8,
     ]
 }
 
@@ -555,9 +657,9 @@ fn rand01(seed: &mut u64) -> f64 {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
-        eprintln!("usage: {} <session.mq> <out.ppm|out.mp4> [--art]", args[0]);
-        eprintln!("example: cargo run --release --bin mq_carpet -- growl.mq growl-carpet.ppm");
-        eprintln!("example: cargo run --release --bin mq_carpet -- growl.mq growl-tour.mp4");
+        eprintln!("usage: {} <session.mq> <out.png|out.ppm|out.mp4> [--art]", args[0]);
+        eprintln!("example: cargo run --release --bin mq_carpet -- magiccarpet.mq magiccarpet.png");
+        eprintln!("example: cargo run --release --bin mq_carpet -- magiccarpet.mq magiccarpet.mp4");
         return Ok(());
     }
     let src = fs::read_to_string(&args[1])?;
@@ -568,10 +670,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         render_mp4(&session, &geom, out)?;
     } else {
         let art = args.iter().any(|a| a == "--art");
-        render_carpet(&session, &geom, !art).write_ppm(out)?;
-        if !out.ends_with(".ppm") {
-            eprintln!("note: still output is PPM bytes; prefer .ppm, then convert with ffmpeg");
-        }
+        write_still(&render_carpet(&session, &geom, !art), out)?;
     }
     println!("saved {out}");
     Ok(())
