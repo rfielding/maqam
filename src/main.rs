@@ -8,6 +8,7 @@ mod sequencer;
 mod tuning;
 mod record;
 mod renderer;
+mod source_background;
 mod synth;
 mod ui;
 
