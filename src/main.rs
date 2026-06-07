@@ -5,6 +5,7 @@ mod audio;
 mod carpet;
 mod command;
 mod sequencer;
+mod session_v3;
 mod tuning;
 mod record;
 mod renderer;
