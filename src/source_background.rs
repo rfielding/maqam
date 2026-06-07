@@ -70,12 +70,20 @@ fn color(p: &Phrase, i: usize) -> [u8; 3] {
 
 fn anchors(n: usize) -> Vec<Pt> {
     if n == 3 {
-        return vec![Pt { x: 335.0, y: 248.0 }, Pt { x: 865.0, y: 252.0 }, Pt { x: 640.0, y: 515.0 }];
+        return vec![Pt { x: 350.0, y: 265.0 }, Pt { x: 855.0, y: 265.0 }, Pt { x: 640.0, y: 500.0 }];
+    }
+    if n == 4 {
+        return vec![
+            Pt { x: 380.0, y: 250.0 },
+            Pt { x: 880.0, y: 250.0 },
+            Pt { x: 400.0, y: 500.0 },
+            Pt { x: 865.0, y: 500.0 },
+        ];
     }
     let mut out = Vec::new();
     for i in 0..n.max(1) {
         let a = -0.7 + std::f64::consts::TAU * i as f64 / n.max(1) as f64;
-        out.push(Pt { x: W as f64 * 0.50 + a.cos() * W as f64 * 0.23, y: H as f64 * 0.48 + a.sin() * H as f64 * 0.22 });
+        out.push(Pt { x: W as f64 * 0.50 + a.cos() * W as f64 * 0.20, y: H as f64 * 0.50 + a.sin() * H as f64 * 0.15 });
     }
     out
 }
@@ -90,12 +98,52 @@ fn dist(x: f64, y: f64, c: Pt, rx: f64, ry: f64, seed: u32) -> f64 {
     let dx = (x - c.x) / rx;
     let dy = (y - c.y) / ry;
     let th = dy.atan2(dx);
-    ((dx.abs().powf(2.8) + dy.abs().powf(2.25)).powf(1.0 / 2.5)) / warp(seed, th)
+    ((dx.abs().powf(2.35) + dy.abs().powf(2.10)).powf(1.0 / 2.25)) / warp(seed, th)
 }
 
 fn boundary(c: Pt, rx: f64, ry: f64, seed: u32, t: f64, sc: f64) -> Pt {
     let w = warp(seed, t) * sc;
     Pt { x: c.x + t.cos() * rx * w, y: c.y + t.sin() * ry * w }
+}
+
+fn draw_rhythm_code(buf: &mut [[u8; 3]], p: &Phrase, c: Pt, rx: f64, ry: f64, seed: u32) {
+    let groups = if p.bar.groups.is_empty() { vec![3,3,2] } else { p.bar.groups.clone() };
+    let total: usize = groups.iter().map(|&g| g as usize).sum::<usize>().max(1);
+    let x0 = c.x - rx * 0.58;
+    let w = rx * 1.16;
+    let y0 = c.y + ry * 0.38;
+    let mut acc = 0usize;
+
+    // This is the readable score layer: group lengths become woven bead columns.
+    for (gi, &g) in groups.iter().enumerate() {
+        let center = acc as f64 + g as f64 * 0.5;
+        let x = x0 + center / total as f64 * w;
+        let height = 14.0 + g as f64 * 7.0;
+        let y1 = y0 - height * 0.5;
+        let y2 = y0 + height * 0.5;
+        let col = if gi % 2 == 0 { [226, 184, 92] } else { [96, 210, 190] };
+        line(buf, Pt { x, y: y1 }, Pt { x, y: y2 }, [42, 28, 24], 0.34, 1.7);
+        line(buf, Pt { x, y: y1 }, Pt { x, y: y2 }, col, 0.34, 0.8);
+        for k in 0..g.max(1) {
+            let yy = y1 + (k as f64 + 0.5) / g.max(1) as f64 * (y2 - y1);
+            dot(buf, x, yy, 2.1, col, 0.55);
+        }
+        acc += g as usize;
+    }
+
+    // A small asymmetric constellation makes phrase complexity visible without labels.
+    let density = (p.bar.ratio_strs.len() + p.bar.frequencies.len()).clamp(5, 18);
+    let base = Pt { x: c.x + rx * 0.38, y: c.y - ry * 0.34 };
+    for k in 0..density {
+        let a = std::f64::consts::TAU * h01(seed.wrapping_add(k as u32 * 101));
+        let r = 10.0 + 34.0 * h01(seed ^ (k as u32 * 349));
+        let x = base.x + a.cos() * r;
+        let y = base.y + a.sin() * r * 0.55;
+        if dist(x, y, c, rx, ry, seed) < 0.92 {
+            let col = if k % 3 == 0 { [220, 160, 74] } else if k % 3 == 1 { [82, 190, 176] } else { [182, 76, 142] };
+            dot(buf, x, y, 1.6, col, 0.42);
+        }
+    }
 }
 
 fn draw_region(buf: &mut [[u8; 3]], p: &Phrase, c: Pt, rx: f64, ry: f64, rgb: [u8; 3], ord: usize) {
@@ -110,14 +158,14 @@ fn draw_region(buf: &mut [[u8; 3]], p: &Phrase, c: Pt, rx: f64, ry: f64, rgb: [u
                 let under = ((y as f64 * 0.095 + seed as f64 * 0.017).cos() * 0.5 + 0.5).powf(2.0);
                 let diagonal = ((x as f64 * 0.045 - y as f64 * 0.032 + seed as f64 * 0.013).sin() * 0.5 + 0.5).powf(3.0);
                 let thread = 0.24 * over + 0.20 * under + 0.12 * diagonal;
-                pix(buf, x, y, rgb, (1.0 - d).powf(0.18) * (0.29 + thread));
-                if (x + (seed as i32 & 7)) % 9 == 0 { pix(buf, x, y, [210,185,120], 0.030); }
-                if (y + (seed as i32 & 11)) % 11 == 0 { pix(buf, x, y, [32,20,28], 0.045); }
+                pix(buf, x, y, rgb, (1.0 - d).powf(0.20) * (0.26 + thread));
+                if (x + (seed as i32 & 7)) % 9 == 0 { pix(buf, x, y, [210,185,120], 0.026); }
+                if (y + (seed as i32 & 11)) % 11 == 0 { pix(buf, x, y, [32,20,28], 0.040); }
             }
         }
     }
 
-    for (sc, alpha, step) in [(1.00, 0.20, 18), (0.88, 0.11, 25), (0.74, 0.07, 31)] {
+    for (sc, alpha, step) in [(1.00, 0.22, 16), (0.88, 0.12, 24), (0.74, 0.08, 32)] {
         let mut last = boundary(c, rx, ry, seed, 0.0, sc);
         let mut acc = 0usize;
         for i in 1..=220 {
@@ -146,19 +194,7 @@ fn draw_region(buf: &mut [[u8; 3]], p: &Phrase, c: Pt, rx: f64, ry: f64, rgb: [u
         }
     }
 
-    for k in 0..28u32 {
-        let rr = h01(seed ^ k.wrapping_mul(7919)).sqrt();
-        let th = std::f64::consts::TAU * h01(seed.wrapping_add(k * 313));
-        let x = c.x + th.cos() * rx * 0.78 * rr;
-        let y = c.y + th.sin() * ry * 0.70 * rr;
-        if dist(x, y, c, rx, ry, seed) > 0.92 { continue; }
-        let s = 2.5 + 3.5 * h01(seed ^ k.wrapping_mul(19));
-        let col = [[205,145,60],[76,176,164],[170,64,126],[184,70,48],[104,155,72]][k as usize % 5];
-        line(buf, Pt{x, y:y-s}, Pt{x:x+s, y}, col, 0.11, 0.35);
-        line(buf, Pt{x:x+s, y}, Pt{x, y:y+s}, col, 0.11, 0.35);
-        line(buf, Pt{x, y:y+s}, Pt{x:x-s, y}, col, 0.11, 0.35);
-        line(buf, Pt{x:x-s, y}, Pt{x, y:y-s}, col, 0.11, 0.35);
-    }
+    draw_rhythm_code(buf, p, c, rx, ry, seed);
 }
 
 fn quiet_seam(buf: &mut [[u8; 3]], a: Pt, b: Pt) {
@@ -221,9 +257,11 @@ fn write_rug_carpet_ppm(path: &str, phrases: &[Phrase]) -> anyhow::Result<()> {
 
     for (i, p) in playable.iter().enumerate() {
         let (rx, ry) = if n == 3 {
-            match i { 0 => (315.0,218.0), 1 => (325.0,210.0), _ => (390.0,180.0) }
+            match i { 0 => (285.0,195.0), 1 => (292.0,190.0), _ => (340.0,155.0) }
+        } else if n == 4 {
+            match i { 0 => (232.0,140.0), 1 => (235.0,140.0), 2 => (245.0,135.0), _ => (242.0,135.0) }
         } else {
-            ((300.0 - n as f64 * 4.0).clamp(220.0,292.0), (195.0 - n as f64 * 2.0).clamp(150.0,188.0))
+            ((250.0 - n as f64 * 3.0).clamp(190.0,238.0), (160.0 - n as f64 * 2.0).clamp(120.0,152.0))
         };
         draw_region(&mut buf, p, pts[i], rx, ry, color(p, i), i);
     }
