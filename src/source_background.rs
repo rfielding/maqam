@@ -70,11 +70,7 @@ fn color(p: &Phrase, i: usize) -> [u8; 3] {
 
 fn anchors(n: usize) -> Vec<Pt> {
     if n == 3 {
-        return vec![
-            Pt { x: 335.0, y: 248.0 },
-            Pt { x: 865.0, y: 252.0 },
-            Pt { x: 640.0, y: 515.0 },
-        ];
+        return vec![Pt { x: 335.0, y: 248.0 }, Pt { x: 865.0, y: 252.0 }, Pt { x: 640.0, y: 515.0 }];
     }
     let mut out = Vec::new();
     for i in 0..n.max(1) {
@@ -110,22 +106,26 @@ fn draw_region(buf: &mut [[u8; 3]], p: &Phrase, c: Pt, rx: f64, ry: f64, rgb: [u
             if x < 0 || y < 0 || x >= W as i32 || y >= H as i32 { continue; }
             let d = dist(x as f64 + 0.5, y as f64 + 0.5, c, rx, ry, seed);
             if d < 1.0 {
-                let weave = 0.5 + 0.5 * ((x as f64 * 0.060 + y as f64 * 0.020 + seed as f64).sin());
-                let cross = 0.5 + 0.5 * ((x as f64 * 0.018 - y as f64 * 0.050 + seed as f64 * 0.3).cos());
-                pix(buf, x, y, rgb, (1.0 - d).powf(0.18) * (0.32 + 0.14 * weave + 0.08 * cross));
+                let over = ((x as f64 * 0.085 + seed as f64 * 0.011).sin() * 0.5 + 0.5).powf(2.0);
+                let under = ((y as f64 * 0.095 + seed as f64 * 0.017).cos() * 0.5 + 0.5).powf(2.0);
+                let diagonal = ((x as f64 * 0.045 - y as f64 * 0.032 + seed as f64 * 0.013).sin() * 0.5 + 0.5).powf(3.0);
+                let thread = 0.24 * over + 0.20 * under + 0.12 * diagonal;
+                pix(buf, x, y, rgb, (1.0 - d).powf(0.18) * (0.29 + thread));
+                if (x + (seed as i32 & 7)) % 9 == 0 { pix(buf, x, y, [210,185,120], 0.030); }
+                if (y + (seed as i32 & 11)) % 11 == 0 { pix(buf, x, y, [32,20,28], 0.045); }
             }
         }
     }
 
-    for (sc, alpha, step) in [(1.00, 0.24, 15), (0.88, 0.14, 21), (0.74, 0.09, 27)] {
+    for (sc, alpha, step) in [(1.00, 0.20, 18), (0.88, 0.11, 25), (0.74, 0.07, 31)] {
         let mut last = boundary(c, rx, ry, seed, 0.0, sc);
         let mut acc = 0usize;
         for i in 1..=220 {
             let t = std::f64::consts::TAU * i as f64 / 220.0;
             let q = boundary(c, rx, ry, seed, t, sc);
-            line(buf, last, q, [185, 128, 54], alpha * 0.12, 0.65);
+            line(buf, last, q, [185, 128, 54], alpha * 0.10, 0.55);
             acc += 1;
-            if acc >= step { acc = 0; dot(buf, q.x, q.y, 1.1, [215, 158, 68], alpha); }
+            if acc >= step { acc = 0; dot(buf, q.x, q.y, 0.9, [215, 158, 68], alpha); }
             last = q;
         }
     }
@@ -140,24 +140,24 @@ fn draw_region(buf: &mut [[u8; 3]], p: &Phrase, c: Pt, rx: f64, ry: f64, rgb: [u
             let y = yy + (u * std::f64::consts::TAU * (1.0 + *g as f64 * 0.22) + seed as f64 * 0.01).sin() * (5.0 + *g as f64 * 0.9);
             if dist(x, y, c, rx, ry, seed) < 0.94 {
                 let q = Pt { x, y };
-                if let Some(prev) = last { line(buf, prev, q, [210,195,130], 0.10, 0.5); }
+                if let Some(prev) = last { line(buf, prev, q, [210,195,130], 0.09, 0.45); }
                 last = Some(q);
             } else { last = None; }
         }
     }
 
-    for k in 0..36u32 {
+    for k in 0..28u32 {
         let rr = h01(seed ^ k.wrapping_mul(7919)).sqrt();
         let th = std::f64::consts::TAU * h01(seed.wrapping_add(k * 313));
         let x = c.x + th.cos() * rx * 0.78 * rr;
         let y = c.y + th.sin() * ry * 0.70 * rr;
         if dist(x, y, c, rx, ry, seed) > 0.92 { continue; }
-        let s = 3.0 + 4.0 * h01(seed ^ k.wrapping_mul(19));
+        let s = 2.5 + 3.5 * h01(seed ^ k.wrapping_mul(19));
         let col = [[205,145,60],[76,176,164],[170,64,126],[184,70,48],[104,155,72]][k as usize % 5];
-        line(buf, Pt{x, y:y-s}, Pt{x:x+s, y}, col, 0.14, 0.4);
-        line(buf, Pt{x:x+s, y}, Pt{x, y:y+s}, col, 0.14, 0.4);
-        line(buf, Pt{x, y:y+s}, Pt{x:x-s, y}, col, 0.14, 0.4);
-        line(buf, Pt{x:x-s, y}, Pt{x, y:y-s}, col, 0.14, 0.4);
+        line(buf, Pt{x, y:y-s}, Pt{x:x+s, y}, col, 0.11, 0.35);
+        line(buf, Pt{x:x+s, y}, Pt{x, y:y+s}, col, 0.11, 0.35);
+        line(buf, Pt{x, y:y+s}, Pt{x:x-s, y}, col, 0.11, 0.35);
+        line(buf, Pt{x:x-s, y}, Pt{x, y:y-s}, col, 0.11, 0.35);
     }
 }
 
@@ -166,7 +166,7 @@ fn quiet_seam(buf: &mut [[u8; 3]], a: Pt, b: Pt) {
     for i in 0..36 {
         let t = i as f64 / 35.0;
         let q = Pt { x: a.x * (1.0 - t) + b.x * t, y: a.y * (1.0 - t) + b.y * t };
-        if i % 7 == 0 { dot(buf, (q.x + mid.x) * 0.5, (q.y + mid.y) * 0.5, 0.9, [196,138,56], 0.10); }
+        if i % 7 == 0 { dot(buf, (q.x + mid.x) * 0.5, (q.y + mid.y) * 0.5, 0.8, [196,138,56], 0.08); }
     }
 }
 
@@ -182,16 +182,36 @@ fn border(buf: &mut [[u8; 3]]) {
     }
 }
 
+fn field_texture(buf: &mut [[u8; 3]]) {
+    for y in 0..H {
+        for x in 0..W {
+            let idx = y * W + x;
+            let xf = x as f64;
+            let yf = y as f64;
+            let warp = 0.7 * (yf * 0.018).sin() + 0.5 * (xf * 0.011).cos();
+            let vertical = ((xf * 0.70 + warp).sin() * 0.5 + 0.5).powf(7.0);
+            let horizontal = ((yf * 0.74 - warp).cos() * 0.5 + 0.5).powf(7.0);
+            let diagonal = (((xf + yf) * 0.36).sin() * 0.5 + 0.5).powf(9.0);
+            let knot = h01((x as u32).wrapping_mul(97) ^ (y as u32).wrapping_mul(193));
+            let light = 0.055 * vertical + 0.050 * horizontal + 0.028 * diagonal;
+            let dark = if knot > 0.985 { 0.085 } else { 0.0 };
+            if light > 0.01 { blend(&mut buf[idx], [150,130,88], light); }
+            if dark > 0.0 { blend(&mut buf[idx], [7,6,10], dark); }
+        }
+    }
+}
+
 fn write_rug_carpet_ppm(path: &str, phrases: &[Phrase]) -> anyhow::Result<()> {
     let mut buf = vec![[0u8; 3]; W * H];
     for y in 0..H {
         for x in 0..W {
             let xf = x as f64; let yf = y as f64;
-            let weave = 8.0 + 4.0 * (xf * 0.015).sin() + 3.0 * (yf * 0.021).cos() + 2.0 * ((xf + yf) * 0.010).sin();
+            let base = 7.0 + 3.0 * (xf * 0.015).sin() + 3.0 * (yf * 0.021).cos() + 2.0 * ((xf + yf) * 0.010).sin();
             let n = (hash((x as u32).wrapping_mul(31) ^ (y as u32).wrapping_mul(131)) % 18) as f64;
-            buf[y * W + x] = [clamp(weave + n * 0.20), clamp(weave + 2.0 + n * 0.16), clamp(weave + 12.0 + n * 0.46)];
+            buf[y * W + x] = [clamp(base + n * 0.18), clamp(base + 2.0 + n * 0.14), clamp(base + 12.0 + n * 0.42)];
         }
     }
+    field_texture(&mut buf);
 
     let playable: Vec<&Phrase> = phrases.iter().filter(|p| p.jump.is_none() && p.control.is_none()).collect();
     let n = playable.len().max(1);
@@ -207,6 +227,7 @@ fn write_rug_carpet_ppm(path: &str, phrases: &[Phrase]) -> anyhow::Result<()> {
         };
         draw_region(&mut buf, p, pts[i], rx, ry, color(p, i), i);
     }
+    field_texture(&mut buf);
 
     for (idx, jline) in phrases.iter().enumerate() {
         let Some(j) = &jline.jump else { continue; };
@@ -215,12 +236,12 @@ fn write_rug_carpet_ppm(path: &str, phrases: &[Phrase]) -> anyhow::Result<()> {
         if source.sub(target).len() > 4.0 { quiet_seam(&mut buf, source, target); }
     }
 
-    for i in 0..5200u32 {
+    for i in 0..5600u32 {
         let x = 18.0 + h01(i * 17) * (W as f64 - 36.0);
         let y = 18.0 + h01(i * 43) * (H as f64 - 36.0);
         let col = [[214,154,55],[86,190,178],[180,64,124],[200,78,44],[116,168,78],[196,184,128]][i as usize % 6];
-        if i % 3 == 0 { line(&mut buf, Pt{x:x-1.4,y}, Pt{x:x+1.4,y}, col, 0.13, 0.38); }
-        else { dot(&mut buf, x, y, 0.8, col, 0.13); }
+        if i % 3 == 0 { line(&mut buf, Pt{x:x-1.4,y}, Pt{x:x+1.4,y}, col, 0.11, 0.34); }
+        else { dot(&mut buf, x, y, 0.7, col, 0.11); }
     }
 
     border(&mut buf);
