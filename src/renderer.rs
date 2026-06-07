@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // renderer.rs — pixel-only helpers for carpet/background video rendering
 //
 // This is the Rust port of the Python guided-redraw prototype:
@@ -141,7 +142,11 @@ impl RgbImage {
                 self.blend_px(
                     x,
                     y,
-                    [bright_source.rgb[i], bright_source.rgb[i + 1], bright_source.rgb[i + 2]],
+                    [
+                        bright_source.rgb[i],
+                        bright_source.rgb[i + 1],
+                        bright_source.rgb[i + 2],
+                    ],
                     alpha,
                 );
             }
@@ -160,14 +165,20 @@ impl RgbImage {
                 let darken = 1.0 - strength * t * t;
                 let i = (y * self.w + x) * 3;
                 for ch in 0..3 {
-                    self.rgb[i + ch] = (self.rgb[i + ch] as f32 * darken).round().clamp(0.0, 255.0) as u8;
+                    self.rgb[i + ch] =
+                        (self.rgb[i + ch] as f32 * darken).round().clamp(0.0, 255.0) as u8;
                 }
             }
         }
     }
 }
 
-pub fn fit_center_rgb(src: &RgbImage, out_w: usize, out_h: usize, margin: usize) -> (RgbImage, FitResult) {
+pub fn fit_center_rgb(
+    src: &RgbImage,
+    out_w: usize,
+    out_h: usize,
+    margin: usize,
+) -> (RgbImage, FitResult) {
     let usable_w = out_w.saturating_sub(margin).max(1) as f64;
     let usable_h = out_h.saturating_sub(margin).max(1) as f64;
     let scale = (usable_w / src.w.max(1) as f64).min(usable_h / src.h.max(1) as f64);
@@ -178,16 +189,28 @@ pub fn fit_center_rgb(src: &RgbImage, out_w: usize, out_h: usize, margin: usize)
     let mut out = RgbImage::new(out_w, out_h, [6, 6, 10]);
 
     for y in 0..rh {
-        let sy = ((y as f64 + 0.5) * src.h as f64 / rh as f64).floor().min((src.h - 1) as f64) as usize;
+        let sy = ((y as f64 + 0.5) * src.h as f64 / rh as f64)
+            .floor()
+            .min((src.h - 1) as f64) as usize;
         for x in 0..rw {
-            let sx = ((x as f64 + 0.5) * src.w as f64 / rw as f64).floor().min((src.w - 1) as f64) as usize;
+            let sx = ((x as f64 + 0.5) * src.w as f64 / rw as f64)
+                .floor()
+                .min((src.w - 1) as f64) as usize;
             let si = (sy * src.w + sx) * 3;
             let di = ((y0 + y) * out_w + (x0 + x)) * 3;
             out.rgb[di..di + 3].copy_from_slice(&src.rgb[si..si + 3]);
         }
     }
 
-    (out, FitResult { x0, y0, w: rw, h: rh })
+    (
+        out,
+        FitResult {
+            x0,
+            y0,
+            w: rw,
+            h: rh,
+        },
+    )
 }
 
 pub fn prepare_carpet_layers(src: &RgbImage, out_w: usize, out_h: usize) -> CarpetLayers {
@@ -195,7 +218,12 @@ pub fn prepare_carpet_layers(src: &RgbImage, out_w: usize, out_h: usize) -> Carp
     let mut dark = base.darkened(0.54);
     dark.apply_vignette(0.32);
     let bright = base.brightened(1.30, 10.0, 1.12);
-    CarpetLayers { base, dark, bright, fit }
+    CarpetLayers {
+        base,
+        dark,
+        bright,
+        fit,
+    }
 }
 
 pub fn render_guided_redraw_frame(
@@ -218,7 +246,9 @@ pub fn render_guided_redraw_frame(
 
     for k in 1..=style.trail_count {
         let b = beat - k as f64 * style.trail_spacing_beats;
-        if b < 0.0 { break; }
+        if b < 0.0 {
+            break;
+        }
         let q = position_at_beat_clamped(beat_positions, b);
         let strength = style.trail_strength * (1.0 - k as f32 / (style.trail_count as f32 + 1.0));
         frame.composite_from_with_gaussian_mask(&layers.bright, q, style.trail_radius, strength);
@@ -257,7 +287,14 @@ pub fn growl_like_beat_positions(path: &[Point]) -> Vec<Point> {
         return path.to_vec();
     }
     let beats_per_section = [16usize, 4, 16, 16, 4, 4];
-    let section_ranges = [(0usize, 2usize), (2, 3), (3, 6), (6, 10), (10, 11), (11, 12)];
+    let section_ranges = [
+        (0usize, 2usize),
+        (2, 3),
+        (3, 6),
+        (6, 10),
+        (10, 11),
+        (11, 12),
+    ];
     let mut out = Vec::new();
     for ((a, b), beats) in section_ranges.iter().copied().zip(beats_per_section) {
         let p0 = path[a];
@@ -312,7 +349,12 @@ pub fn position_at_beat_clamped(beat_positions: &[Point], beat: f64) -> Point {
     }
 }
 
-pub fn render_bright_redraw_frame(dark: &RgbImage, bright: &RgbImage, pos: Point, beat_phase: f64) -> RgbImage {
+pub fn render_bright_redraw_frame(
+    dark: &RgbImage,
+    bright: &RgbImage,
+    pos: Point,
+    beat_phase: f64,
+) -> RgbImage {
     let pulse = (-10.0 * beat_phase).exp() as f32;
     let mut frame = dark.clone();
     frame.composite_from_with_gaussian_mask(bright, pos, 58.0 + pulse as f64 * 10.0, 0.82);

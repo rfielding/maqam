@@ -5,7 +5,9 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use crate::sequencer::{ControlSpec, Phrase, SubdivEvent};
-use crate::synth::{evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Milestone, Voice};
+use crate::synth::{
+    evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Milestone, Voice,
+};
 
 const SR: f64 = 44100.0;
 
@@ -19,7 +21,9 @@ fn ffmpeg_status(cmd: &mut Command) -> anyhow::Result<bool> {
     match cmd.status() {
         Ok(status) => Ok(status.success()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            anyhow::bail!("video rendering requires ffmpeg on your PATH; install ffmpeg and try again")
+            anyhow::bail!(
+                "video rendering requires ffmpeg on your PATH; install ffmpeg and try again"
+            )
         }
         Err(err) => Err(err.into()),
     }
@@ -55,40 +59,49 @@ struct RenderEntry {
 //  y=657     URL text top
 //  y=682     URL baseline (MarginV=38)
 
-
-const IND_Y:    i32 = 588;
-const IND_W:    i32 = 12;
-const IND_H:    i32 = 12;
-const RAIL_Y:   i32 = 603;
-const RAIL_H:   i32 = 16;
+const IND_Y: i32 = 588;
+const IND_W: i32 = 12;
+const IND_H: i32 = 12;
+const RAIL_Y: i32 = 603;
+const RAIL_H: i32 = 16;
 #[allow(dead_code)]
-const BOUND_Y:  i32 = 591;
+const BOUND_Y: i32 = 591;
 #[allow(dead_code)]
-const TICK_W:   i32 = 2;
-const LABEL_Y:  i32 = 621;
+const TICK_W: i32 = 2;
+const LABEL_Y: i32 = 621;
 const RULER_X0: i32 = 40;
-const BG_H:     usize = 720;
+const BG_H: usize = 720;
 
 // ── JI ratio arithmetic ───────────────────────────────────────────────────────
 
 fn gcd(mut a: u64, mut b: u64) -> u64 {
-    while b != 0 { let t = b; b = a % b; a = t; }
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
     a
 }
 
 /// Best rational p/q ≈ x with q ≤ max_denom (brute-force; fast for max_denom≤1024).
 fn best_rational(x: f64, max_denom: u64) -> (u64, u64) {
-    if x <= 0.0 { return (0, 1); }
-    let mut best     = (1u64, 1u64);
+    if x <= 0.0 {
+        return (0, 1);
+    }
+    let mut best = (1u64, 1u64);
     let mut best_err = (x - 1.0).abs();
     for q in 1u64..=max_denom {
-        let p   = (x * q as f64).round() as u64;
-        if p == 0 { continue; }
+        let p = (x * q as f64).round() as u64;
+        if p == 0 {
+            continue;
+        }
         let err = (x - p as f64 / q as f64).abs();
         if err < best_err {
             best_err = err;
-            best     = (p, q);
-            if err < 1e-9 { break; }
+            best = (p, q);
+            if err < 1e-9 {
+                break;
+            }
         }
     }
     let g = gcd(best.0, best.1);
@@ -98,19 +111,31 @@ fn best_rational(x: f64, max_denom: u64) -> (u64, u64) {
 /// Format hz/root_hz as a JI ratio like "4/3", normalised to [1, 2).
 /// Special-cases: 0¢ → "1/1", 1200¢ → "2/1".
 fn ratio_label(hz: f64, root_hz: f64) -> String {
-    if root_hz <= 0.0 || hz <= 0.0 { return "?".into(); }
+    if root_hz <= 0.0 || hz <= 0.0 {
+        return "?".into();
+    }
     let c = cents_from_root(hz, root_hz);
-    if c < 1.0   { return "1/1".into(); }
-    if c > 1199.0 { return "2/1".into(); }
+    if c < 1.0 {
+        return "1/1".into();
+    }
+    if c > 1199.0 {
+        return "2/1".into();
+    }
     let mut r = hz / root_hz;
-    while r <  1.0 { r *= 2.0; }
-    while r >= 2.0 { r /= 2.0; }
+    while r < 1.0 {
+        r *= 2.0;
+    }
+    while r >= 2.0 {
+        r /= 2.0;
+    }
     let (p, q) = best_rational(r, 1024);
     format!("{p}/{q}")
 }
 
 fn cents_from_root(hz: f64, root_hz: f64) -> f64 {
-    if root_hz <= 0.0 || hz <= 0.0 { return 0.0; }
+    if root_hz <= 0.0 || hz <= 0.0 {
+        return 0.0;
+    }
     let raw = 1200.0 * (hz / root_hz).log2();
     ((raw % 1200.0) + 1200.0) % 1200.0
 }
@@ -129,16 +154,29 @@ fn fill_rect(buf: &mut [u8], buf_w: usize, x: usize, y: usize, w: usize, h: usiz
 }
 
 fn blend_px(buf: &mut [u8], buf_w: usize, x: i32, y: i32, rgb: [u8; 3], alpha: f32) {
-    if x < 0 || y < 0 || x >= buf_w as i32 || y >= BG_H as i32 { return; }
+    if x < 0 || y < 0 || x >= buf_w as i32 || y >= BG_H as i32 {
+        return;
+    }
     let idx = (y as usize * buf_w + x as usize) * 3;
     for c in 0..3 {
         let base = buf[idx + c] as f32;
         let over = rgb[c] as f32;
-        buf[idx + c] = (base * (1.0 - alpha) + over * alpha).round().clamp(0.0, 255.0) as u8;
+        buf[idx + c] = (base * (1.0 - alpha) + over * alpha)
+            .round()
+            .clamp(0.0, 255.0) as u8;
     }
 }
 
-fn draw_line(buf: &mut [u8], buf_w: usize, mut x0: i32, mut y0: i32, x1: i32, y1: i32, rgb: [u8; 3], alpha: f32) {
+fn draw_line(
+    buf: &mut [u8],
+    buf_w: usize,
+    mut x0: i32,
+    mut y0: i32,
+    x1: i32,
+    y1: i32,
+    rgb: [u8; 3],
+    alpha: f32,
+) {
     let dx = (x1 - x0).abs();
     let sx = if x0 < x1 { 1 } else { -1 };
     let dy = -(y1 - y0).abs();
@@ -146,14 +184,32 @@ fn draw_line(buf: &mut [u8], buf_w: usize, mut x0: i32, mut y0: i32, x1: i32, y1
     let mut err = dx + dy;
     loop {
         blend_px(buf, buf_w, x0, y0, rgb, alpha);
-        if x0 == x1 && y0 == y1 { break; }
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
         let e2 = 2 * err;
-        if e2 >= dy { err += dy; x0 += sx; }
-        if e2 <= dx { err += dx; y0 += sy; }
+        if e2 >= dy {
+            err += dy;
+            x0 += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y0 += sy;
+        }
     }
 }
 
-fn draw_thick_line(buf: &mut [u8], buf_w: usize, x0: i32, y0: i32, x1: i32, y1: i32, rgb: [u8; 3], alpha: f32, thickness: i32) {
+fn draw_thick_line(
+    buf: &mut [u8],
+    buf_w: usize,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    rgb: [u8; 3],
+    alpha: f32,
+    thickness: i32,
+) {
     let half = thickness.max(1) / 2;
     for off in -half..=half {
         draw_line(buf, buf_w, x0 + off, y0, x1 + off, y1, rgb, alpha);
@@ -214,25 +270,30 @@ fn hex_points(cx: i32, cy: i32, rx: i32, ry: i32, skew: i32) -> [(i32, i32); 6] 
     ]
 }
 
-fn fill_polygon(
-    buf: &mut [u8],
-    buf_w: usize,
-    pts: &[(i32, i32)],
-    rgb: [u8; 3],
-    alpha: f32,
-) {
-    if pts.len() < 3 { return; }
+fn fill_polygon(buf: &mut [u8], buf_w: usize, pts: &[(i32, i32)], rgb: [u8; 3], alpha: f32) {
+    if pts.len() < 3 {
+        return;
+    }
     let min_y = pts.iter().map(|p| p.1).min().unwrap_or(0).max(0);
-    let max_y = pts.iter().map(|p| p.1).max().unwrap_or(0).min(BG_H as i32 - 1);
+    let max_y = pts
+        .iter()
+        .map(|p| p.1)
+        .max()
+        .unwrap_or(0)
+        .min(BG_H as i32 - 1);
     for y in min_y..=max_y {
         let mut xs: Vec<i32> = Vec::new();
         for i in 0..pts.len() {
             let (x0, y0) = pts[i];
             let (x1, y1) = pts[(i + 1) % pts.len()];
-            if y0 == y1 { continue; }
+            if y0 == y1 {
+                continue;
+            }
             let ymin = y0.min(y1);
             let ymax = y0.max(y1);
-            if y < ymin || y >= ymax { continue; }
+            if y < ymin || y >= ymax {
+                continue;
+            }
             let t = (y - y0) as f32 / (y1 - y0) as f32;
             xs.push((x0 as f32 + t * (x1 - x0) as f32).round() as i32);
         }
@@ -255,7 +316,9 @@ fn draw_polygon_outline(
     alpha: f32,
     thickness: i32,
 ) {
-    if pts.len() < 2 { return; }
+    if pts.len() < 2 {
+        return;
+    }
     for i in 0..pts.len() {
         let (x0, y0) = pts[i];
         let (x1, y1) = pts[(i + 1) % pts.len()];
@@ -271,7 +334,8 @@ fn write_tiling_background(
     const BG_STEP_X: usize = 22;
 
     let path = temp_path("maqam-tiling.ppm");
-    let tick_count: usize = full_seq.iter()
+    let tick_count: usize = full_seq
+        .iter()
         .map(|entry| phrases[entry.phrase_idx].bar.events.len().max(1))
         .sum();
     let step_x = 42usize;
@@ -299,7 +363,8 @@ fn write_tiling_background(
         if active_until.len() != rows {
             active_until = vec![0; rows];
         }
-        let sustain_steps = ((entry.sustain / (60.0 / (entry.bpm * 2.0))).ceil() as usize).clamp(1, 12);
+        let sustain_steps =
+            ((entry.sustain / (60.0 / (entry.bpm * 2.0))).ceil() as usize).clamp(1, 12);
         let degree_biases: Vec<(i32, i32)> = bar
             .frequencies
             .iter()
@@ -324,14 +389,22 @@ fn write_tiling_background(
                 let pts = hex_points(x, cy, rx, ry, row_skew + col_skew);
                 let fade = if active_until[r] > col_idx {
                     ((active_until[r] - col_idx) as f32 / sustain_steps as f32).clamp(0.15, 1.0)
-                } else { 0.0 };
+                } else {
+                    0.0
+                };
                 if fade > 0.0 {
                     let rgb = if r == row { fill_accent } else { fill_main };
-                    let alpha = if r == row { 0.20 + fade * 0.12 } else { 0.03 + fade * 0.05 };
+                    let alpha = if r == row {
+                        0.20 + fade * 0.12
+                    } else {
+                        0.03 + fade * 0.05
+                    };
                     fill_polygon(&mut buf, buf_w, &pts, rgb, alpha);
                 }
                 draw_polygon_outline(
-                    &mut buf, buf_w, &pts,
+                    &mut buf,
+                    buf_w,
+                    &pts,
                     if r == row { line_accent } else { line_main },
                     if r == row { 0.60 } else { 0.36 },
                     if r == row { 3 } else { 1 },
@@ -355,28 +428,28 @@ fn write_tiling_background(
 /// Returns a Vec of individual filter strings to be chained with commas.
 #[allow(dead_code)]
 fn build_ruler_boxes(
-    full_seq:        &[(usize, usize, usize)],
-    phrases:         &[Phrase],
-    subdiv_secs:     f64,
+    full_seq: &[(usize, usize, usize)],
+    phrases: &[Phrase],
+    subdiv_secs: f64,
     bar_samples_for: &dyn Fn(usize) -> usize,
-    total_secs:      f64,
+    total_secs: f64,
 ) -> Vec<String> {
     let mut parts: Vec<String> = Vec::new();
     let mut sample: usize = 0;
     let n_seq = full_seq.len();
 
     for (seq_i, &(phrase_idx, _play, _snap)) in full_seq.iter().enumerate() {
-        let bs  = bar_samples_for(phrase_idx);
-        let t0  = sample as f64 / SR;
+        let bs = bar_samples_for(phrase_idx);
+        let t0 = sample as f64 / SR;
         // Last entry extends to total_secs so the ruler stays visible through the tail
-        let t1  = if seq_i + 1 == n_seq {
+        let t1 = if seq_i + 1 == n_seq {
             total_secs - 0.001
         } else {
             (sample + bs) as f64 / SR - 0.001
         };
-        let en  = format!("'between(t,{t0:.6},{t1:.6})'");
+        let en = format!("'between(t,{t0:.6},{t1:.6})'");
 
-        let bar     = &phrases[phrase_idx].bar;
+        let bar = &phrases[phrase_idx].bar;
         let root_hz = bar.root_hz;
 
         // ── Rail ───────────────────────────────────────────────────────────
@@ -402,16 +475,20 @@ fn build_ruler_boxes(
 
         // ── Active pitch indicator (yellow box, per subdivision) ───────────
         for (si, ev) in bar.events.iter().enumerate() {
-            let st     = t0 + si as f64 * subdiv_secs;
-            let et     = (t0 + (si + 1) as f64 * subdiv_secs).min(t1) - 0.0001;
-            if st >= et { continue; }
+            let st = t0 + si as f64 * subdiv_secs;
+            let et = (t0 + (si + 1) as f64 * subdiv_secs).min(t1) - 0.0001;
+            if st >= et {
+                continue;
+            }
             let sub_en = format!("'between(t,{st:.6},{et:.6})'");
             let hz = match ev {
                 SubdivEvent::Kick(hz) | SubdivEvent::Snare(hz) => *hz,
             };
-            let c  = cents_from_root(hz, root_hz);
-            if c < 0.0 || c > 1200.0 { continue; }
-            let x  = (RULER_X0 as f64 + c).round() as i32 - IND_W / 2;
+            let c = cents_from_root(hz, root_hz);
+            if c < 0.0 || c > 1200.0 {
+                continue;
+            }
+            let x = (RULER_X0 as f64 + c).round() as i32 - IND_W / 2;
             parts.push(format!(
                 "drawbox=x={x}:y={IND_Y}:w={IND_W}:h={IND_H}\
                  :color=0xFFFF00:t=fill:enable={sub_en}"
@@ -430,9 +507,8 @@ fn expand_one_cycle(
     phrases: &[Phrase],
     start_bpm: f64,
     start_sustain: f64,
-) -> (Vec<RenderOccurrence>, Vec<HashMap<usize, (usize, usize)>>)
-{
-    let mut out:       Vec<RenderOccurrence> = Vec::new();
+) -> (Vec<RenderOccurrence>, Vec<HashMap<usize, (usize, usize)>>) {
+    let mut out: Vec<RenderOccurrence> = Vec::new();
     let mut snapshots: Vec<HashMap<usize, (usize, usize)>> = Vec::new();
     let mut cur: usize = 0;
     let mut jc: HashMap<usize, usize> = HashMap::new();
@@ -441,20 +517,31 @@ fn expand_one_cycle(
     let max_items = phrases.len() * 512 + 1;
 
     while out.len() < max_items {
-        if cur >= phrases.len() { break; }
+        if cur >= phrases.len() {
+            break;
+        }
         let phrase = &phrases[cur];
         if let Some(js) = &phrase.jump {
-            let pid       = phrase.id;
+            let pid = phrase.id;
             let remaining = jc.entry(pid).or_insert(js.times.saturating_sub(1));
             if *remaining > 0 {
                 *remaining -= 1;
-                let target = phrases.iter().position(|p| p.id == js.target_id)
-                    .unwrap_or(0).min(phrases.len().saturating_sub(1));
+                let target = phrases
+                    .iter()
+                    .position(|p| p.id == js.target_id)
+                    .unwrap_or(0)
+                    .min(phrases.len().saturating_sub(1));
                 let ids: Vec<usize> = if target < cur {
-                    phrases[target..cur].iter()
-                        .filter_map(|p| p.jump.as_ref().map(|_| p.id)).collect()
-                } else { vec![] };
-                for id in ids { jc.remove(&id); }
+                    phrases[target..cur]
+                        .iter()
+                        .filter_map(|p| p.jump.as_ref().map(|_| p.id))
+                        .collect()
+                } else {
+                    vec![]
+                };
+                for id in ids {
+                    jc.remove(&id);
+                }
                 cur = target;
             } else {
                 jc.remove(&pid);
@@ -470,12 +557,15 @@ fn expand_one_cycle(
             cur += 1;
             continue;
         }
-        let snap: HashMap<usize, (usize, usize)> = phrases.iter()
-            .filter_map(|p| p.jump.as_ref().map(|js| {
-                let remaining = jc.get(&p.id).copied().unwrap_or(js.times.saturating_sub(1));
-                let pass = js.times.saturating_sub(remaining);
-                (p.id, (pass, js.times))
-            }))
+        let snap: HashMap<usize, (usize, usize)> = phrases
+            .iter()
+            .filter_map(|p| {
+                p.jump.as_ref().map(|js| {
+                    let remaining = jc.get(&p.id).copied().unwrap_or(js.times.saturating_sub(1));
+                    let pass = js.times.saturating_sub(remaining);
+                    (p.id, (pass, js.times))
+                })
+            })
             .collect();
         out.push(RenderOccurrence {
             phrase_idx: cur,
@@ -485,7 +575,9 @@ fn expand_one_cycle(
         });
         snapshots.push(snap);
         cur += 1;
-        if cur >= phrases.len() { break; }
+        if cur >= phrases.len() {
+            break;
+        }
     }
     (out, snapshots)
 }
@@ -494,9 +586,9 @@ fn expand_one_cycle(
 
 #[allow(unused_variables)]
 pub fn record_cycle(
-    phrases:      Vec<Phrase>,
-    bpm:          f64,
-    sustain:      f64,
+    phrases: Vec<Phrase>,
+    bpm: f64,
+    sustain: f64,
     cycle_repeat: usize,
 ) -> anyhow::Result<String> {
     if phrases.is_empty() {
@@ -515,7 +607,7 @@ pub fn record_cycle(
         return Err(anyhow::anyhow!("no musical phrases to render"));
     }
 
-    let cycles       = cycle_repeat.max(1);
+    let cycles = cycle_repeat.max(1);
     let mut tail_sustain = sustain;
     let mut full_seq: Vec<RenderEntry> = Vec::new();
     for _ in 0..cycles {
@@ -536,34 +628,36 @@ pub fn record_cycle(
     let tail_samples = (SR * (tail_sustain + 1.0)) as usize;
 
     // ── Progress setup ────────────────────────────────────────────────────
-    let render_samples: usize = full_seq.iter()
+    let render_samples: usize = full_seq
+        .iter()
         .map(|entry| bar_samples_for(entry.phrase_idx, entry.bpm))
         .sum::<usize>()
         + tail_samples;
     crate::REC_SAMPLES_TOTAL.store(render_samples, std::sync::atomic::Ordering::Relaxed);
-    crate::REC_SAMPLES_DONE.store(0,               std::sync::atomic::Ordering::Relaxed);
-    crate::REC_ACTIVE.store(true,                  std::sync::atomic::Ordering::Relaxed);
+    crate::REC_SAMPLES_DONE.store(0, std::sync::atomic::Ordering::Relaxed);
+    crate::REC_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
 
     // ── Audio render ──────────────────────────────────────────────────────
     let mut phrases_v = phrases.to_vec();
     let mut voices: Vec<Voice> = Vec::new();
-    let mut left_buf:  Vec<f32> = Vec::new();
+    let mut left_buf: Vec<f32> = Vec::new();
     let mut right_buf: Vec<f32> = Vec::new();
 
     for (seq_pos, entry) in full_seq.iter().enumerate() {
         let phrase_idx = entry.phrase_idx;
         let play_num = entry.play_num;
-        let bs       = bar_samples_for(phrase_idx, entry.bpm);
+        let bs = bar_samples_for(phrase_idx, entry.bpm);
         let is_first = play_num == 0;
-        let repeats  = phrases_v[phrase_idx].repeat.max(1);
+        let repeats = phrases_v[phrase_idx].repeat.max(1);
         let subdiv_secs = 60.0 / (entry.bpm * 2.0);
         let subdiv_samples = SR * subdiv_secs;
         let sustain = entry.sustain;
 
         if is_first {
             let root_hz = phrases_v[phrase_idx].bar.root_hz;
-            let phrase_secs = (phrases_v[phrase_idx].bar.total_subdivs as f64
-                * subdiv_secs * repeats as f64).min(3.0);
+            let phrase_secs =
+                (phrases_v[phrase_idx].bar.total_subdivs as f64 * subdiv_secs * repeats as f64)
+                    .min(3.0);
             spawn_phrase_start(root_hz, sustain, &mut voices);
             spawn_sub_bass(root_hz, phrase_secs, &mut voices);
         }
@@ -577,33 +671,51 @@ pub fn record_cycle(
                 let curr = ((bar_pos as f64 / subdiv_samples) as usize).min(total_subdivs - 1);
                 let ev = if last_subdiv != Some(curr) {
                     last_subdiv = Some(curr);
-                    let is_last_play   = play_num + 1 >= repeats;
+                    let is_last_play = play_num + 1 >= repeats;
                     let is_last_subdiv = curr + 1 >= total_subdivs;
                     // Look ahead in full_seq: is next entry a different phrase?
-                    let next_is_different = full_seq.get(seq_pos + 1)
+                    let next_is_different = full_seq
+                        .get(seq_pos + 1)
                         .map_or(false, |next| next.phrase_idx != phrase_idx);
                     let milestone = if is_first && curr == 0 {
                         Milestone::PhraseStart
                     } else if is_last_play && is_last_subdiv {
-                        if next_is_different { Milestone::Turnaround }
-                        else                 { Milestone::CrossPhraseWarning }
+                        if next_is_different {
+                            Milestone::Turnaround
+                        } else {
+                            Milestone::CrossPhraseWarning
+                        }
                     } else {
                         Milestone::None
                     };
-                    phrases_v[phrase_idx].bar.events.get(curr).copied().map(|e| (e, milestone))
-                } else { None };
+                    phrases_v[phrase_idx]
+                        .bar
+                        .events
+                        .get(curr)
+                        .copied()
+                        .map(|e| (e, milestone))
+                } else {
+                    None
+                };
                 bar_pos += 1;
                 ev
-            } else { None };
+            } else {
+                None
+            };
 
             if let Some((ev, milestone)) = ev {
-                spawn_voices(ev, sustain, &mut voices, milestone,
-                             &phrases_v[phrase_idx].bar.frequencies);
+                spawn_voices(
+                    ev,
+                    sustain,
+                    &mut voices,
+                    milestone,
+                    &phrases_v[phrase_idx].bar.frequencies,
+                );
             }
 
             let (mut l, mut r) = (0f32, 0f32);
             for v in voices.iter_mut() {
-                let s     = v.sample(SR);
+                let s = v.sample(SR);
                 let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
                 l += s * angle.cos();
                 r += s * angle.sin();
@@ -628,7 +740,7 @@ pub fn record_cycle(
     for _ in 0..tail_samples {
         let (mut l, mut r) = (0f32, 0f32);
         for v in voices.iter_mut() {
-            let s     = v.sample(SR);
+            let s = v.sample(SR);
             let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
             l += s * angle.cos();
             r += s * angle.sin();
@@ -639,17 +751,21 @@ pub fn record_cycle(
     }
 
     // ── Normalize + write WAV ─────────────────────────────────────────────
-    let peak = left_buf.iter().chain(right_buf.iter())
-        .map(|s| s.abs()).fold(0f32, f32::max);
+    let peak = left_buf
+        .iter()
+        .chain(right_buf.iter())
+        .map(|s| s.abs())
+        .fold(0f32, f32::max);
     let gain = if peak > 0.001 { 0.9 / peak } else { 1.0 };
 
     let wav_path = temp_path("maqam-live.wav");
     {
-        let n     = left_buf.len() as u32;
-        let sr    = SR as u32;
-        let dl    = n * 4;
+        let n = left_buf.len() as u32;
+        let sr = SR as u32;
+        let dl = n * 4;
         let mut f = std::fs::File::create(&wav_path)?;
-        f.write_all(b"RIFF")?; f.write_all(&(36 + dl).to_le_bytes())?;
+        f.write_all(b"RIFF")?;
+        f.write_all(&(36 + dl).to_le_bytes())?;
         f.write_all(b"WAVE")?;
         f.write_all(b"fmt ")?;
         f.write_all(&16u32.to_le_bytes())?;
@@ -662,7 +778,7 @@ pub fn record_cycle(
         f.write_all(b"data")?;
         f.write_all(&dl.to_le_bytes())?;
         for i in 0..left_buf.len() {
-            let l = (left_buf[i]  * gain * 32767.0).clamp(-32768.0, 32767.0) as i16;
+            let l = (left_buf[i] * gain * 32767.0).clamp(-32768.0, 32767.0) as i16;
             let r = (right_buf[i] * gain * 32767.0).clamp(-32768.0, 32767.0) as i16;
             f.write_all(&l.to_le_bytes())?;
             f.write_all(&r.to_le_bytes())?;
@@ -675,9 +791,9 @@ pub fn record_cycle(
     // ── ASS subtitle file ─────────────────────────────────────────────────
     let total_secs = left_buf.len() as f64 / SR;
     let ass_path_s = temp_path("maqam-live.ass");
-    let ass_path   = ass_path_s.as_str();
+    let ass_path = ass_path_s.as_str();
     {
-        let mut f      = std::fs::File::create(ass_path)?;
+        let mut f = std::fs::File::create(ass_path)?;
         writeln!(f, "[Script Info]")?;
         writeln!(f, "ScriptType: v4.00+")?;
         writeln!(f, "PlayResX: 1280")?;
@@ -693,14 +809,21 @@ pub fn record_cycle(
         // Ratio labels: dimmer green so they feel like monitor overlay text too
         writeln!(f, "Style: RulerLabel,Courier New,12,&H004FA84F,&H004FA84F,&H00081402,&H00081402,-1,0,0,0,104,100,0,0,1,1,0,1,0,0,0,1")?;
         writeln!(f, "[Events]")?;
-        writeln!(f, "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text")?;
+        writeln!(
+            f,
+            "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text"
+        )?;
 
-        let one_len: usize = one_cycle_seq.iter()
-            .map(|occ| phrases[occ.phrase_idx].repeat.max(1)).sum();
+        let one_len: usize = one_cycle_seq
+            .iter()
+            .map(|occ| phrases[occ.phrase_idx].repeat.max(1))
+            .sum();
 
         let fmt_t = |s: f64| -> String {
-            let hh=(s/3600.0) as u32; let mm=((s%3600.0)/60.0) as u32;
-            let ss=(s%60.0) as u32;   let cs=((s%1.0)*100.0) as u32;
+            let hh = (s / 3600.0) as u32;
+            let mm = ((s % 3600.0) / 60.0) as u32;
+            let ss = (s % 60.0) as u32;
+            let cs = ((s % 1.0) * 100.0) as u32;
             format!("{hh}:{mm:02}:{ss:02}.{cs:02}")
         };
 
@@ -709,35 +832,49 @@ pub fn record_cycle(
             let phrase_idx = entry.phrase_idx;
             let play_num = entry.play_num;
             let snap_idx = entry.snap_idx;
-            let bs      = bar_samples_for(phrase_idx, entry.bpm);
+            let bs = bar_samples_for(phrase_idx, entry.bpm);
             let start_s = sample as f64 / SR;
-            let end_s   = if i + 1 < full_seq.len() {
+            let end_s = if i + 1 < full_seq.len() {
                 (sample + bs) as f64 / SR
-            } else { total_secs };
+            } else {
+                total_secs
+            };
             let t0 = fmt_t(start_s);
             let t1 = fmt_t(end_s);
 
-            let cycle_num  = if one_len > 0 { i / one_len } else { 0 };
+            let cycle_num = if one_len > 0 { i / one_len } else { 0 };
             let cycle_disp = if cycles > 1 {
                 format!("  cycle {}/{}", cycle_num + 1, cycles)
-            } else { String::new() };
+            } else {
+                String::new()
+            };
 
             let subdiv_secs = 60.0 / (entry.bpm * 2.0);
-            let hdr = format!("   bpm:{:<4} sus:{:.1}s{}",
-                entry.bpm.round() as u32, entry.sustain, cycle_disp);
+            let hdr = format!(
+                "   bpm:{:<4} sus:{:.1}s{}",
+                entry.bpm.round() as u32,
+                entry.sustain,
+                cycle_disp
+            );
             writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,0,,{hdr}")?;
-            writeln!(f, "Dialogue: 0,{t0},{t1},URL,,0,0,0,,https://github.com/rfielding/maqam")?;
+            writeln!(
+                f,
+                "Dialogue: 0,{t0},{t1},URL,,0,0,0,,https://github.com/rfielding/maqam"
+            )?;
 
             // JI ratio labels below each pitch tick
-            let bar     = &phrases[phrase_idx].bar;
+            let bar = &phrases[phrase_idx].bar;
             let root_hz = bar.root_hz;
             for &hz in &bar.frequencies {
                 let c = cents_from_root(hz, root_hz);
-                if c < 0.0 || c > 1200.5 { continue; }
-                let x   = ((RULER_X0 as f64 + c.clamp(0.0, 1200.0)) as i32).max(0);
+                if c < 0.0 || c > 1200.5 {
+                    continue;
+                }
+                let x = ((RULER_X0 as f64 + c.clamp(0.0, 1200.0)) as i32).max(0);
                 let lbl = ratio_label(hz, root_hz);
                 // \an1 = bottom-left anchor so text reads rightward from tick position
-                writeln!(f,
+                writeln!(
+                    f,
                     "Dialogue: 1,{t0},{t1},RulerLabel,,0,0,0,,\
                      {{\\pos({x},{LABEL_Y})\\an1}}{lbl}"
                 )?;
@@ -751,28 +888,27 @@ pub fn record_cycle(
             let mut margin_v: usize = 30;
             for (pi, p) in phrases.iter().enumerate() {
                 let active = p.jump.is_none() && pi == phrase_idx;
-                let id     = format!("{:>3}", p.id);
+                let id = format!("{:>3}", p.id);
 
                 if let Some(js) = &p.jump {
                     // Jump entry — always static
                     let snap = one_cycle_snaps.get(snap_idx % one_cycle_snaps.len().max(1));
-                    let (pass, total) = snap.and_then(|s| s.get(&p.id)).copied()
+                    let (pass, total) = snap
+                        .and_then(|s| s.get(&p.id))
+                        .copied()
                         .unwrap_or((0, js.times));
                     let text = format!("- {id}: {:<20} [{}/{}]", p.src, pass, total);
                     writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,{margin_v},,{text}")?;
-
                 } else if active {
                     // Active musical phrase: per-subdivision beat cursor
                     let rhythm_plain = p.bar.rhythm_display();
-                    let maqam_str    = p.bar.ratio_strs.join(" | ");
-                    let ctr          = format!("[{}/{}]", play_num + 1, p.repeat.max(1));
-                    let n            = p.bar.events.len().max(1);
+                    let maqam_str = p.bar.ratio_strs.join(" | ");
+                    let ctr = format!("[{}/{}]", play_num + 1, p.repeat.max(1));
+                    let n = p.bar.events.len().max(1);
 
                     for si in 0..n {
                         let ts0 = fmt_t(start_s + si as f64 * subdiv_secs);
-                        let ts1 = fmt_t(
-                            (start_s + (si + 1) as f64 * subdiv_secs).min(end_s)
-                        );
+                        let ts1 = fmt_t((start_s + (si + 1) as f64 * subdiv_secs).min(end_s));
                         // Build rhythm string: active char white+bold, rest green
                         let mut rhy = String::new();
                         for (ci, ch) in rhythm_plain.chars().enumerate() {
@@ -792,11 +928,9 @@ pub fn record_cycle(
                             }
                         }
                         // Preserve {:<10} field width using plain rhythm length
-                        let pad = " ".repeat(
-                            10usize.saturating_sub(rhythm_plain.chars().count())
-                        );
-                        let body = format!("{:<20} {}{} {:<16} {}",
-                            p.src, rhy, pad, maqam_str, ctr);
+                        let pad = " ".repeat(10usize.saturating_sub(rhythm_plain.chars().count()));
+                        let body =
+                            format!("{:<20} {}{} {:<16} {}", p.src, rhy, pad, maqam_str, ctr);
                         let text = format!("▶ {id}: {body}");
                         writeln!(f, "Dialogue: 0,{ts0},{ts1},Line,,0,0,{margin_v},,{text}")?;
                     }
@@ -806,16 +940,17 @@ pub fn record_cycle(
                     // the silence tail so the row doesn't go black.
                     let phrase_end_s = start_s + n as f64 * subdiv_secs;
                     if phrase_end_s < end_s {
-                        let ts0  = fmt_t(phrase_end_s);
-                        let body = format!("{:<20} {:<10} {:<16} {}",
-                            p.src, rhythm_plain, maqam_str, ctr);
+                        let ts0 = fmt_t(phrase_end_s);
+                        let body = format!(
+                            "{:<20} {:<10} {:<16} {}",
+                            p.src, rhythm_plain, maqam_str, ctr
+                        );
                         let text = format!("> {id}: {body}");
                         writeln!(f, "Dialogue: 0,{ts0},{t1},Line,,0,0,{margin_v},,{text}")?;
                     }
-
                 } else {
                     // Inactive musical phrase — static
-                    let rhythm    = p.bar.rhythm_display();
+                    let rhythm = p.bar.rhythm_display();
                     let maqam_str = p.bar.ratio_strs.join(" | ");
                     let body = format!("{:<20} {:<10} {:<16}", p.src, rhythm, maqam_str);
                     let text = format!("- {id}: {body}");
@@ -836,7 +971,8 @@ pub fn record_cycle(
         let scroll_range = bg_w.saturating_sub(1280);
         const BG_START_X: usize = 1100;
         const BG_STEP_X: usize = 22;
-        let base_subdiv_secs = full_seq.first()
+        let base_subdiv_secs = full_seq
+            .first()
             .map(|entry| 60.0 / (entry.bpm * 2.0))
             .unwrap_or(0.5);
 
@@ -846,7 +982,9 @@ pub fn record_cycle(
         let scroll_expr = if scroll_range == 0 {
             "0".to_string()
         } else {
-            let max_follow = content_right.saturating_sub(latest_target).min(scroll_range);
+            let max_follow = content_right
+                .saturating_sub(latest_target)
+                .min(scroll_range);
             format!(
                 "min(max(0,({start_x}+{step}*floor(t/{:.6}))-{latest_target}),{max_follow})",
                 base_subdiv_secs.max(0.001),
@@ -862,77 +1000,185 @@ pub fn record_cycle(
             "[1:v]crop=1280:720:x='{scroll_expr}':y=0[bg];\
              [bg]null[v]"
         );
-        let filter_bare =
-            format!("[1:v]crop=1280:720:x='{scroll_expr}':y=0[v]");
+        let filter_bare = format!("[1:v]crop=1280:720:x='{scroll_expr}':y=0[v]");
 
         // Write to script file to sidestep OS command-line length limits.
         let fscript_path = temp_path("maqam-filter.txt");
         std::fs::write(&fscript_path, &filter_with_subs)?;
 
-        let ts   = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        let out  = format!("./maqam-{ts}.mp4");
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let out = format!("./maqam-{ts}.mp4");
 
         let log_path = temp_path("maqam-ffmpeg.log");
 
         // Pass 1: script file (ruler + subtitles)
         let ok1 = ffmpeg_status(
             Command::new("ffmpeg")
-                .args(["-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &bg_path,
-                    "-filter_complex_script", &fscript_path,
-                    "-map", "[v]", "-map", "0:a",
-                    "-c:v", "libx264", "-crf", "18",
-                    "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                    "-c:a", "aac", "-b:a", "320k",
-                    "-r", "30", "-shortest", &out])
+                .args([
+                    "-y",
+                    "-i",
+                    wav_path,
+                    "-loop",
+                    "1",
+                    "-framerate",
+                    "30",
+                    "-i",
+                    &bg_path,
+                    "-filter_complex_script",
+                    &fscript_path,
+                    "-map",
+                    "[v]",
+                    "-map",
+                    "0:a",
+                    "-c:v",
+                    "libx264",
+                    "-crf",
+                    "18",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-movflags",
+                    "+faststart",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "320k",
+                    "-r",
+                    "30",
+                    "-shortest",
+                    &out,
+                ])
                 .stdout(Stdio::null())
-                .stderr(std::fs::File::create(&log_path).map(Stdio::from)
-                    .unwrap_or(Stdio::null()))
+                .stderr(
+                    std::fs::File::create(&log_path)
+                        .map(Stdio::from)
+                        .unwrap_or(Stdio::null()),
+                ),
         )?;
 
         if !ok1 {
             // Pass 2: inline (ruler + subtitles)
             let ok2 = ffmpeg_status(
                 Command::new("ffmpeg")
-                    .args(["-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &bg_path,
-                        "-filter_complex", &filter_with_subs,
-                        "-map", "[v]", "-map", "0:a",
-                        "-c:v", "libx264", "-crf", "18",
-                        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                        "-c:a", "aac", "-b:a", "320k",
-                        "-r", "30", "-shortest", &out])
+                    .args([
+                        "-y",
+                        "-i",
+                        wav_path,
+                        "-loop",
+                        "1",
+                        "-framerate",
+                        "30",
+                        "-i",
+                        &bg_path,
+                        "-filter_complex",
+                        &filter_with_subs,
+                        "-map",
+                        "[v]",
+                        "-map",
+                        "0:a",
+                        "-c:v",
+                        "libx264",
+                        "-crf",
+                        "18",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-movflags",
+                        "+faststart",
+                        "-c:a",
+                        "aac",
+                        "-b:a",
+                        "320k",
+                        "-r",
+                        "30",
+                        "-shortest",
+                        &out,
+                    ])
                     .stdout(Stdio::null())
-                    .stderr(Stdio::null())
+                    .stderr(Stdio::null()),
             )?;
 
             if !ok2 {
                 // Pass 3: ruler, no subtitles
                 let ok3 = ffmpeg_status(
                     Command::new("ffmpeg")
-                        .args(["-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &bg_path,
-                            "-filter_complex", &filter_plain,
-                            "-map", "[v]", "-map", "0:a",
-                            "-c:v", "libx264", "-crf", "18",
-                            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                            "-c:a", "aac", "-b:a", "320k",
-                            "-r", "30", "-shortest", &out])
+                        .args([
+                            "-y",
+                            "-i",
+                            wav_path,
+                            "-loop",
+                            "1",
+                            "-framerate",
+                            "30",
+                            "-i",
+                            &bg_path,
+                            "-filter_complex",
+                            &filter_plain,
+                            "-map",
+                            "[v]",
+                            "-map",
+                            "0:a",
+                            "-c:v",
+                            "libx264",
+                            "-crf",
+                            "18",
+                            "-pix_fmt",
+                            "yuv420p",
+                            "-movflags",
+                            "+faststart",
+                            "-c:a",
+                            "aac",
+                            "-b:a",
+                            "320k",
+                            "-r",
+                            "30",
+                            "-shortest",
+                            &out,
+                        ])
                         .stdout(Stdio::null())
-                        .stderr(Stdio::null())
+                        .stderr(Stdio::null()),
                 )?;
 
                 if !ok3 {
                     // Pass 4: plain background, no subtitles
                     ffmpeg_status(
                         Command::new("ffmpeg")
-                            .args(["-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &bg_path,
-                                "-filter_complex", &filter_bare,
-                                "-map", "[v]", "-map", "0:a",
-                                "-c:v", "libx264", "-crf", "18",
-                                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                                "-c:a", "aac", "-b:a", "320k",
-                                "-r", "30", "-shortest", &out])
+                            .args([
+                                "-y",
+                                "-i",
+                                wav_path,
+                                "-loop",
+                                "1",
+                                "-framerate",
+                                "30",
+                                "-i",
+                                &bg_path,
+                                "-filter_complex",
+                                &filter_bare,
+                                "-map",
+                                "[v]",
+                                "-map",
+                                "0:a",
+                                "-c:v",
+                                "libx264",
+                                "-crf",
+                                "18",
+                                "-pix_fmt",
+                                "yuv420p",
+                                "-movflags",
+                                "+faststart",
+                                "-c:a",
+                                "aac",
+                                "-b:a",
+                                "320k",
+                                "-r",
+                                "30",
+                                "-shortest",
+                                &out,
+                            ])
                             .stdout(Stdio::null())
-                            .stderr(Stdio::null())
+                            .stderr(Stdio::null()),
                     )?;
                 }
             }

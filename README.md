@@ -5,8 +5,6 @@ Live-code phrases of stacked jins, record to MP4 with a synchronized pitch ruler
 
 ![maqam-live screenshot](screenshot1.png)
 
-![woven maqam carpet target](assets/carpet-target.svg)
-
 The woven carpet image above is a visual target for generated score backgrounds. It is not loaded at runtime; backgrounds are generated from the current score when you press `m`.
 
 ```

@@ -1,62 +1,62 @@
 // app.rs — application state, phrases as top-level units
 
-use crossbeam_channel::Sender;
-use std::fs;
-use std::path::{Path, PathBuf};
 use crate::command::{self, Cmd, JinsSpec, ValueChange};
 use crate::record;
 use crate::sequencer::{build_control_entry, build_phrase, AudioCmd, BarSpec, ControlSpec, Phrase};
+use crossbeam_channel::Sender;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 pub struct App {
-    pub phrases:     Vec<Phrase>,
-    pub input:       String,
-    pub message:     Option<String>,
-    pub show_help:    bool,
-    pub show_jins:    bool,
-    pub help_scroll:  u16,
-    pub jins_scroll:  u16,
-    pub bpm:         f64,
-    pub sustain:     f64,
-    pub vol:         f32,
-    pub paused:      bool,
-    pub should_quit:    bool,
+    pub phrases: Vec<Phrase>,
+    pub input: String,
+    pub message: Option<String>,
+    pub show_help: bool,
+    pub show_jins: bool,
+    pub help_scroll: u16,
+    pub jins_scroll: u16,
+    pub bpm: f64,
+    pub sustain: f64,
+    pub vol: f32,
+    pub paused: bool,
+    pub should_quit: bool,
     pub last_recording: Option<String>,
-    pub history:     Vec<String>,
+    pub history: Vec<String>,
     pub history_pos: Option<usize>,
     pub saved_input: String,
-    pub cursor_pos:  usize,
-    pub rec_rx:      Option<crossbeam_channel::Receiver<Result<String, String>>>,
-    session_path:    Option<String>,
-    next_phrase_id:  usize,
-    last_rhythm:     Vec<u8>,
+    pub cursor_pos: usize,
+    pub rec_rx: Option<crossbeam_channel::Receiver<Result<String, String>>>,
+    session_path: Option<String>,
+    next_phrase_id: usize,
+    last_rhythm: Vec<u8>,
     auditioning_jins: bool,
-    audio_tx:        Sender<AudioCmd>,
+    audio_tx: Sender<AudioCmd>,
 }
 
 impl App {
     pub fn new(audio_tx: Sender<AudioCmd>) -> Self {
         App {
-            phrases:        Vec::new(),
-            input:          String::new(),
-            message:        Some("? for help".into()),
-            show_help:      false,
-            show_jins:      false,
-            help_scroll:    0,
-            jins_scroll:    0,
-            bpm:            120.0,
-            sustain:        1.25,
-            vol:            1.0,
-            paused:         false,
-            should_quit:    false,
+            phrases: Vec::new(),
+            input: String::new(),
+            message: Some("? for help".into()),
+            show_help: false,
+            show_jins: false,
+            help_scroll: 0,
+            jins_scroll: 0,
+            bpm: 120.0,
+            sustain: 1.25,
+            vol: 1.0,
+            paused: false,
+            should_quit: false,
             last_recording: None,
-            history:        Vec::new(),
-            history_pos:    None,
-            saved_input:    String::new(),
-            cursor_pos:     0,
-            rec_rx:         None,
-            session_path:   None,
+            history: Vec::new(),
+            history_pos: None,
+            saved_input: String::new(),
+            cursor_pos: 0,
+            rec_rx: None,
+            session_path: None,
             next_phrase_id: 0,
-            last_rhythm:    vec![3, 3, 2],
+            last_rhythm: vec![3, 3, 2],
             auditioning_jins: false,
             audio_tx,
         }
@@ -78,12 +78,18 @@ impl App {
     }
 
     pub fn history_up(&mut self) {
-        if self.history.is_empty() { return; }
+        if self.history.is_empty() {
+            return;
+        }
         match self.history_pos {
-            None    => { self.saved_input = self.input.clone();
-                         self.history_pos = Some(self.history.len() - 1); }
+            None => {
+                self.saved_input = self.input.clone();
+                self.history_pos = Some(self.history.len() - 1);
+            }
             Some(0) => {}
-            Some(i) => { self.history_pos = Some(i - 1); }
+            Some(i) => {
+                self.history_pos = Some(i - 1);
+            }
         }
         if let Some(i) = self.history_pos {
             self.input = self.history[i].clone();
@@ -96,8 +102,8 @@ impl App {
             None => {}
             Some(i) if i + 1 >= self.history.len() => {
                 self.history_pos = None;
-                self.input       = self.saved_input.clone();
-                self.cursor_pos  = self.input.chars().count();
+                self.input = self.saved_input.clone();
+                self.cursor_pos = self.input.chars().count();
             }
             Some(i) => {
                 self.history_pos = Some(i + 1);
@@ -110,22 +116,30 @@ impl App {
     // ── Cursor / line editing ─────────────────────────────────────────────
 
     pub fn cursor_left(&mut self) {
-        if self.cursor_pos > 0 { self.cursor_pos -= 1; }
+        if self.cursor_pos > 0 {
+            self.cursor_pos -= 1;
+        }
     }
 
     pub fn cursor_right(&mut self) {
         let n = self.input.chars().count();
-        if self.cursor_pos < n { self.cursor_pos += 1; }
+        if self.cursor_pos < n {
+            self.cursor_pos += 1;
+        }
     }
 
-    pub fn cursor_home(&mut self) { self.cursor_pos = 0; }
+    pub fn cursor_home(&mut self) {
+        self.cursor_pos = 0;
+    }
 
     pub fn cursor_end(&mut self) {
         self.cursor_pos = self.input.chars().count();
     }
 
     pub fn insert_char(&mut self, ch: char) {
-        let byte_pos: usize = self.input.char_indices()
+        let byte_pos: usize = self
+            .input
+            .char_indices()
             .nth(self.cursor_pos)
             .map(|(b, _)| b)
             .unwrap_or(self.input.len());
@@ -134,8 +148,12 @@ impl App {
     }
 
     pub fn backspace(&mut self) {
-        if self.cursor_pos == 0 { return; }
-        let byte_pos: usize = self.input.char_indices()
+        if self.cursor_pos == 0 {
+            return;
+        }
+        let byte_pos: usize = self
+            .input
+            .char_indices()
             .nth(self.cursor_pos - 1)
             .map(|(b, _)| b)
             .unwrap_or(self.input.len().saturating_sub(1));
@@ -145,8 +163,12 @@ impl App {
 
     pub fn delete_char(&mut self) {
         let n = self.input.chars().count();
-        if self.cursor_pos >= n { return; }
-        let byte_pos: usize = self.input.char_indices()
+        if self.cursor_pos >= n {
+            return;
+        }
+        let byte_pos: usize = self
+            .input
+            .char_indices()
             .nth(self.cursor_pos)
             .map(|(b, _)| b)
             .unwrap_or(self.input.len());
@@ -154,7 +176,9 @@ impl App {
     }
 
     pub fn complete_input(&mut self) {
-        let Some((cmd, arg_start, partial)) = completion_target(&self.input) else { return; };
+        let Some((cmd, arg_start, partial)) = completion_target(&self.input) else {
+            return;
+        };
         let matches = mq_matches(&partial);
         if matches.is_empty() {
             self.message = Some("✗ no .mq matches".into());
@@ -171,7 +195,8 @@ impl App {
             return;
         };
 
-        self.input.replace_range(arg_start..self.input.len(), &replacement);
+        self.input
+            .replace_range(arg_start..self.input.len(), &replacement);
         self.cursor_pos = self.input.chars().count();
         self.message = None;
     }
@@ -209,7 +234,7 @@ impl App {
                 match result {
                     Ok(path) => {
                         self.last_recording = Some(path.clone());
-                        self.message        = Some(format!("saved → {path}"));
+                        self.message = Some(format!("saved → {path}"));
                     }
                     Err(e) => {
                         self.message = Some(format!("✗ {e}"));
@@ -221,7 +246,9 @@ impl App {
     }
 
     fn resync_audio_sequence(&mut self, focus_id: Option<usize>) {
-        let target_pos = focus_id.and_then(|id| self.phrases.iter().position(|p| p.id == id)).unwrap_or(0);
+        let target_pos = focus_id
+            .and_then(|id| self.phrases.iter().position(|p| p.id == id))
+            .unwrap_or(0);
         let (start_bpm, start_sustain) = self.sequence_start_settings();
         let _ = self.audio_tx.send(AudioCmd::Clear);
         let _ = self.audio_tx.send(AudioCmd::SetBpm(start_bpm));
@@ -232,7 +259,9 @@ impl App {
             let _ = self.audio_tx.send(AudioCmd::AddPhrase(p));
         }
         if !self.phrases.is_empty() {
-            let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(target_pos.min(self.phrases.len() - 1)));
+            let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(
+                target_pos.min(self.phrases.len() - 1),
+            ));
         }
         self.auditioning_jins = false;
     }
@@ -269,7 +298,11 @@ impl App {
 
     fn audition_jins(&mut self, specs: Vec<JinsSpec>) -> Result<(), String> {
         let resolved = resolve_rhythms(specs, &[1])?;
-        let src = resolved.iter().map(|s| s.src.as_str()).collect::<Vec<_>>().join(", ");
+        let src = resolved
+            .iter()
+            .map(|s| s.src.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         let mut phrase = build_phrase(usize::MAX, format!("[preview] {src}"), resolved, 4, 1);
         let n_freqs = phrase.bar.frequencies.len().max(1);
         let mut walk = Vec::with_capacity(n_freqs * 4);
@@ -306,22 +339,32 @@ impl App {
     pub fn handle_command(&mut self, raw: &str) {
         for part in raw.split(';') {
             let part = part.trim();
-            if part.is_empty() { continue; }
+            if part.is_empty() {
+                continue;
+            }
             match command::parse(part) {
-                Ok(cmd)  => self.execute(cmd),
-                Err(msg) => { self.message = Some(format!("✗ {msg}")); return; }
+                Ok(cmd) => self.execute(cmd),
+                Err(msg) => {
+                    self.message = Some(format!("✗ {msg}"));
+                    return;
+                }
             }
         }
     }
 
     fn execute(&mut self, cmd: Cmd) {
-        let keep_audition = matches!(&cmd, Cmd::CreateJins { .. } | Cmd::AuditionJins { .. } | Cmd::Help | Cmd::ListJins);
+        let keep_audition = matches!(
+            &cmd,
+            Cmd::CreateJins { .. } | Cmd::AuditionJins { .. } | Cmd::Help | Cmd::ListJins
+        );
         if self.auditioning_jins && !keep_audition {
             self.resync_audio_sequence(None);
         }
         match cmd {
-            Cmd::Quit  => self.should_quit = true,
-            Cmd::Help => { self.show_help = true; }
+            Cmd::Quit => self.should_quit = true,
+            Cmd::Help => {
+                self.show_help = true;
+            }
             Cmd::Jump { to, times } => {
                 let Some(to) = self.resolve_id_ref(to) else {
                     self.message = Some(format!("✗ no phrase id {to}"));
@@ -339,23 +382,40 @@ impl App {
                 self.message = None;
             }
 
-            Cmd::Insert { before, specs, repeat } => {
+            Cmd::Insert {
+                before,
+                specs,
+                repeat,
+            } => {
                 if specs.is_empty() {
                     self.message = Some("✗ empty phrase".into());
                     return;
                 }
                 let resolved = match resolve_rhythms(specs, &self.last_rhythm) {
-                    Ok(r)  => r,
-                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.message = Some(format!("✗ {e}"));
+                        return;
+                    }
                 };
-                if let Some(r) = resolved.last() { self.last_rhythm = r.groups.clone(); }
+                if let Some(r) = resolved.last() {
+                    self.last_rhythm = r.groups.clone();
+                }
                 let peak = 4usize;
-                let src = resolved.iter().map(|s| s.src.as_str()).collect::<Vec<_>>().join(", ");
-                let id  = self.next_phrase_id;
+                let src = resolved
+                    .iter()
+                    .map(|s| s.src.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let id = self.next_phrase_id;
                 self.next_phrase_id += 1;
                 let phrase = build_phrase(id, src, resolved, peak, repeat.max(1));
                 let pos = match self.resolve_id_ref(before) {
-                    Some(before_id) => self.phrases.iter().position(|p| p.id == before_id).unwrap_or(self.phrases.len()),
+                    Some(before_id) => self
+                        .phrases
+                        .iter()
+                        .position(|p| p.id == before_id)
+                        .unwrap_or(self.phrases.len()),
                     None => {
                         self.message = Some(format!("✗ no phrase id {before}"));
                         return;
@@ -368,60 +428,93 @@ impl App {
 
             Cmd::InsertJump { before, to, times } => {
                 let Some(to) = self.resolve_id_ref(to) else {
-                    self.message = Some(format!("✗ no phrase id {to}")); return;
+                    self.message = Some(format!("✗ no phrase id {to}"));
+                    return;
                 };
                 if !self.phrases.iter().any(|p| p.id == to) {
-                    self.message = Some(format!("✗ no phrase id {to}")); return;
+                    self.message = Some(format!("✗ no phrase id {to}"));
+                    return;
                 }
                 let insert_pos = match self.resolve_id_ref(before) {
-                    Some(before_id) => self.phrases.iter().position(|p| p.id == before_id).unwrap_or(self.phrases.len()),
+                    Some(before_id) => self
+                        .phrases
+                        .iter()
+                        .position(|p| p.id == before_id)
+                        .unwrap_or(self.phrases.len()),
                     None => {
-                        self.message = Some(format!("✗ no phrase id {before}")); return;
+                        self.message = Some(format!("✗ no phrase id {before}"));
+                        return;
                     }
                 };
-                let id    = self.next_phrase_id;
+                let id = self.next_phrase_id;
                 self.next_phrase_id += 1;
                 let entry = crate::sequencer::build_jump_entry(id, to, times);
                 self.phrases.insert(insert_pos, entry.clone());
-                let _ = self.audio_tx.send(AudioCmd::InsertPhrase { pos: insert_pos, phrase: entry });
+                let _ = self.audio_tx.send(AudioCmd::InsertPhrase {
+                    pos: insert_pos,
+                    phrase: entry,
+                });
                 self.message = None;
             }
 
             Cmd::InsertBpm { before, change } => {
                 let bpm = match apply_bpm_change(self.bpm, change) {
                     Ok(v) => v,
-                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                    Err(e) => {
+                        self.message = Some(format!("✗ {e}"));
+                        return;
+                    }
                 };
                 let insert_pos = match self.resolve_id_ref(before) {
-                    Some(before_id) => self.phrases.iter().position(|p| p.id == before_id).unwrap_or(self.phrases.len()),
+                    Some(before_id) => self
+                        .phrases
+                        .iter()
+                        .position(|p| p.id == before_id)
+                        .unwrap_or(self.phrases.len()),
                     None => {
-                        self.message = Some(format!("✗ no phrase id {before}")); return;
+                        self.message = Some(format!("✗ no phrase id {before}"));
+                        return;
                     }
                 };
                 let id = self.next_phrase_id;
                 self.next_phrase_id += 1;
                 let entry = build_control_entry(id, format!("bpm {bpm}"), ControlSpec::SetBpm(bpm));
                 self.phrases.insert(insert_pos, entry.clone());
-                let _ = self.audio_tx.send(AudioCmd::InsertPhrase { pos: insert_pos, phrase: entry });
+                let _ = self.audio_tx.send(AudioCmd::InsertPhrase {
+                    pos: insert_pos,
+                    phrase: entry,
+                });
                 self.message = Some(format!("inserted bpm at {insert_pos}"));
             }
 
             Cmd::InsertSustain { before, change } => {
                 let secs = match apply_sustain_change(self.sustain, change) {
                     Ok(v) => v,
-                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                    Err(e) => {
+                        self.message = Some(format!("✗ {e}"));
+                        return;
+                    }
                 };
                 let insert_pos = match self.resolve_id_ref(before) {
-                    Some(before_id) => self.phrases.iter().position(|p| p.id == before_id).unwrap_or(self.phrases.len()),
+                    Some(before_id) => self
+                        .phrases
+                        .iter()
+                        .position(|p| p.id == before_id)
+                        .unwrap_or(self.phrases.len()),
                     None => {
-                        self.message = Some(format!("✗ no phrase id {before}")); return;
+                        self.message = Some(format!("✗ no phrase id {before}"));
+                        return;
                     }
                 };
                 let id = self.next_phrase_id;
                 self.next_phrase_id += 1;
-                let entry = build_control_entry(id, format!("s {secs}"), ControlSpec::SetSustain(secs));
+                let entry =
+                    build_control_entry(id, format!("s {secs}"), ControlSpec::SetSustain(secs));
                 self.phrases.insert(insert_pos, entry.clone());
-                let _ = self.audio_tx.send(AudioCmd::InsertPhrase { pos: insert_pos, phrase: entry });
+                let _ = self.audio_tx.send(AudioCmd::InsertPhrase {
+                    pos: insert_pos,
+                    phrase: entry,
+                });
                 self.message = Some(format!("inserted sustain at {insert_pos}"));
             }
 
@@ -448,7 +541,11 @@ impl App {
                         let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(0));
                     }
                     let _ = self.audio_tx.send(AudioCmd::SetPaused(self.paused));
-                    self.message = Some(if self.paused { "⏸ paused".into() } else { "▶ playing".into() });
+                    self.message = Some(if self.paused {
+                        "⏸ paused".into()
+                    } else {
+                        "▶ playing".into()
+                    });
                 }
             }
 
@@ -466,7 +563,7 @@ impl App {
                 let phrases = self.phrases.clone();
                 let (bpm, sustain) = self.sequence_start_settings();
                 let (tx, rx) = crossbeam_channel::bounded(1);
-                self.rec_rx  = Some(rx);
+                self.rec_rx = Some(rx);
                 self.message = Some(format!("◉ rendering {}×…", reps));
                 std::thread::spawn(move || {
                     let result = record::record_cycle(phrases, bpm, sustain, reps)
@@ -534,22 +631,26 @@ impl App {
                 self.message = Some(format!("moved {id} down"));
             }
 
-            Cmd::ListJins => { self.show_jins = true; }
+            Cmd::ListJins => {
+                self.show_jins = true;
+            }
 
             Cmd::AuditionJins { specs } => {
-                let label = specs.iter().map(|s| s.src.as_str()).collect::<Vec<_>>().join(", ");
+                let label = specs
+                    .iter()
+                    .map(|s| s.src.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 match self.audition_jins(specs) {
                     Ok(()) => self.message = Some(format!("auditioning {label}")),
                     Err(e) => self.message = Some(format!("✗ {e}")),
                 }
             }
 
-            Cmd::CreateJins { name, ratios } => {
-                match crate::tuning::Maqam::create(&name, ratios) {
-                    Ok(()) => self.message = Some(format!("created jins {name}")),
-                    Err(e) => self.message = Some(format!("✗ {e}")),
-                }
-            }
+            Cmd::CreateJins { name, ratios } => match crate::tuning::Maqam::create(&name, ratios) {
+                Ok(()) => self.message = Some(format!("created jins {name}")),
+                Err(e) => self.message = Some(format!("✗ {e}")),
+            },
 
             Cmd::DeleteJins { name } => {
                 if crate::tuning::Maqam::delete(&name) {
@@ -576,15 +677,13 @@ impl App {
                 }
             }
 
-            Cmd::Load { path } => {
-                match self.load_session(&path) {
-                    Ok(()) => {
-                        self.session_path = Some(path.clone());
-                        self.message = Some(format!("loaded session ← {path}"));
-                    }
-                    Err(e) => self.message = Some(format!("✗ load failed: {e}")),
+            Cmd::Load { path } => match self.load_session(&path) {
+                Ok(()) => {
+                    self.session_path = Some(path.clone());
+                    self.message = Some(format!("loaded session ← {path}"));
                 }
-            }
+                Err(e) => self.message = Some(format!("✗ load failed: {e}")),
+            },
 
             Cmd::Clear => {
                 self.phrases.clear();
@@ -595,7 +694,10 @@ impl App {
             Cmd::SetBpm(change) => {
                 let bpm = match apply_bpm_change(self.bpm, change) {
                     Ok(v) => v,
-                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                    Err(e) => {
+                        self.message = Some(format!("✗ {e}"));
+                        return;
+                    }
                 };
                 let id = self.next_phrase_id;
                 self.next_phrase_id += 1;
@@ -609,11 +711,15 @@ impl App {
             Cmd::SetSustain(change) => {
                 let secs = match apply_sustain_change(self.sustain, change) {
                     Ok(v) => v,
-                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                    Err(e) => {
+                        self.message = Some(format!("✗ {e}"));
+                        return;
+                    }
                 };
                 let id = self.next_phrase_id;
                 self.next_phrase_id += 1;
-                let entry = build_control_entry(id, format!("s {secs}"), ControlSpec::SetSustain(secs));
+                let entry =
+                    build_control_entry(id, format!("s {secs}"), ControlSpec::SetSustain(secs));
                 self.phrases.push(entry.clone());
                 self.sustain = secs;
                 let _ = self.audio_tx.send(AudioCmd::AddPhrase(entry));
@@ -623,13 +729,16 @@ impl App {
 
             Cmd::EditJump { id, to, times } => {
                 let Some(id) = self.resolve_id_ref(id) else {
-                    self.message = Some(format!("✗ no phrase id {id}")); return;
+                    self.message = Some(format!("✗ no phrase id {id}"));
+                    return;
                 };
                 let Some(to) = self.resolve_id_ref(to) else {
-                    self.message = Some(format!("✗ no phrase id {to}")); return;
+                    self.message = Some(format!("✗ no phrase id {to}"));
+                    return;
                 };
                 if !self.phrases.iter().any(|p| p.id == to) {
-                    self.message = Some(format!("✗ no phrase id {to}")); return;
+                    self.message = Some(format!("✗ no phrase id {to}"));
+                    return;
                 }
                 if self.is_playing_phrase_id(id) {
                     self.message = Some(format!("✗ phrase {id} is playing — cannot edit"));
@@ -637,7 +746,10 @@ impl App {
                 }
                 let pos = match self.phrases.iter().position(|p| p.id == id) {
                     Some(p) => p,
-                    None    => { self.message = Some(format!("✗ no phrase id {id}")); return; }
+                    None => {
+                        self.message = Some(format!("✗ no phrase id {id}"));
+                        return;
+                    }
                 };
                 let mut entry = crate::sequencer::build_jump_entry(id, to, times);
                 entry.id = id; // preserve the original id
@@ -648,7 +760,8 @@ impl App {
 
             Cmd::Edit { id, specs, repeat } => {
                 let Some(id) = self.resolve_id_ref(id) else {
-                    self.message = Some(format!("✗ no phrase id {id}")); return;
+                    self.message = Some(format!("✗ no phrase id {id}"));
+                    return;
                 };
                 if self.is_playing_phrase_id(id) {
                     self.message = Some(format!("✗ phrase {id} is playing — cannot edit"));
@@ -656,14 +769,26 @@ impl App {
                 }
                 let pos = match self.phrases.iter().position(|p| p.id == id) {
                     Some(p) => p,
-                    None    => { self.message = Some(format!("✗ no phrase id {id}")); return; }
+                    None => {
+                        self.message = Some(format!("✗ no phrase id {id}"));
+                        return;
+                    }
                 };
                 let resolved = match resolve_rhythms(specs, &self.last_rhythm) {
-                    Ok(r)  => r,
-                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.message = Some(format!("✗ {e}"));
+                        return;
+                    }
                 };
-                if let Some(r) = resolved.last() { self.last_rhythm = r.groups.clone(); }
-                let src = resolved.iter().map(|s| s.src.as_str()).collect::<Vec<_>>().join(", ");
+                if let Some(r) = resolved.last() {
+                    self.last_rhythm = r.groups.clone();
+                }
+                let src = resolved
+                    .iter()
+                    .map(|s| s.src.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let mut phrase = build_phrase(id, src, resolved, 4, repeat.max(1));
                 phrase.id = id;
                 self.phrases[pos] = phrase.clone();
@@ -673,7 +798,8 @@ impl App {
 
             Cmd::EditBpm { id, change } => {
                 let Some(id) = self.resolve_id_ref(id) else {
-                    self.message = Some(format!("✗ no phrase id {id}")); return;
+                    self.message = Some(format!("✗ no phrase id {id}"));
+                    return;
                 };
                 if self.is_playing_phrase_id(id) {
                     self.message = Some(format!("✗ phrase {id} is playing — cannot edit"));
@@ -681,11 +807,17 @@ impl App {
                 }
                 let pos = match self.phrases.iter().position(|p| p.id == id) {
                     Some(p) => p,
-                    None    => { self.message = Some(format!("✗ no phrase id {id}")); return; }
+                    None => {
+                        self.message = Some(format!("✗ no phrase id {id}"));
+                        return;
+                    }
                 };
                 let bpm = match apply_bpm_change(self.bpm, change) {
                     Ok(v) => v,
-                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                    Err(e) => {
+                        self.message = Some(format!("✗ {e}"));
+                        return;
+                    }
                 };
                 let entry = build_control_entry(id, format!("bpm {bpm}"), ControlSpec::SetBpm(bpm));
                 self.phrases[pos] = entry.clone();
@@ -695,7 +827,8 @@ impl App {
 
             Cmd::EditSustain { id, change } => {
                 let Some(id) = self.resolve_id_ref(id) else {
-                    self.message = Some(format!("✗ no phrase id {id}")); return;
+                    self.message = Some(format!("✗ no phrase id {id}"));
+                    return;
                 };
                 if self.is_playing_phrase_id(id) {
                     self.message = Some(format!("✗ phrase {id} is playing — cannot edit"));
@@ -703,13 +836,20 @@ impl App {
                 }
                 let pos = match self.phrases.iter().position(|p| p.id == id) {
                     Some(p) => p,
-                    None    => { self.message = Some(format!("✗ no phrase id {id}")); return; }
+                    None => {
+                        self.message = Some(format!("✗ no phrase id {id}"));
+                        return;
+                    }
                 };
                 let secs = match apply_sustain_change(self.sustain, change) {
                     Ok(v) => v,
-                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                    Err(e) => {
+                        self.message = Some(format!("✗ {e}"));
+                        return;
+                    }
                 };
-                let entry = build_control_entry(id, format!("s {secs}"), ControlSpec::SetSustain(secs));
+                let entry =
+                    build_control_entry(id, format!("s {secs}"), ControlSpec::SetSustain(secs));
                 self.phrases[pos] = entry.clone();
                 let _ = self.audio_tx.send(AudioCmd::ReplacePhrase(entry));
                 self.message = Some(format!("edited {id} → s {secs:.2}s"));
@@ -743,20 +883,28 @@ impl App {
                     return;
                 }
                 let resolved = match resolve_rhythms(specs, &self.last_rhythm) {
-                    Ok(r)  => r,
-                    Err(e) => { self.message = Some(format!("✗ {e}")); return; }
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.message = Some(format!("✗ {e}"));
+                        return;
+                    }
                 };
-                if let Some(r) = resolved.last() { self.last_rhythm = r.groups.clone(); }
-                let peak: usize = if self.phrases.is_empty() { 4 } else {
-                    let total: usize = self.phrases.iter()
-                        .map(|p| p.bar.total_subdivs).sum();
+                if let Some(r) = resolved.last() {
+                    self.last_rhythm = r.groups.clone();
+                }
+                let peak: usize = if self.phrases.is_empty() {
+                    4
+                } else {
+                    let total: usize = self.phrases.iter().map(|p| p.bar.total_subdivs).sum();
                     let count = self.phrases.len().max(1);
                     (total / count / 2).clamp(2, 4)
                 };
-                let src = resolved.iter()
+                let src = resolved
+                    .iter()
                     .map(|s| s.src.as_str())
-                    .collect::<Vec<_>>().join(", ");
-                let id     = self.next_phrase_id;
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let id = self.next_phrase_id;
                 self.next_phrase_id += 1;
                 let phrase = build_phrase(id, src, resolved, peak, repeat.max(1));
                 let _ = self.audio_tx.send(AudioCmd::AddPhrase(phrase.clone()));
@@ -770,7 +918,8 @@ impl App {
         let mut out = String::new();
         out.push_str("MAQAM_SESSION_V2\n");
         for (name, ratios) in crate::tuning::Maqam::list_custom() {
-            let ratios_s = ratios.iter()
+            let ratios_s = ratios
+                .iter()
                 .map(|(p, q)| format!("{p}/{q}"))
                 .collect::<Vec<_>>()
                 .join(" ");
@@ -799,7 +948,9 @@ impl App {
     fn load_session(&mut self, path: &str) -> Result<(), String> {
         let src = fs::read_to_string(path).map_err(|e| e.to_string())?;
         let mut lines = src.lines();
-        let Some(header) = lines.next() else { return Err("empty file".into()); };
+        let Some(header) = lines.next() else {
+            return Err("empty file".into());
+        };
         let header = header.trim();
         if header == "MAQAM_SESSION_V2" {
             return self.load_session_v2(lines);
@@ -812,7 +963,7 @@ impl App {
 
     fn load_session_v1<'a, I>(&mut self, lines: I) -> Result<(), String>
     where
-        I: Iterator<Item = &'a str>
+        I: Iterator<Item = &'a str>,
     {
         let mut new_bpm = self.bpm;
         let mut new_sustain = self.sustain;
@@ -824,7 +975,9 @@ impl App {
         for (line_idx, raw_line) in lines.enumerate() {
             let line_no = line_idx + 2;
             let line = raw_line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
 
             if line.starts_with("bpm ") {
                 let parsed = command::parse(line).map_err(|e| format!("line {line_no}: {e}"))?;
@@ -833,7 +986,11 @@ impl App {
                 };
                 new_bpm = apply_bpm_change(new_bpm, change)
                     .map_err(|e| format!("line {line_no}: {e}"))?;
-                let entry = build_control_entry(max_id, format!("bpm {new_bpm}"), ControlSpec::SetBpm(new_bpm));
+                let entry = build_control_entry(
+                    max_id,
+                    format!("bpm {new_bpm}"),
+                    ControlSpec::SetBpm(new_bpm),
+                );
                 loaded.push(entry);
                 max_id += 1;
                 continue;
@@ -845,13 +1002,19 @@ impl App {
                 };
                 new_sustain = apply_sustain_change(new_sustain, change)
                     .map_err(|e| format!("line {line_no}: {e}"))?;
-                let entry = build_control_entry(max_id, format!("s {new_sustain}"), ControlSpec::SetSustain(new_sustain));
+                let entry = build_control_entry(
+                    max_id,
+                    format!("s {new_sustain}"),
+                    ControlSpec::SetSustain(new_sustain),
+                );
                 loaded.push(entry);
                 max_id += 1;
                 continue;
             }
             if let Some(v) = line.strip_prefix("vol ") {
-                new_vol = v.trim().parse::<f32>()
+                new_vol = v
+                    .trim()
+                    .parse::<f32>()
                     .map_err(|_| format!("line {line_no}: bad volume"))?;
                 if !(0.0..=2.0).contains(&new_vol) {
                     return Err(format!("line {line_no}: volume out of range"));
@@ -861,12 +1024,21 @@ impl App {
 
             if let Some(payload) = line.strip_prefix("J|") {
                 let mut parts = payload.splitn(3, '|');
-                let id = parts.next().ok_or(format!("line {line_no}: missing jump id"))?
-                    .parse::<usize>().map_err(|_| format!("line {line_no}: bad jump id"))?;
-                let target = parts.next().ok_or(format!("line {line_no}: missing jump target"))?
-                    .parse::<usize>().map_err(|_| format!("line {line_no}: bad jump target"))?;
-                let times = parts.next().ok_or(format!("line {line_no}: missing jump times"))?
-                    .parse::<usize>().map_err(|_| format!("line {line_no}: bad jump times"))?;
+                let id = parts
+                    .next()
+                    .ok_or(format!("line {line_no}: missing jump id"))?
+                    .parse::<usize>()
+                    .map_err(|_| format!("line {line_no}: bad jump id"))?;
+                let target = parts
+                    .next()
+                    .ok_or(format!("line {line_no}: missing jump target"))?
+                    .parse::<usize>()
+                    .map_err(|_| format!("line {line_no}: bad jump target"))?;
+                let times = parts
+                    .next()
+                    .ok_or(format!("line {line_no}: missing jump times"))?
+                    .parse::<usize>()
+                    .map_err(|_| format!("line {line_no}: bad jump times"))?;
                 max_id = max_id.max(id);
                 loaded.push(crate::sequencer::build_jump_entry(id, target, times.max(1)));
                 continue;
@@ -874,18 +1046,26 @@ impl App {
 
             if let Some(payload) = line.strip_prefix("P|") {
                 let mut parts = payload.splitn(3, '|');
-                let id = parts.next().ok_or(format!("line {line_no}: missing phrase id"))?
-                    .parse::<usize>().map_err(|_| format!("line {line_no}: bad phrase id"))?;
-                let repeat = parts.next().ok_or(format!("line {line_no}: missing repeat"))?
-                    .parse::<usize>().map_err(|_| format!("line {line_no}: bad repeat"))?;
-                let src = parts.next().ok_or(format!("line {line_no}: missing phrase source"))?;
+                let id = parts
+                    .next()
+                    .ok_or(format!("line {line_no}: missing phrase id"))?
+                    .parse::<usize>()
+                    .map_err(|_| format!("line {line_no}: bad phrase id"))?;
+                let repeat = parts
+                    .next()
+                    .ok_or(format!("line {line_no}: missing repeat"))?
+                    .parse::<usize>()
+                    .map_err(|_| format!("line {line_no}: bad repeat"))?;
+                let src = parts
+                    .next()
+                    .ok_or(format!("line {line_no}: missing phrase source"))?;
                 let cmd_src = if repeat > 1 {
                     format!("{src} r{repeat}")
                 } else {
                     src.to_string()
                 };
-                let parsed = command::parse(&cmd_src)
-                    .map_err(|e| format!("line {line_no}: {e}"))?;
+                let parsed =
+                    command::parse(&cmd_src).map_err(|e| format!("line {line_no}: {e}"))?;
                 let (specs, rep) = match parsed {
                     Cmd::AddPhrase { specs, repeat } => (specs, repeat),
                     _ => return Err(format!("line {line_no}: expected phrase command")),
@@ -927,7 +1107,7 @@ impl App {
 
     fn load_session_v2<'a, I>(&mut self, lines: I) -> Result<(), String>
     where
-        I: Iterator<Item = &'a str>
+        I: Iterator<Item = &'a str>,
     {
         crate::tuning::Maqam::reset_to_defaults();
         let mut new_bpm = 120.0f64;
@@ -940,20 +1120,30 @@ impl App {
         for (line_idx, raw_line) in lines.enumerate() {
             let line_no = line_idx + 2;
             let line = raw_line.trim();
-            if line.is_empty() || line.starts_with('#') { continue; }
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
             let cmd = command::parse(line).map_err(|e| format!("line {line_no}: {e}"))?;
             match cmd {
                 Cmd::SetBpm(change) => {
                     new_bpm = apply_bpm_change(new_bpm, change)
                         .map_err(|e| format!("line {line_no}: {e}"))?;
-                    let entry = build_control_entry(next_id, format!("bpm {new_bpm}"), ControlSpec::SetBpm(new_bpm));
+                    let entry = build_control_entry(
+                        next_id,
+                        format!("bpm {new_bpm}"),
+                        ControlSpec::SetBpm(new_bpm),
+                    );
                     next_id += 1;
                     loaded.push(entry);
                 }
                 Cmd::SetSustain(change) => {
                     new_sustain = apply_sustain_change(new_sustain, change)
                         .map_err(|e| format!("line {line_no}: {e}"))?;
-                    let entry = build_control_entry(next_id, format!("s {new_sustain}"), ControlSpec::SetSustain(new_sustain));
+                    let entry = build_control_entry(
+                        next_id,
+                        format!("s {new_sustain}"),
+                        ControlSpec::SetSustain(new_sustain),
+                    );
                     next_id += 1;
                     loaded.push(entry);
                 }
@@ -966,7 +1156,11 @@ impl App {
                     if let Some(r) = resolved.last() {
                         last_rhythm = r.groups.clone();
                     }
-                    let src = resolved.iter().map(|s| s.src.as_str()).collect::<Vec<_>>().join(", ");
+                    let src = resolved
+                        .iter()
+                        .map(|s| s.src.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     let phrase = build_phrase(next_id, src, resolved, 4, repeat.max(1));
                     next_id += 1;
                     loaded.push(phrase);
@@ -1023,8 +1217,12 @@ impl App {
 fn completion_target(input: &str) -> Option<(&str, usize, String)> {
     let trimmed = input.trim_start();
     let leading_ws = input.len().saturating_sub(trimmed.len());
-    let (cmd, rest) = trimmed.split_once(char::is_whitespace).unwrap_or((trimmed, ""));
-    if cmd != "save" && cmd != "load" { return None; }
+    let (cmd, rest) = trimmed
+        .split_once(char::is_whitespace)
+        .unwrap_or((trimmed, ""));
+    if cmd != "save" && cmd != "load" {
+        return None;
+    }
     let rest_start = leading_ws + cmd.len();
     let arg = rest.trim_start();
     let arg_start = input.len().saturating_sub(arg.len());
@@ -1036,7 +1234,10 @@ fn mq_matches(partial: &str) -> Vec<String> {
     let (dir, prefix) = match partial_path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => (
             PathBuf::from(parent),
-            partial_path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+            partial_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(""),
         ),
         _ => (PathBuf::from("."), partial),
     };
@@ -1047,10 +1248,16 @@ fn mq_matches(partial: &str) -> Vec<String> {
         .flat_map(|it| it.filter_map(Result::ok))
         .filter_map(|entry| {
             let path = entry.path();
-            if entry.file_type().ok()?.is_dir() { return None; }
-            if path.extension().and_then(|s| s.to_str()) != Some("mq") { return None; }
+            if entry.file_type().ok()?.is_dir() {
+                return None;
+            }
+            if path.extension().and_then(|s| s.to_str()) != Some("mq") {
+                return None;
+            }
             let name = path.file_name()?.to_str()?;
-            if !name.starts_with(prefix) { return None; }
+            if !name.starts_with(prefix) {
+                return None;
+            }
             if dir == Path::new(".") {
                 Some(name.to_string())
             } else {
@@ -1063,16 +1270,22 @@ fn mq_matches(partial: &str) -> Vec<String> {
 }
 
 fn longest_common_prefix(items: &[String]) -> String {
-    let Some(first) = items.first() else { return String::new(); };
+    let Some(first) = items.first() else {
+        return String::new();
+    };
     let mut prefix = first.clone();
     for item in &items[1..] {
         let mut keep = 0usize;
         for (a, b) in prefix.chars().zip(item.chars()) {
-            if a != b { break; }
+            if a != b {
+                break;
+            }
             keep += a.len_utf8();
         }
         prefix.truncate(keep);
-        if prefix.is_empty() { break; }
+        if prefix.is_empty() {
+            break;
+        }
     }
     prefix
 }
@@ -1082,15 +1295,20 @@ fn resolve_rhythms(specs: Vec<JinsSpec>, default: &[u8]) -> Result<Vec<BarSpec>,
     let mut groups: Vec<Option<Vec<u8>>> = specs.iter().map(|s| s.groups.clone()).collect();
     let mut carry: Option<Vec<u8>> = None;
     for i in (0..n).rev() {
-        if groups[i].is_some() { carry = groups[i].clone(); }
-        else                   { groups[i] = carry.clone(); }
+        if groups[i].is_some() {
+            carry = groups[i].clone();
+        } else {
+            groups[i] = carry.clone();
+        }
     }
     let fallback = default.to_vec();
-    Ok(specs.into_iter().zip(groups)
+    Ok(specs
+        .into_iter()
+        .zip(groups)
         .map(|(spec, grp)| BarSpec {
-            src:    spec.src,
-            root:   spec.root,
-            maqam:  spec.maqam,
+            src: spec.src,
+            root: spec.root,
+            maqam: spec.maqam,
             groups: grp.unwrap_or_else(|| fallback.clone()),
         })
         .collect())
