@@ -75,9 +75,7 @@ pub fn split_escaped_fields(line: &str) -> Vec<String> {
             cur.push(ch);
         }
     }
-    if esc {
-        cur.push('\\');
-    }
+    if esc { cur.push('\\'); }
     fields.push(cur);
     fields
 }
@@ -99,12 +97,8 @@ fn split_repeat_suffix(line: &str) -> (String, usize) {
 pub fn upgrade_v2_text_to_v3(src: &str) -> Option<String> {
     let mut lines = src.lines();
     let header = lines.next()?.trim();
-    if header == HEADER {
-        return None;
-    }
-    if header != "MAQAM_SESSION_V2" {
-        return None;
-    }
+    if header == HEADER { return None; }
+    if header != "MAQAM_SESSION_V2" { return None; }
 
     let mut out = String::new();
     out.push_str(HEADER);
@@ -113,9 +107,7 @@ pub fn upgrade_v2_text_to_v3(src: &str) -> Option<String> {
 
     for raw in lines {
         let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
+        if line.is_empty() || line.starts_with('#') { continue; }
         if line.starts_with("create ") || line.starts_with("vol ") {
             out.push_str(line);
             out.push('\n');
@@ -147,11 +139,61 @@ pub fn upgrade_v2_text_to_v3(src: &str) -> Option<String> {
     Some(out)
 }
 
+pub fn downgrade_v3_text_to_v2(src: &str) -> Option<String> {
+    let mut lines = src.lines();
+    let header = lines.next()?.trim();
+    if header != HEADER { return None; }
+
+    let mut out = String::new();
+    out.push_str("MAQAM_SESSION_V2\n");
+
+    for raw in lines {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.starts_with("create ") || line.starts_with("vol ") {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let fields = split_escaped_fields(line);
+        match fields.first().map(|s| s.as_str()) {
+            Some("B") if fields.len() >= 3 => {
+                out.push_str(&format!("bpm {}\n", fields[2].trim()));
+            }
+            Some("S") if fields.len() >= 3 => {
+                out.push_str(&format!("s {}\n", fields[2].trim()));
+            }
+            Some("J") if fields.len() >= 4 => {
+                out.push_str(&format!("j {} {}\n", fields[2].trim(), fields[3].trim()));
+            }
+            Some("P") if fields.len() >= 4 => {
+                let repeat = fields[2].trim().parse::<usize>().unwrap_or(1).max(1);
+                let src = fields[3].trim();
+                if repeat > 1 { out.push_str(&format!("{} r{}\n", src, repeat)); }
+                else { out.push_str(src); out.push('\n'); }
+            }
+            _ => return None,
+        }
+    }
+
+    Some(out)
+}
+
 pub fn normalize_v2_file_to_v3(path: impl AsRef<Path>) -> Result<bool, String> {
     let path = path.as_ref();
     let src = fs::read_to_string(path).map_err(|e| e.to_string())?;
     let Some(upgraded) = upgrade_v2_text_to_v3(&src) else { return Ok(false); };
     fs::write(path, upgraded).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+pub fn downgrade_v3_file_to_v2_for_current_loader(path: impl AsRef<Path>) -> Result<bool, String> {
+    let path = path.as_ref();
+    let src = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let Some(downgraded) = downgrade_v3_text_to_v2(&src) else { return Ok(false); };
+    let backup = path.with_extension("mq.v3.bak");
+    let _ = fs::write(&backup, &src);
+    fs::write(path, downgraded).map_err(|e| e.to_string())?;
     Ok(true)
 }
 
