@@ -1641,4 +1641,18 @@ mod tests {
         );
         assert!(app.rec_rx.is_none());
     }
+
+    #[test]
+    #[ignore]
+    fn offline_carpet_video_smoke_test() {
+        let _guard = session_test_lock();
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("magiccarpet.mq");
+        let (tx, _rx) = bounded(32);
+        let mut app = App::new(tx);
+        app.load_session(path.to_str().unwrap()).unwrap();
+        let (bpm, sustain) = app.sequence_start_settings();
+        let output = crate::record::record_cycle(app.phrases.clone(), bpm, sustain, 1).unwrap();
+        assert!(Path::new(&output).exists());
+        let _ = fs::remove_file(output);
+    }
 }

@@ -37,6 +37,7 @@ struct RenderOccurrence {
     snap_idx: usize,
     bpm: f64,
     sustain: f64,
+    arrived_via_jump: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -46,6 +47,7 @@ struct RenderEntry {
     snap_idx: usize,
     bpm: f64,
     sustain: f64,
+    arrived_via_jump: Option<usize>,
 }
 
 // ── Ruler geometry (1280×720, x: 40..1240 = 1200px = 1px/¢) ─────────────────
@@ -458,7 +460,7 @@ fn build_ruler_boxes(
         // ── Rail ───────────────────────────────────────────────────────────
         parts.push(format!(
             "drawbox=x={RULER_X0}:y={RAIL_Y}:w=1200:h={RAIL_H}\
-             :color=0x003300@0.5:t=fill:enable={en}"
+             :color=0x1B120A@0.55:t=fill:enable={en}"
         ));
 
         /*
@@ -471,7 +473,7 @@ fn build_ruler_boxes(
             let h  = RAIL_Y + RAIL_H - ty;
             parts.push(format!(
                 "drawbox=x={x}:y={ty}:w={TICK_W}:h={h}\
-                 :color=0x44BB44:t=fill:enable={en}"
+                 :color=0x6E4A2A:t=fill:enable={en}"
             ));
         }
         */
@@ -494,13 +496,72 @@ fn build_ruler_boxes(
             let x = (RULER_X0 as f64 + c).round() as i32 - IND_W / 2;
             parts.push(format!(
                 "drawbox=x={x}:y={IND_Y}:w={IND_W}:h={IND_H}\
-                 :color=0xFFFF00:t=fill:enable={sub_en}"
+                 :color=0xB88A55:t=fill:enable={sub_en}"
             ));
         }
 
         sample += bs;
     }
 
+    parts
+}
+
+fn build_carpet_tick_highlights(
+    full_seq: &[RenderEntry],
+    phrases: &[Phrase],
+    bar_samples_for: &dyn Fn(usize, f64) -> usize,
+) -> Vec<String> {
+    let score = crate::carpet::WeaveScore::from_phrases(phrases);
+    let layout = crate::carpet::score_border_layout(&score);
+    let positions: HashMap<(usize, usize), crate::carpet::BorderTickLayout> = layout
+        .into_iter()
+        .map(|tick| ((tick.phrase_id, tick.score_tick), tick))
+        .collect();
+    let tick_counts: HashMap<usize, usize> = score
+        .phrases
+        .iter()
+        .map(|phrase| (phrase.phrase_id, phrase.tick_count))
+        .collect();
+    let mut parts = Vec::new();
+    let jump_cells = crate::carpet::jump_link_cells(phrases);
+    let mut sample = 0usize;
+
+    for entry in full_seq {
+        let phrase = &phrases[entry.phrase_idx];
+        let subdiv_secs = 60.0 / (entry.bpm * 2.0);
+        let bar_samples = bar_samples_for(entry.phrase_idx, entry.bpm);
+        let score_ticks = tick_counts.get(&phrase.id).copied().unwrap_or(1).max(1);
+        for subdivision in 0..phrase.bar.events.len() {
+            let score_tick = subdivision % score_ticks;
+            let Some(layout) = positions.get(&(phrase.id, score_tick)) else {
+                continue;
+            };
+            let start = sample as f64 / SR + subdivision as f64 * subdiv_secs;
+            let end = start + subdiv_secs - 0.0001;
+            let size = if layout.is_kick { 22 } else { 16 };
+            let x = layout.x.round() as i32 - size / 2;
+            let y = layout.y.round() as i32 - size / 2;
+            let color = "0xFFFFFF";
+            parts.push(format!(
+                "drawbox=x={x}:y={y}:w={size}:h={size}:color={color}@0.88:t=3:\
+                 enable='between(t,{start:.6},{end:.6})'"
+            ));
+            if subdivision == 0 {
+                if let Some(jump_id) = entry.arrived_via_jump {
+                    for cell in jump_cells.iter().filter(|cell| cell.jump_id == jump_id) {
+                        let size = cell.size;
+                        let x = cell.x.round() as i32 - size / 2;
+                        let y = cell.y.round() as i32 - size / 2;
+                        parts.push(format!(
+                            "drawbox=x={x}:y={y}:w={size}:h={size}:color=0xFFFFFF@0.94:t=fill:\
+                             enable='between(t,{start:.6},{end:.6})'"
+                        ));
+                    }
+                }
+            }
+        }
+        sample += bar_samples;
+    }
     parts
 }
 
@@ -517,6 +578,7 @@ fn expand_one_cycle(
     let mut jc: HashMap<usize, usize> = HashMap::new();
     let mut bpm = start_bpm;
     let mut sustain = start_sustain;
+    let mut arrived_via_jump = None;
     let max_items = phrases.len() * 512 + 1;
 
     while out.len() < max_items {
@@ -546,6 +608,7 @@ fn expand_one_cycle(
                     jc.remove(&id);
                 }
                 cur = target;
+                arrived_via_jump = Some(pid);
             } else {
                 jc.remove(&pid);
                 cur += 1;
@@ -575,7 +638,9 @@ fn expand_one_cycle(
             snap_idx: snapshots.len(),
             bpm,
             sustain,
+            arrived_via_jump,
         });
+        arrived_via_jump = None;
         snapshots.push(snap);
         cur += 1;
         if cur >= phrases.len() {
@@ -624,6 +689,11 @@ pub fn record_cycle(
                     snap_idx: occ.snap_idx,
                     bpm: occ.bpm,
                     sustain: occ.sustain,
+                    arrived_via_jump: if play == 0 {
+                        occ.arrived_via_jump
+                    } else {
+                        None
+                    },
                 });
             }
         }
@@ -902,6 +972,9 @@ pub fn record_cycle(
                         .unwrap_or((0, js.times));
                     let text = format!("- {id}: {:<20} [{}/{}]", p.src, pass, total);
                     writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,{margin_v},,{text}")?;
+                } else if p.control.is_some() {
+                    let text = format!("- {id}: {}", p.src);
+                    writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,{margin_v},,{text}")?;
                 } else if active {
                     // Active musical phrase: per-subdivision beat cursor
                     let rhythm_plain = p.bar.rhythm_display();
@@ -932,8 +1005,11 @@ pub fn record_cycle(
                         }
                         // Preserve {:<10} field width using plain rhythm length
                         let pad = " ".repeat(10usize.saturating_sub(rhythm_plain.chars().count()));
-                        let body =
-                            format!("{:<20} {}{} {:<16} {}", p.src, rhy, pad, maqam_str, ctr);
+                        let repeat_display = if si == 0 { ctr.as_str() } else { "" };
+                        let body = format!(
+                            "{:<20} {}{} {:<16} {:<7}",
+                            p.src, rhy, pad, maqam_str, repeat_display
+                        );
                         let text = format!("▶ {id}: {body}");
                         writeln!(f, "Dialogue: 0,{ts0},{ts1},Line,,0,0,{margin_v},,{text}")?;
                     }
@@ -955,7 +1031,8 @@ pub fn record_cycle(
                     // Inactive musical phrase — static
                     let rhythm = p.bar.rhythm_display();
                     let maqam_str = p.bar.ratio_strs.join(" | ");
-                    let body = format!("{:<20} {:<10} {:<16}", p.src, rhythm, maqam_str);
+                    let ctr = format!("[1/{}]", p.repeat.max(1));
+                    let body = format!("{:<20} {:<10} {:<16} {}", p.src, rhythm, maqam_str, ctr);
                     let text = format!("- {id}: {body}");
                     writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,{margin_v},,{text}")?;
                 }
@@ -970,6 +1047,14 @@ pub fn record_cycle(
 
     let result = (|| -> anyhow::Result<String> {
         // ── Build filter complex ──────────────────────────────────────────────
+        let carpet_path = temp_path("maqam-carpet.ppm");
+        crate::carpet::write_carpet_background(&carpet_path, &[], &phrases)?;
+        let tick_highlights = build_carpet_tick_highlights(&full_seq, &phrases, &bar_samples_for);
+        let highlight_chain = if tick_highlights.is_empty() {
+            "null".to_string()
+        } else {
+            tick_highlights.join(",")
+        };
         let ruler_boxes = build_ruler_boxes(&full_seq, &phrases, &bar_samples_for, total_secs);
         let ruler_chain = if ruler_boxes.is_empty() {
             String::new()
@@ -978,17 +1063,28 @@ pub fn record_cycle(
         };
 
         let filter_with_subs = format!(
-            "[0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x002222,\
-             pad=1280:720:0:360:color=black[wv];\
-             [wv]{ruler_chain}subtitles={ass_path}[v]"
+            "[1:v]{highlight_chain}[carpet];\
+             [0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x2A1B10,\
+             pad=1280:720:0:360:color=black,colorkey=0x000000:0.04:0.25,\
+             format=rgba,colorchannelmixer=aa=0.22[wv];\
+             [carpet][wv]overlay=format=auto[base];\
+             [base]{ruler_chain}subtitles={ass_path}[v]"
         );
         let filter_plain = format!(
-            "[0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x220022,\
-             pad=1280:720:0:360:color=black[wv];\
-             [wv]{ruler_chain}null[v]"
+            "[1:v]{highlight_chain}[carpet];\
+             [0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x2A1B10,\
+             pad=1280:720:0:360:color=black,colorkey=0x000000:0.04:0.25,\
+             format=rgba,colorchannelmixer=aa=0.22[wv];\
+             [carpet][wv]overlay=format=auto[base];\
+             [base]{ruler_chain}null[v]"
         );
-        let filter_bare = "[0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x555555,\
-             pad=1280:720:0:360:color=black[v]";
+        let filter_bare = format!(
+            "[1:v]{highlight_chain}[carpet];\
+             [0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x2A1B10,\
+             pad=1280:720:0:360:color=black,colorkey=0x000000:0.04:0.25,\
+             format=rgba,colorchannelmixer=aa=0.22[wv];\
+             [carpet][wv]overlay=format=auto[v]"
+        );
 
         // Write to script file to sidestep OS command-line length limits.
         let fscript_path = temp_path("maqam-filter.txt");
@@ -1009,6 +1105,12 @@ pub fn record_cycle(
                     "-y",
                     "-i",
                     wav_path,
+                    "-loop",
+                    "1",
+                    "-framerate",
+                    "30",
+                    "-i",
+                    &carpet_path,
                     "-filter_complex_script",
                     &fscript_path,
                     "-map",
@@ -1019,6 +1121,8 @@ pub fn record_cycle(
                     "libx264",
                     "-crf",
                     "18",
+                    "-pix_fmt",
+                    "yuv420p",
                     "-movflags",
                     "+faststart",
                     "-c:a",
@@ -1027,6 +1131,7 @@ pub fn record_cycle(
                     "320k",
                     "-r",
                     "30",
+                    "-shortest",
                     &out,
                 ])
                 .stdout(Stdio::null())
@@ -1045,6 +1150,12 @@ pub fn record_cycle(
                         "-y",
                         "-i",
                         wav_path,
+                        "-loop",
+                        "1",
+                        "-framerate",
+                        "30",
+                        "-i",
+                        &carpet_path,
                         "-filter_complex",
                         &filter_with_subs,
                         "-map",
@@ -1055,6 +1166,8 @@ pub fn record_cycle(
                         "libx264",
                         "-crf",
                         "18",
+                        "-pix_fmt",
+                        "yuv420p",
                         "-movflags",
                         "+faststart",
                         "-c:a",
@@ -1063,6 +1176,7 @@ pub fn record_cycle(
                         "320k",
                         "-r",
                         "30",
+                        "-shortest",
                         &out,
                     ])
                     .stdout(Stdio::null())
@@ -1077,6 +1191,12 @@ pub fn record_cycle(
                             "-y",
                             "-i",
                             wav_path,
+                            "-loop",
+                            "1",
+                            "-framerate",
+                            "30",
+                            "-i",
+                            &carpet_path,
                             "-filter_complex",
                             &filter_plain,
                             "-map",
@@ -1087,6 +1207,8 @@ pub fn record_cycle(
                             "libx264",
                             "-crf",
                             "18",
+                            "-pix_fmt",
+                            "yuv420p",
                             "-movflags",
                             "+faststart",
                             "-c:a",
@@ -1095,6 +1217,7 @@ pub fn record_cycle(
                             "320k",
                             "-r",
                             "30",
+                            "-shortest",
                             &out,
                         ])
                         .stdout(Stdio::null())
@@ -1109,8 +1232,14 @@ pub fn record_cycle(
                                 "-y",
                                 "-i",
                                 wav_path,
+                                "-loop",
+                                "1",
+                                "-framerate",
+                                "30",
+                                "-i",
+                                &carpet_path,
                                 "-filter_complex",
-                                filter_bare,
+                                &filter_bare,
                                 "-map",
                                 "[v]",
                                 "-map",
@@ -1119,6 +1248,8 @@ pub fn record_cycle(
                                 "libx264",
                                 "-crf",
                                 "18",
+                                "-pix_fmt",
+                                "yuv420p",
                                 "-movflags",
                                 "+faststart",
                                 "-c:a",
@@ -1127,6 +1258,7 @@ pub fn record_cycle(
                                 "320k",
                                 "-r",
                                 "30",
+                                "-shortest",
                                 &out,
                             ])
                             .stdout(Stdio::null())
