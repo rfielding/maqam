@@ -5,6 +5,10 @@ Live-code phrases of stacked jins, record to MP4 with a synchronized pitch ruler
 
 ![maqam-live screenshot](screenshot1.png)
 
+![woven maqam carpet target](assets/carpet-target.svg)
+
+The woven carpet image above is a visual target for generated score backgrounds. It is not loaded at runtime; backgrounds are generated from the current score when you press `m`.
+
 ```
 ┌─ maqam-live ──────────────────────────────────────────────────────────────────┐
 │ ▶  0: d bayati 332          X..X..X.  1/1 12/11 32/27 4/3 3/2               │
@@ -247,9 +251,10 @@ m               record one cycle to ./maqam-<timestamp>.mp4
 m <n>           record n cycles
 ```
 
-The MP4 is written to the current directory. Its background is a dark scrolling
-tiling field informed by the phrase grid, with active/sustaining cells layered
-behind the phrase list and ruler.
+The MP4 is written to the current directory. Its background is generated from
+the current score/session when recording starts. The long-term visual target is
+a woven carpet-like score map with hidden Hilbert locality, ratio/rhythm stitch
+ornament, shared embroidered territories, and the terminal HUD layered on top.
 
 ---
 
@@ -269,7 +274,7 @@ audition <Name>                          ← preview a jins in a slow loop
 audition <root> <Name>[, <root> <Name>] ← preview a stacked mixed scale
 ls                                      ← list all jins with ratios
 create <Name> <p/q> <p/q> …            ← create or overwrite a jins
-delete <Name>                           ← remove a jins
+delete <Name>                           ← remove it
 ```
 
 Names are case-insensitive. `create` normalizes to title case.
