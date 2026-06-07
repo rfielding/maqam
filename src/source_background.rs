@@ -19,7 +19,15 @@ impl Pt {
 }
 
 fn clamp(x: f64) -> u8 { x.round().clamp(0.0, 255.0) as u8 }
-fn hash(mut x: u32) -> u32 { x ^= x >> 16; x = x.wrapping_mul(0x7feb_352d); x ^= x >> 15; x = x.wrapping_mul(0x846c_a68b); x ^ (x >> 16) }
+
+fn hash(mut x: u32) -> u32 {
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb_352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846c_a68b);
+    x ^ (x >> 16)
+}
+
 fn h01(x: u32) -> f64 { hash(x) as f64 / u32::MAX as f64 }
 
 fn blend(px: &mut [u8; 3], rgb: [u8; 3], a: f64) {
@@ -161,6 +169,22 @@ fn hilbert_index(mut x: u32, mut y: u32) -> u32 {
     d
 }
 
+fn hilbert_xy(mut d: u32) -> (u32, u32) {
+    let mut x = 0u32;
+    let mut y = 0u32;
+    let mut s = 1u32;
+    while s < HILBERT_SIDE {
+        let rx = (d / 2) & 1;
+        let ry = (d ^ rx) & 1;
+        rot(s, &mut x, &mut y, rx, ry);
+        x += s * rx;
+        y += s * ry;
+        d /= 4;
+        s *= 2;
+    }
+    (x, y)
+}
+
 fn phrase_weights(playable: &[&Phrase]) -> Vec<usize> {
     playable.iter().map(|p| {
         let group_sum = p.bar.groups.iter().map(|&g| g as usize).sum::<usize>();
@@ -177,6 +201,84 @@ fn owner_from_hilbert(h: u32, weights: &[usize]) -> usize {
         if target < acc { return i; }
     }
     weights.len().saturating_sub(1)
+}
+
+fn hilbert_to_canvas(gx: u32, gy: u32) -> Pt {
+    let x = BORDER as f64 + gx as f64 / (HILBERT_SIDE - 1) as f64 * (W - 2 * BORDER) as f64;
+    let y = BORDER as f64 + gy as f64 / (HILBERT_SIDE - 1) as f64 * (H - 2 * BORDER) as f64;
+    // The old carpet worked because visible stitches followed local Hilbert direction.
+    // A mild rotated/sheared overlay keeps that directionality while hiding the square grid.
+    let cx = W as f64 * 0.5;
+    let cy = H as f64 * 0.5;
+    let dx = (x - cx) * 0.86;
+    let dy = (y - cy) * 0.86;
+    let a = std::f64::consts::FRAC_PI_4;
+    Pt { x: cx + dx * a.cos() - dy * a.sin(), y: cy + dx * a.sin() + dy * a.cos() * 0.82 }
+}
+
+fn token_hash(p: &Phrase, k: usize) -> u32 {
+    if !p.bar.ratio_strs.is_empty() {
+        let s = &p.bar.ratio_strs[k % p.bar.ratio_strs.len()];
+        let mut h = 2166136261u32;
+        for b in s.as_bytes() { h = h.wrapping_mul(16777619) ^ *b as u32; }
+        h
+    } else if !p.bar.groups.is_empty() {
+        (p.bar.groups[k % p.bar.groups.len()] as u32).wrapping_mul(2654435761)
+    } else {
+        (p.id as u32).wrapping_mul(7919).wrapping_add(k as u32)
+    }
+}
+
+fn draw_ratio_stitch(buf: &mut [[u8; 3]], p0: Pt, p1: Pt, rgb: [u8; 3], energy: f64, phase: u32) {
+    let v = p1.sub(p0);
+    let l = v.len();
+    if l < 0.5 { return; }
+    let ux = v.x / l;
+    let uy = v.y / l;
+    let px = -uy;
+    let py = ux;
+    let mid = Pt { x: (p0.x + p1.x) * 0.5, y: (p0.y + p1.y) * 0.5 };
+    let wiggle = 0.6 + 2.2 * energy;
+    let off = ((phase as f64 * 0.031).sin()) * wiggle;
+    let a = Pt { x: p0.x + px * off, y: p0.y + py * off };
+    let b = Pt { x: p1.x + px * off, y: p1.y + py * off };
+    line(buf, a, b, rgb, 0.11 + 0.10 * energy, 0.34 + 0.25 * energy);
+
+    if phase % 3 != 0 {
+        let h = 2.0 + 8.0 * energy;
+        let c1 = Pt { x: mid.x - px * h, y: mid.y - py * h };
+        let c2 = Pt { x: mid.x + px * h, y: mid.y + py * h };
+        line(buf, c1, c2, [218, 170, 88], 0.10 + 0.12 * energy, 0.28);
+    }
+    if phase % 11 == 0 { dot(buf, mid.x, mid.y, 1.2 + 1.5 * energy, [230, 190, 112], 0.23); }
+}
+
+fn draw_hilbert_ratio_hatching(buf: &mut [[u8; 3]], playable: &[&Phrase], weights: &[usize], inside: &[bool], owner: &[usize], colors: &[[u8; 3]]) {
+    if playable.is_empty() { return; }
+    let step = 13u32;
+    let mut d = 0u32;
+    while d + 1 < HILBERT_AREA {
+        let who = owner_from_hilbert(d, weights);
+        let (x0, y0) = hilbert_xy(d);
+        let (x1, y1) = hilbert_xy(d + 1);
+        let p0 = hilbert_to_canvas(x0, y0);
+        let p1 = hilbert_to_canvas(x1, y1);
+        let mid = Pt { x: (p0.x + p1.x) * 0.5, y: (p0.y + p1.y) * 0.5 };
+        let ix = mid.x.round() as i32;
+        let iy = mid.y.round() as i32;
+        if ix > 1 && iy > 1 && ix < (W - 2) as i32 && iy < (H - 2) as i32 {
+            let idx = iy as usize * W + ix as usize;
+            if inside[idx] && owner[idx] == who {
+                let th = token_hash(playable[who], d as usize / step as usize);
+                let energy = 0.18 + 0.82 * h01(th ^ d.wrapping_mul(17));
+                let mut rgb = colors[who];
+                if th & 1 == 0 { rgb = [210, 154, 72]; }
+                if th & 7 == 3 { rgb = [82, 190, 174]; }
+                draw_ratio_stitch(buf, p0, p1, rgb, energy, th ^ d);
+            }
+        }
+        d += step;
+    }
 }
 
 fn draw_rhythm_code(buf: &mut [[u8; 3]], p: &Phrase, c: Pt, idx: usize) {
@@ -245,8 +347,7 @@ fn write_rug_carpet_ppm(path: &str, phrases: &[Phrase]) -> anyhow::Result<()> {
         let mut owner = vec![usize::MAX; W * H];
         let mut inside = vec![false; W * H];
 
-        // Hilbert does the ownership. Contiguous 1D phrase ranges become local 2D carpet blobs.
-        // The organic mass only clips the rug edge; it does not decide phrase ownership.
+        // Hilbert does phrase ownership. The organic mass only clips the rug edge.
         for y in BORDER..(H - BORDER) {
             for x in BORDER..(W - BORDER) {
                 let xf = x as f64 + 0.5;
@@ -271,6 +372,9 @@ fn write_rug_carpet_ppm(path: &str, phrases: &[Phrase]) -> anyhow::Result<()> {
                 }
             }
         }
+
+        // The source-image clue: draw ratio-bearing stitches along local Hilbert segment direction.
+        draw_hilbert_ratio_hatching(&mut buf, &playable, &weights, &inside, &owner, &colors);
 
         // Outer embroidered edge of the connected rug mass, plus internal Hilbert interval seams.
         for y in (BORDER + 1)..(H - BORDER - 1) {
@@ -329,7 +433,7 @@ fn write_rug_carpet_ppm(path: &str, phrases: &[Phrase]) -> anyhow::Result<()> {
 
 pub fn replace_video_with_generated_source_for_phrases(path: &str, phrases: &[Phrase]) -> anyhow::Result<bool> {
     let mut src = std::env::temp_dir();
-    src.push("maqam-hilbert-territory-rug-source.ppm");
+    src.push("maqam-hilbert-ratio-hatched-rug-source.ppm");
     let src = src.to_string_lossy().replace('\\', "/");
     write_rug_carpet_ppm(&src, phrases)?;
     let tmp = format!("{path}.source-background.mp4");
