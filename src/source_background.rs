@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -6,6 +5,7 @@ use crate::sequencer::Phrase;
 
 const W: usize = 1280;
 const H: usize = 720;
+const BORDER: usize = 44;
 
 #[derive(Clone, Copy)]
 struct Pt { x: f64, y: f64 }
@@ -65,7 +65,7 @@ fn color(p: &Phrase, i: usize) -> [u8; 3] {
     else if s.contains("bayati") { [22, 96, 52] }
     else if s.contains("saba") { [18, 82, 106] }
     else if s.contains("rast") { [112, 86, 28] }
-    else { [[72,42,110],[24,88,96],[96,36,48],[30,92,58]][i % 4] }
+    else { [[72,42,110],[24,88,96],[96,36,48],[30,92,58],[90,50,82]][i % 5] }
 }
 
 fn anchors(n: usize) -> Vec<Pt> {
@@ -74,148 +74,18 @@ fn anchors(n: usize) -> Vec<Pt> {
     }
     if n == 4 {
         return vec![
-            Pt { x: 380.0, y: 250.0 },
-            Pt { x: 880.0, y: 250.0 },
-            Pt { x: 400.0, y: 500.0 },
-            Pt { x: 865.0, y: 500.0 },
+            Pt { x: 360.0, y: 235.0 },
+            Pt { x: 895.0, y: 245.0 },
+            Pt { x: 390.0, y: 505.0 },
+            Pt { x: 870.0, y: 505.0 },
         ];
     }
     let mut out = Vec::new();
     for i in 0..n.max(1) {
         let a = -0.7 + std::f64::consts::TAU * i as f64 / n.max(1) as f64;
-        out.push(Pt { x: W as f64 * 0.50 + a.cos() * W as f64 * 0.20, y: H as f64 * 0.50 + a.sin() * H as f64 * 0.15 });
+        out.push(Pt { x: W as f64 * 0.50 + a.cos() * W as f64 * 0.25, y: H as f64 * 0.50 + a.sin() * H as f64 * 0.18 });
     }
     out
-}
-
-fn warp(seed: u32, t: f64) -> f64 {
-    let p1 = h01(seed ^ 11) * std::f64::consts::TAU;
-    let p2 = h01(seed ^ 29) * std::f64::consts::TAU;
-    1.0 + 0.045 * (2.0 * t + p1).sin() + 0.055 * (3.0 * t + p2).cos()
-}
-
-fn dist(x: f64, y: f64, c: Pt, rx: f64, ry: f64, seed: u32) -> f64 {
-    let dx = (x - c.x) / rx;
-    let dy = (y - c.y) / ry;
-    let th = dy.atan2(dx);
-    ((dx.abs().powf(2.35) + dy.abs().powf(2.10)).powf(1.0 / 2.25)) / warp(seed, th)
-}
-
-fn boundary(c: Pt, rx: f64, ry: f64, seed: u32, t: f64, sc: f64) -> Pt {
-    let w = warp(seed, t) * sc;
-    Pt { x: c.x + t.cos() * rx * w, y: c.y + t.sin() * ry * w }
-}
-
-fn draw_rhythm_code(buf: &mut [[u8; 3]], p: &Phrase, c: Pt, rx: f64, ry: f64, seed: u32) {
-    let groups = if p.bar.groups.is_empty() { vec![3,3,2] } else { p.bar.groups.clone() };
-    let total: usize = groups.iter().map(|&g| g as usize).sum::<usize>().max(1);
-    let x0 = c.x - rx * 0.58;
-    let w = rx * 1.16;
-    let y0 = c.y + ry * 0.38;
-    let mut acc = 0usize;
-
-    // This is the readable score layer: group lengths become woven bead columns.
-    for (gi, &g) in groups.iter().enumerate() {
-        let center = acc as f64 + g as f64 * 0.5;
-        let x = x0 + center / total as f64 * w;
-        let height = 14.0 + g as f64 * 7.0;
-        let y1 = y0 - height * 0.5;
-        let y2 = y0 + height * 0.5;
-        let col = if gi % 2 == 0 { [226, 184, 92] } else { [96, 210, 190] };
-        line(buf, Pt { x, y: y1 }, Pt { x, y: y2 }, [42, 28, 24], 0.34, 1.7);
-        line(buf, Pt { x, y: y1 }, Pt { x, y: y2 }, col, 0.34, 0.8);
-        for k in 0..g.max(1) {
-            let yy = y1 + (k as f64 + 0.5) / g.max(1) as f64 * (y2 - y1);
-            dot(buf, x, yy, 2.1, col, 0.55);
-        }
-        acc += g as usize;
-    }
-
-    // A small asymmetric constellation makes phrase complexity visible without labels.
-    let density = (p.bar.ratio_strs.len() + p.bar.frequencies.len()).clamp(5, 18);
-    let base = Pt { x: c.x + rx * 0.38, y: c.y - ry * 0.34 };
-    for k in 0..density {
-        let a = std::f64::consts::TAU * h01(seed.wrapping_add(k as u32 * 101));
-        let r = 10.0 + 34.0 * h01(seed ^ (k as u32 * 349));
-        let x = base.x + a.cos() * r;
-        let y = base.y + a.sin() * r * 0.55;
-        if dist(x, y, c, rx, ry, seed) < 0.92 {
-            let col = if k % 3 == 0 { [220, 160, 74] } else if k % 3 == 1 { [82, 190, 176] } else { [182, 76, 142] };
-            dot(buf, x, y, 1.6, col, 0.42);
-        }
-    }
-}
-
-fn draw_region(buf: &mut [[u8; 3]], p: &Phrase, c: Pt, rx: f64, ry: f64, rgb: [u8; 3], ord: usize) {
-    let seed = (p.id as u32).wrapping_mul(977).wrapping_add(ord as u32 * 313).wrapping_add(1701);
-
-    for y in (c.y - ry * 1.10) as i32..=(c.y + ry * 1.10) as i32 {
-        for x in (c.x - rx * 1.10) as i32..=(c.x + rx * 1.10) as i32 {
-            if x < 0 || y < 0 || x >= W as i32 || y >= H as i32 { continue; }
-            let d = dist(x as f64 + 0.5, y as f64 + 0.5, c, rx, ry, seed);
-            if d < 1.0 {
-                let over = ((x as f64 * 0.085 + seed as f64 * 0.011).sin() * 0.5 + 0.5).powf(2.0);
-                let under = ((y as f64 * 0.095 + seed as f64 * 0.017).cos() * 0.5 + 0.5).powf(2.0);
-                let diagonal = ((x as f64 * 0.045 - y as f64 * 0.032 + seed as f64 * 0.013).sin() * 0.5 + 0.5).powf(3.0);
-                let thread = 0.24 * over + 0.20 * under + 0.12 * diagonal;
-                pix(buf, x, y, rgb, (1.0 - d).powf(0.20) * (0.26 + thread));
-                if (x + (seed as i32 & 7)) % 9 == 0 { pix(buf, x, y, [210,185,120], 0.026); }
-                if (y + (seed as i32 & 11)) % 11 == 0 { pix(buf, x, y, [32,20,28], 0.040); }
-            }
-        }
-    }
-
-    for (sc, alpha, step) in [(1.00, 0.22, 16), (0.88, 0.12, 24), (0.74, 0.08, 32)] {
-        let mut last = boundary(c, rx, ry, seed, 0.0, sc);
-        let mut acc = 0usize;
-        for i in 1..=220 {
-            let t = std::f64::consts::TAU * i as f64 / 220.0;
-            let q = boundary(c, rx, ry, seed, t, sc);
-            line(buf, last, q, [185, 128, 54], alpha * 0.10, 0.55);
-            acc += 1;
-            if acc >= step { acc = 0; dot(buf, q.x, q.y, 0.9, [215, 158, 68], alpha); }
-            last = q;
-        }
-    }
-
-    let groups = if p.bar.groups.is_empty() { vec![3,3,2] } else { p.bar.groups.clone() };
-    for (gi, g) in groups.iter().enumerate() {
-        let yy = c.y - ry * 0.48 + (gi as f64 + 0.5) * ry * 0.96 / groups.len().max(1) as f64;
-        let mut last: Option<Pt> = None;
-        for k in 0..160 {
-            let u = k as f64 / 159.0;
-            let x = c.x - rx * 0.76 + u * rx * 1.52;
-            let y = yy + (u * std::f64::consts::TAU * (1.0 + *g as f64 * 0.22) + seed as f64 * 0.01).sin() * (5.0 + *g as f64 * 0.9);
-            if dist(x, y, c, rx, ry, seed) < 0.94 {
-                let q = Pt { x, y };
-                if let Some(prev) = last { line(buf, prev, q, [210,195,130], 0.09, 0.45); }
-                last = Some(q);
-            } else { last = None; }
-        }
-    }
-
-    draw_rhythm_code(buf, p, c, rx, ry, seed);
-}
-
-fn quiet_seam(buf: &mut [[u8; 3]], a: Pt, b: Pt) {
-    let mid = Pt { x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5 };
-    for i in 0..36 {
-        let t = i as f64 / 35.0;
-        let q = Pt { x: a.x * (1.0 - t) + b.x * t, y: a.y * (1.0 - t) + b.y * t };
-        if i % 7 == 0 { dot(buf, (q.x + mid.x) * 0.5, (q.y + mid.y) * 0.5, 0.8, [196,138,56], 0.08); }
-    }
-}
-
-fn border(buf: &mut [[u8; 3]]) {
-    let gold = [194,135,54];
-    for inset in [8,18,36] {
-        let a = if inset == 8 { 0.55 } else if inset == 18 { 0.32 } else { 0.18 };
-        let x0 = inset as f64; let x1 = (W - inset) as f64; let y0 = inset as f64; let y1 = (H - inset) as f64;
-        line(buf, Pt{x:x0,y:y0}, Pt{x:x1,y:y0}, gold, a, 1.2);
-        line(buf, Pt{x:x1,y:y0}, Pt{x:x1,y:y1}, gold, a, 1.2);
-        line(buf, Pt{x:x1,y:y1}, Pt{x:x0,y:y1}, gold, a, 1.2);
-        line(buf, Pt{x:x0,y:y1}, Pt{x:x0,y:y0}, gold, a, 1.2);
-    }
 }
 
 fn field_texture(buf: &mut [[u8; 3]]) {
@@ -237,6 +107,72 @@ fn field_texture(buf: &mut [[u8; 3]]) {
     }
 }
 
+fn border(buf: &mut [[u8; 3]]) {
+    let gold = [194,135,54];
+    for inset in [8,18,36] {
+        let a = if inset == 8 { 0.55 } else if inset == 18 { 0.32 } else { 0.18 };
+        let x0 = inset as f64; let x1 = (W - inset) as f64; let y0 = inset as f64; let y1 = (H - inset) as f64;
+        line(buf, Pt{x:x0,y:y0}, Pt{x:x1,y:y0}, gold, a, 1.2);
+        line(buf, Pt{x:x1,y:y0}, Pt{x:x1,y:y1}, gold, a, 1.2);
+        line(buf, Pt{x:x1,y:y1}, Pt{x:x0,y:y1}, gold, a, 1.2);
+        line(buf, Pt{x:x0,y:y1}, Pt{x:x0,y:y0}, gold, a, 1.2);
+    }
+}
+
+fn territory_score(x: f64, y: f64, a: Pt, seed: u32) -> f64 {
+    let dx = x - a.x;
+    let dy = y - a.y;
+    let flow = 24.0 * ((x * 0.009 + seed as f64 * 0.013).sin())
+             + 18.0 * ((y * 0.011 + seed as f64 * 0.017).cos())
+             + 10.0 * (((x + y) * 0.006 + seed as f64 * 0.003).sin());
+    (dx * dx + dy * dy).sqrt() + flow
+}
+
+fn draw_rhythm_code(buf: &mut [[u8; 3]], p: &Phrase, c: Pt, idx: usize) {
+    let groups = if p.bar.groups.is_empty() { vec![3,3,2] } else { p.bar.groups.clone() };
+    let total = groups.iter().map(|&g| g as usize).sum::<usize>().max(1);
+    let y0 = c.y + if idx < 2 { 70.0 } else { -72.0 };
+    let x0 = c.x - 82.0;
+    let w = 164.0;
+    let mut acc = 0usize;
+
+    for (gi, &g) in groups.iter().enumerate() {
+        let center = acc as f64 + g as f64 * 0.5;
+        let x = x0 + center / total as f64 * w;
+        let height = 12.0 + g as f64 * 8.0;
+        let y1 = y0 - height * 0.5;
+        let y2 = y0 + height * 0.5;
+        let col = if gi % 2 == 0 { [226, 184, 92] } else { [96, 210, 190] };
+        line(buf, Pt { x, y: y1 }, Pt { x, y: y2 }, [38, 24, 22], 0.46, 1.8);
+        line(buf, Pt { x, y: y1 }, Pt { x, y: y2 }, col, 0.44, 0.8);
+        for k in 0..g.max(1) {
+            let yy = y1 + (k as f64 + 0.5) / g.max(1) as f64 * (y2 - y1);
+            dot(buf, x, yy, 2.2, col, 0.62);
+        }
+        acc += g as usize;
+    }
+
+    let density = (p.bar.ratio_strs.len() + p.bar.frequencies.len()).clamp(5, 18);
+    let base = Pt { x: c.x + 62.0, y: c.y - if idx < 2 { 64.0 } else { -58.0 } };
+    let seed = (p.id as u32).wrapping_mul(4099).wrapping_add(idx as u32 * 97);
+    for k in 0..density {
+        let a = std::f64::consts::TAU * h01(seed.wrapping_add(k as u32 * 101));
+        let r = 10.0 + 30.0 * h01(seed ^ (k as u32 * 349));
+        let col = if k % 3 == 0 { [220, 160, 74] } else if k % 3 == 1 { [82, 190, 176] } else { [182, 76, 142] };
+        dot(buf, base.x + a.cos() * r, base.y + a.sin() * r * 0.55, 1.6, col, 0.44);
+    }
+}
+
+fn draw_jump_knot(buf: &mut [[u8; 3]], from: Pt, to: Pt, times: usize) {
+    let mid = Pt { x: (from.x + to.x) * 0.5, y: (from.y + to.y) * 0.5 };
+    let r = 6.0 + times.min(6) as f64 * 1.7;
+    dot(buf, mid.x, mid.y, r + 2.5, [26, 16, 20], 0.36);
+    for i in 0..times.max(1).min(12) {
+        let a = std::f64::consts::TAU * i as f64 / times.max(1).min(12) as f64;
+        dot(buf, mid.x + a.cos() * r, mid.y + a.sin() * r * 0.72, 1.7, [216, 158, 66], 0.48);
+    }
+}
+
 fn write_rug_carpet_ppm(path: &str, phrases: &[Phrase]) -> anyhow::Result<()> {
     let mut buf = vec![[0u8; 3]; W * H];
     for y in 0..H {
@@ -250,36 +186,72 @@ fn write_rug_carpet_ppm(path: &str, phrases: &[Phrase]) -> anyhow::Result<()> {
     field_texture(&mut buf);
 
     let playable: Vec<&Phrase> = phrases.iter().filter(|p| p.jump.is_none() && p.control.is_none()).collect();
-    let n = playable.len().max(1);
-    let pts = anchors(n);
-    let mut by_id = HashMap::new();
-    for (i, p) in playable.iter().enumerate() { by_id.insert(p.id, pts[i]); }
+    let n = playable.len();
+    if n > 0 {
+        let pts = anchors(n);
+        let colors: Vec<[u8;3]> = playable.iter().enumerate().map(|(i, p)| color(p, i)).collect();
+        let mut owner = vec![usize::MAX; W * H];
 
-    for (i, p) in playable.iter().enumerate() {
-        let (rx, ry) = if n == 3 {
-            match i { 0 => (285.0,195.0), 1 => (292.0,190.0), _ => (340.0,155.0) }
-        } else if n == 4 {
-            match i { 0 => (232.0,140.0), 1 => (235.0,140.0), 2 => (245.0,135.0), _ => (242.0,135.0) }
-        } else {
-            ((250.0 - n as f64 * 3.0).clamp(190.0,238.0), (160.0 - n as f64 * 2.0).clamp(120.0,152.0))
-        };
-        draw_region(&mut buf, p, pts[i], rx, ry, color(p, i), i);
+        // Partitioned rug: every interior pixel belongs to exactly one phrase. No transparent blob overlap.
+        for y in BORDER..(H - BORDER) {
+            for x in BORDER..(W - BORDER) {
+                let xf = x as f64 + 0.5;
+                let yf = y as f64 + 0.5;
+                let mut best = 0usize;
+                let mut best_score = f64::INFINITY;
+                for (i, a) in pts.iter().enumerate() {
+                    let s = territory_score(xf, yf, *a, 1009 + i as u32 * 733);
+                    if s < best_score { best_score = s; best = i; }
+                }
+                owner[y * W + x] = best;
+                let rib = 0.5 + 0.5 * ((xf * 0.060 + yf * 0.021 + best as f64).sin());
+                blend(&mut buf[y * W + x], colors[best], 0.32 + 0.10 * rib);
+            }
+        }
+
+        // Embroidered seams along territory boundaries.
+        for y in (BORDER + 1)..(H - BORDER - 1) {
+            for x in (BORDER + 1)..(W - BORDER - 1) {
+                let here = owner[y * W + x];
+                if here == usize::MAX { continue; }
+                let right = owner[y * W + x + 1];
+                let down = owner[(y + 1) * W + x];
+                if right != here || down != here {
+                    let noise = h01((x as u32).wrapping_mul(37) ^ (y as u32).wrapping_mul(149));
+                    blend(&mut buf[y * W + x], [28, 16, 18], 0.32);
+                    if noise > 0.58 { blend(&mut buf[y * W + x], [204, 146, 58], 0.30); }
+                    if noise > 0.84 { dot(&mut buf, x as f64, y as f64, 1.3, [228, 174, 76], 0.48); }
+                }
+            }
+        }
+
+        field_texture(&mut buf);
+
+        for (i, p) in playable.iter().enumerate() {
+            draw_rhythm_code(&mut buf, p, pts[i], i);
+        }
+
+        for (idx, jline) in phrases.iter().enumerate() {
+            let Some(j) = &jline.jump else { continue; };
+            let target = playable.iter().position(|p| p.id == j.target_id);
+            let source = phrases[..idx]
+                .iter()
+                .rev()
+                .find(|p| p.jump.is_none() && p.control.is_none())
+                .and_then(|p| playable.iter().position(|q| q.id == p.id));
+            if let (Some(s), Some(t)) = (source, target) {
+                if s != t { draw_jump_knot(&mut buf, pts[s], pts[t], j.times); }
+            }
+        }
     }
-    field_texture(&mut buf);
 
-    for (idx, jline) in phrases.iter().enumerate() {
-        let Some(j) = &jline.jump else { continue; };
-        let Some(&target) = by_id.get(&j.target_id) else { continue; };
-        let source = phrases[..idx].iter().rev().find(|p| p.jump.is_none() && p.control.is_none()).and_then(|p| by_id.get(&p.id)).copied().unwrap_or(target);
-        if source.sub(target).len() > 4.0 { quiet_seam(&mut buf, source, target); }
-    }
-
-    for i in 0..5600u32 {
+    // Global stitch flecks bind the territory map into one rug.
+    for i in 0..5200u32 {
         let x = 18.0 + h01(i * 17) * (W as f64 - 36.0);
         let y = 18.0 + h01(i * 43) * (H as f64 - 36.0);
         let col = [[214,154,55],[86,190,178],[180,64,124],[200,78,44],[116,168,78],[196,184,128]][i as usize % 6];
-        if i % 3 == 0 { line(&mut buf, Pt{x:x-1.4,y}, Pt{x:x+1.4,y}, col, 0.11, 0.34); }
-        else { dot(&mut buf, x, y, 0.7, col, 0.11); }
+        if i % 3 == 0 { line(&mut buf, Pt{x:x-1.4,y}, Pt{x:x+1.4,y}, col, 0.10, 0.32); }
+        else { dot(&mut buf, x, y, 0.65, col, 0.10); }
     }
 
     border(&mut buf);
@@ -292,7 +264,7 @@ fn write_rug_carpet_ppm(path: &str, phrases: &[Phrase]) -> anyhow::Result<()> {
 
 pub fn replace_video_with_generated_source_for_phrases(path: &str, phrases: &[Phrase]) -> anyhow::Result<bool> {
     let mut src = std::env::temp_dir();
-    src.push("maqam-spring-rug-source.ppm");
+    src.push("maqam-territory-rug-source.ppm");
     let src = src.to_string_lossy().replace('\\', "/");
     write_rug_carpet_ppm(&src, phrases)?;
     let tmp = format!("{path}.source-background.mp4");
