@@ -73,6 +73,7 @@ fn run_cli(commands: Vec<String>) -> anyhow::Result<()> {
     for cmd in &commands {
         eprintln!("> {cmd}");
         app.handle_command(cmd);
+        crate::session_v3::normalize_saved_message(app.message.as_ref());
         app.tick();
         if let Some(msg) = &app.message {
             eprintln!("{msg}");
