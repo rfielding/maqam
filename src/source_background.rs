@@ -6,6 +6,9 @@ use crate::sequencer::Phrase;
 const W: usize = 1280;
 const H: usize = 720;
 const BORDER: usize = 44;
+const HILBERT_ORDER: u32 = 8;
+const HILBERT_SIDE: u32 = 1 << HILBERT_ORDER;
+const HILBERT_AREA: u32 = HILBERT_SIDE * HILBERT_SIDE;
 
 #[derive(Clone, Copy)]
 struct Pt { x: f64, y: f64 }
@@ -135,6 +138,47 @@ fn normalized_distance(x: f64, y: f64, a: Pt, rx: f64, ry: f64, seed: u32) -> f6
     d / wobble(x, y, seed)
 }
 
+fn rot(n: u32, x: &mut u32, y: &mut u32, rx: u32, ry: u32) {
+    if ry == 0 {
+        if rx == 1 {
+            *x = n - 1 - *x;
+            *y = n - 1 - *y;
+        }
+        std::mem::swap(x, y);
+    }
+}
+
+fn hilbert_index(mut x: u32, mut y: u32) -> u32 {
+    let mut d = 0;
+    let mut s = HILBERT_SIDE / 2;
+    while s > 0 {
+        let rx = if (x & s) > 0 { 1 } else { 0 };
+        let ry = if (y & s) > 0 { 1 } else { 0 };
+        d += s * s * ((3 * rx) ^ ry);
+        rot(s, &mut x, &mut y, rx, ry);
+        s /= 2;
+    }
+    d
+}
+
+fn phrase_weights(playable: &[&Phrase]) -> Vec<usize> {
+    playable.iter().map(|p| {
+        let group_sum = p.bar.groups.iter().map(|&g| g as usize).sum::<usize>();
+        group_sum.max(1) * p.repeat.max(1)
+    }).collect()
+}
+
+fn owner_from_hilbert(h: u32, weights: &[usize]) -> usize {
+    let total = weights.iter().copied().sum::<usize>().max(1);
+    let target = (h as usize * total) / HILBERT_AREA as usize;
+    let mut acc = 0usize;
+    for (i, &w) in weights.iter().enumerate() {
+        acc += w;
+        if target < acc { return i; }
+    }
+    weights.len().saturating_sub(1)
+}
+
 fn draw_rhythm_code(buf: &mut [[u8; 3]], p: &Phrase, c: Pt, idx: usize) {
     let groups = if p.bar.groups.is_empty() { vec![3,3,2] } else { p.bar.groups.clone() };
     let total = groups.iter().map(|&g| g as usize).sum::<usize>().max(1);
@@ -196,37 +240,39 @@ fn write_rug_carpet_ppm(path: &str, phrases: &[Phrase]) -> anyhow::Result<()> {
     let n = playable.len();
     if n > 0 {
         let pts = anchors(n);
+        let weights = phrase_weights(&playable);
         let colors: Vec<[u8;3]> = playable.iter().enumerate().map(|(i, p)| color(p, i)).collect();
         let mut owner = vec![usize::MAX; W * H];
         let mut inside = vec![false; W * H];
 
-        // Shared-border territories are restricted to a connected organic carpet mass.
+        // Hilbert does the ownership. Contiguous 1D phrase ranges become local 2D carpet blobs.
+        // The organic mass only clips the rug edge; it does not decide phrase ownership.
         for y in BORDER..(H - BORDER) {
             for x in BORDER..(W - BORDER) {
                 let xf = x as f64 + 0.5;
                 let yf = y as f64 + 0.5;
-                let mut best = 0usize;
-                let mut best_score = f64::INFINITY;
                 let mut union = f64::INFINITY;
                 for (i, a) in pts.iter().enumerate() {
                     let (rx, ry) = radii(n, i);
                     let nd = normalized_distance(xf, yf, *a, rx, ry, 1009 + i as u32 * 733);
                     if nd < union { union = nd; }
-                    let score = nd * 1000.0 + 42.0 * (xf * 0.006 + i as f64).sin() + 31.0 * (yf * 0.007 + i as f64 * 0.5).cos();
-                    if score < best_score { best_score = score; best = i; }
                 }
                 if union < 1.0 {
+                    let gx = (((x - BORDER) as u32 * HILBERT_SIDE) / (W - 2 * BORDER) as u32).min(HILBERT_SIDE - 1);
+                    let gy = (((y - BORDER) as u32 * HILBERT_SIDE) / (H - 2 * BORDER) as u32).min(HILBERT_SIDE - 1);
+                    let h = hilbert_index(gx, gy);
+                    let who = owner_from_hilbert(h, &weights);
                     let idx = y * W + x;
-                    owner[idx] = best;
+                    owner[idx] = who;
                     inside[idx] = true;
                     let edge = ((1.0 - union) / 0.20).clamp(0.0, 1.0);
-                    let rib = 0.5 + 0.5 * ((xf * 0.060 + yf * 0.021 + best as f64).sin());
-                    blend(&mut buf[idx], colors[best], edge * (0.30 + 0.11 * rib));
+                    let rib = 0.5 + 0.5 * ((xf * 0.060 + yf * 0.021 + who as f64).sin());
+                    blend(&mut buf[idx], colors[who], edge * (0.30 + 0.11 * rib));
                 }
             }
         }
 
-        // Outer embroidered edge of the connected rug mass, plus internal shared seams.
+        // Outer embroidered edge of the connected rug mass, plus internal Hilbert interval seams.
         for y in (BORDER + 1)..(H - BORDER - 1) {
             for x in (BORDER + 1)..(W - BORDER - 1) {
                 let idx = y * W + x;
@@ -283,7 +329,7 @@ fn write_rug_carpet_ppm(path: &str, phrases: &[Phrase]) -> anyhow::Result<()> {
 
 pub fn replace_video_with_generated_source_for_phrases(path: &str, phrases: &[Phrase]) -> anyhow::Result<bool> {
     let mut src = std::env::temp_dir();
-    src.push("maqam-connected-territory-rug-source.ppm");
+    src.push("maqam-hilbert-territory-rug-source.ppm");
     let src = src.to_string_lossy().replace('\\', "/");
     write_rug_carpet_ppm(&src, phrases)?;
     let tmp = format!("{path}.source-background.mp4");
