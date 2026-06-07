@@ -16,15 +16,7 @@ impl Pt {
 }
 
 fn clamp(x: f64) -> u8 { x.round().clamp(0.0, 255.0) as u8 }
-
-fn hash(mut x: u32) -> u32 {
-    x ^= x >> 16;
-    x = x.wrapping_mul(0x7feb_352d);
-    x ^= x >> 15;
-    x = x.wrapping_mul(0x846c_a68b);
-    x ^ (x >> 16)
-}
-
+fn hash(mut x: u32) -> u32 { x ^= x >> 16; x = x.wrapping_mul(0x7feb_352d); x ^= x >> 15; x = x.wrapping_mul(0x846c_a68b); x ^ (x >> 16) }
 fn h01(x: u32) -> f64 { hash(x) as f64 / u32::MAX as f64 }
 
 fn blend(px: &mut [u8; 3], rgb: [u8; 3], a: f64) {
@@ -74,10 +66,10 @@ fn anchors(n: usize) -> Vec<Pt> {
     }
     if n == 4 {
         return vec![
-            Pt { x: 360.0, y: 235.0 },
-            Pt { x: 895.0, y: 245.0 },
-            Pt { x: 390.0, y: 505.0 },
-            Pt { x: 870.0, y: 505.0 },
+            Pt { x: 352.0, y: 240.0 },
+            Pt { x: 885.0, y: 250.0 },
+            Pt { x: 410.0, y: 510.0 },
+            Pt { x: 850.0, y: 505.0 },
         ];
     }
     let mut out = Vec::new();
@@ -86,6 +78,16 @@ fn anchors(n: usize) -> Vec<Pt> {
         out.push(Pt { x: W as f64 * 0.50 + a.cos() * W as f64 * 0.25, y: H as f64 * 0.50 + a.sin() * H as f64 * 0.18 });
     }
     out
+}
+
+fn radii(n: usize, i: usize) -> (f64, f64) {
+    if n == 3 {
+        return match i { 0 => (330.0, 235.0), 1 => (350.0, 230.0), _ => (410.0, 195.0) };
+    }
+    if n == 4 {
+        return match i { 0 => (300.0, 205.0), 1 => (320.0, 205.0), 2 => (320.0, 185.0), _ => (315.0, 180.0) };
+    }
+    ((300.0 - n as f64 * 4.0).clamp(210.0, 285.0), (190.0 - n as f64 * 2.0).clamp(135.0, 180.0))
 }
 
 fn field_texture(buf: &mut [[u8; 3]]) {
@@ -119,21 +121,26 @@ fn border(buf: &mut [[u8; 3]]) {
     }
 }
 
-fn territory_score(x: f64, y: f64, a: Pt, seed: u32) -> f64 {
-    let dx = x - a.x;
-    let dy = y - a.y;
-    let flow = 24.0 * ((x * 0.009 + seed as f64 * 0.013).sin())
-             + 18.0 * ((y * 0.011 + seed as f64 * 0.017).cos())
-             + 10.0 * (((x + y) * 0.006 + seed as f64 * 0.003).sin());
-    (dx * dx + dy * dy).sqrt() + flow
+fn wobble(x: f64, y: f64, seed: u32) -> f64 {
+    1.0
+        + 0.080 * (x * 0.014 + seed as f64 * 0.011).sin()
+        + 0.060 * (y * 0.018 + seed as f64 * 0.017).cos()
+        + 0.035 * ((x + y) * 0.010 + seed as f64 * 0.007).sin()
+}
+
+fn normalized_distance(x: f64, y: f64, a: Pt, rx: f64, ry: f64, seed: u32) -> f64 {
+    let dx = (x - a.x) / rx;
+    let dy = (y - a.y) / ry;
+    let d = (dx.abs().powf(2.25) + dy.abs().powf(2.05)).powf(1.0 / 2.15);
+    d / wobble(x, y, seed)
 }
 
 fn draw_rhythm_code(buf: &mut [[u8; 3]], p: &Phrase, c: Pt, idx: usize) {
     let groups = if p.bar.groups.is_empty() { vec![3,3,2] } else { p.bar.groups.clone() };
     let total = groups.iter().map(|&g| g as usize).sum::<usize>().max(1);
-    let y0 = c.y + if idx < 2 { 70.0 } else { -72.0 };
-    let x0 = c.x - 82.0;
-    let w = 164.0;
+    let y0 = c.y + if idx < 2 { 72.0 } else { -70.0 };
+    let x0 = c.x - 85.0;
+    let w = 170.0;
     let mut acc = 0usize;
 
     for (gi, &g) in groups.iter().enumerate() {
@@ -191,36 +198,49 @@ fn write_rug_carpet_ppm(path: &str, phrases: &[Phrase]) -> anyhow::Result<()> {
         let pts = anchors(n);
         let colors: Vec<[u8;3]> = playable.iter().enumerate().map(|(i, p)| color(p, i)).collect();
         let mut owner = vec![usize::MAX; W * H];
+        let mut inside = vec![false; W * H];
 
-        // Partitioned rug: every interior pixel belongs to exactly one phrase. No transparent blob overlap.
+        // Shared-border territories are restricted to a connected organic carpet mass.
         for y in BORDER..(H - BORDER) {
             for x in BORDER..(W - BORDER) {
                 let xf = x as f64 + 0.5;
                 let yf = y as f64 + 0.5;
                 let mut best = 0usize;
                 let mut best_score = f64::INFINITY;
+                let mut union = f64::INFINITY;
                 for (i, a) in pts.iter().enumerate() {
-                    let s = territory_score(xf, yf, *a, 1009 + i as u32 * 733);
-                    if s < best_score { best_score = s; best = i; }
+                    let (rx, ry) = radii(n, i);
+                    let nd = normalized_distance(xf, yf, *a, rx, ry, 1009 + i as u32 * 733);
+                    if nd < union { union = nd; }
+                    let score = nd * 1000.0 + 42.0 * (xf * 0.006 + i as f64).sin() + 31.0 * (yf * 0.007 + i as f64 * 0.5).cos();
+                    if score < best_score { best_score = score; best = i; }
                 }
-                owner[y * W + x] = best;
-                let rib = 0.5 + 0.5 * ((xf * 0.060 + yf * 0.021 + best as f64).sin());
-                blend(&mut buf[y * W + x], colors[best], 0.32 + 0.10 * rib);
+                if union < 1.0 {
+                    let idx = y * W + x;
+                    owner[idx] = best;
+                    inside[idx] = true;
+                    let edge = ((1.0 - union) / 0.20).clamp(0.0, 1.0);
+                    let rib = 0.5 + 0.5 * ((xf * 0.060 + yf * 0.021 + best as f64).sin());
+                    blend(&mut buf[idx], colors[best], edge * (0.30 + 0.11 * rib));
+                }
             }
         }
 
-        // Embroidered seams along territory boundaries.
+        // Outer embroidered edge of the connected rug mass, plus internal shared seams.
         for y in (BORDER + 1)..(H - BORDER - 1) {
             for x in (BORDER + 1)..(W - BORDER - 1) {
-                let here = owner[y * W + x];
-                if here == usize::MAX { continue; }
-                let right = owner[y * W + x + 1];
-                let down = owner[(y + 1) * W + x];
-                if right != here || down != here {
+                let idx = y * W + x;
+                if !inside[idx] { continue; }
+                let here = owner[idx];
+                let right_i = y * W + x + 1;
+                let down_i = (y + 1) * W + x;
+                let outer = !inside[right_i] || !inside[down_i] || !inside[y * W + x - 1] || !inside[(y - 1) * W + x];
+                let seam = inside[right_i] && owner[right_i] != here || inside[down_i] && owner[down_i] != here;
+                if outer || seam {
                     let noise = h01((x as u32).wrapping_mul(37) ^ (y as u32).wrapping_mul(149));
-                    blend(&mut buf[y * W + x], [28, 16, 18], 0.32);
-                    if noise > 0.58 { blend(&mut buf[y * W + x], [204, 146, 58], 0.30); }
-                    if noise > 0.84 { dot(&mut buf, x as f64, y as f64, 1.3, [228, 174, 76], 0.48); }
+                    blend(&mut buf[idx], [24, 14, 17], if outer { 0.46 } else { 0.31 });
+                    if noise > 0.45 { blend(&mut buf[idx], [204, 146, 58], if outer { 0.42 } else { 0.28 }); }
+                    if noise > 0.82 { dot(&mut buf, x as f64, y as f64, if outer { 1.6 } else { 1.2 }, [228, 174, 76], 0.46); }
                 }
             }
         }
@@ -245,7 +265,6 @@ fn write_rug_carpet_ppm(path: &str, phrases: &[Phrase]) -> anyhow::Result<()> {
         }
     }
 
-    // Global stitch flecks bind the territory map into one rug.
     for i in 0..5200u32 {
         let x = 18.0 + h01(i * 17) * (W as f64 - 36.0);
         let y = 18.0 + h01(i * 43) * (H as f64 - 36.0);
@@ -264,7 +283,7 @@ fn write_rug_carpet_ppm(path: &str, phrases: &[Phrase]) -> anyhow::Result<()> {
 
 pub fn replace_video_with_generated_source_for_phrases(path: &str, phrases: &[Phrase]) -> anyhow::Result<bool> {
     let mut src = std::env::temp_dir();
-    src.push("maqam-territory-rug-source.ppm");
+    src.push("maqam-connected-territory-rug-source.ppm");
     let src = src.to_string_lossy().replace('\\', "/");
     write_rug_carpet_ppm(&src, phrases)?;
     let tmp = format!("{path}.source-background.mp4");
