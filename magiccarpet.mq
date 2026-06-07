@@ -1,0 +1,12 @@
+MAQAM_SESSION_V3
+create saba2 1/1 13/12 6/5 5/4
+vol 1
+B|0|180
+S|1|2
+P|2|1|d bayati, f hijaz 4444
+J|3|0|3
+P|4|1|a saba, c hijaz
+P|5|1|a saba2, c hijaz
+J|6|4|4
+P|7|1|g rast 664664
+J|8|7|4
