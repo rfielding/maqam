@@ -915,33 +915,7 @@ impl App {
     }
 
     fn save_session(&self, path: &str) -> Result<(), String> {
-        let mut out = String::new();
-        out.push_str("MAQAM_SESSION_V2\n");
-        for (name, ratios) in crate::tuning::Maqam::list_custom() {
-            let ratios_s = ratios
-                .iter()
-                .map(|(p, q)| format!("{p}/{q}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            out.push_str(&format!("create {name} {ratios_s}\n"));
-        }
-        out.push_str(&format!("vol {}\n", self.vol));
-        for p in &self.phrases {
-            if let Some(j) = &p.jump {
-                out.push_str(&format!("j {} {}\n", j.target_id, j.times));
-            } else if let Some(ctrl) = p.control {
-                match ctrl {
-                    ControlSpec::SetBpm(v) => out.push_str(&format!("bpm {v}\n")),
-                    ControlSpec::SetSustain(v) => out.push_str(&format!("s {v}\n")),
-                }
-            } else {
-                if p.repeat > 1 {
-                    out.push_str(&format!("{} r{}\n", p.src, p.repeat));
-                } else {
-                    out.push_str(&format!("{}\n", p.src));
-                }
-            }
-        }
+        let out = crate::session_v3::serialize_session_v3(&self.phrases, self.vol);
         fs::write(path, out).map_err(|e| e.to_string())
     }
 
@@ -952,19 +926,191 @@ impl App {
             return Err("empty file".into());
         };
         let header = header.trim();
+        if header == crate::session_v3::HEADER {
+            return self.load_session_v3(lines);
+        }
         if header == "MAQAM_SESSION_V2" {
             return self.load_session_v2(lines);
         }
         if header == "MAQAM_SESSION_V1" {
             return self.load_session_v1(lines);
         }
-        Err("bad header (expected MAQAM_SESSION_V2 or MAQAM_SESSION_V1)".into())
+        Err("bad header (expected MAQAM_SESSION_V3, MAQAM_SESSION_V2, or MAQAM_SESSION_V1)".into())
+    }
+
+    fn load_session_v3<'a, I>(&mut self, lines: I) -> Result<(), String>
+    where
+        I: Iterator<Item = &'a str>,
+    {
+        crate::tuning::Maqam::reset_to_defaults();
+        let mut new_bpm = 120.0f64;
+        let mut new_sustain = 1.25f64;
+        let mut new_vol = 1.0f32;
+        let mut loaded: Vec<Phrase> = Vec::new();
+        let mut ids = std::collections::HashSet::new();
+        let mut max_id = None;
+        let mut next_legacy_id = 0usize;
+        let mut last_rhythm = vec![3, 3, 2];
+
+        for (line_idx, raw_line) in lines.enumerate() {
+            let line_no = line_idx + 2;
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if line.starts_with("create ") {
+                let parsed = command::parse(line).map_err(|e| format!("line {line_no}: {e}"))?;
+                let Cmd::CreateJins { name, ratios } = parsed else {
+                    return Err(format!("line {line_no}: expected create line"));
+                };
+                crate::tuning::Maqam::create(&name, ratios)
+                    .map_err(|e| format!("line {line_no}: {e}"))?;
+                continue;
+            }
+            if let Some(value) = line.strip_prefix("vol ") {
+                new_vol = value
+                    .trim()
+                    .parse::<f32>()
+                    .map_err(|_| format!("line {line_no}: bad volume"))?;
+                if !(0.0..=2.0).contains(&new_vol) {
+                    return Err(format!("line {line_no}: volume out of range"));
+                }
+                continue;
+            }
+            if line.starts_with("bpm ") || line.starts_with("s ") || line.starts_with("sus ") {
+                while ids.contains(&next_legacy_id) {
+                    next_legacy_id += 1;
+                }
+                let id = next_legacy_id;
+                next_legacy_id += 1;
+                ids.insert(id);
+                max_id = Some(max_id.map_or(id, |current: usize| current.max(id)));
+
+                let parsed = command::parse(line).map_err(|e| format!("line {line_no}: {e}"))?;
+                match parsed {
+                    Cmd::SetBpm(change) => {
+                        new_bpm = apply_bpm_change(new_bpm, change)
+                            .map_err(|e| format!("line {line_no}: {e}"))?;
+                        loaded.push(build_control_entry(
+                            id,
+                            format!("bpm {new_bpm}"),
+                            ControlSpec::SetBpm(new_bpm),
+                        ));
+                    }
+                    Cmd::SetSustain(change) => {
+                        new_sustain = apply_sustain_change(new_sustain, change)
+                            .map_err(|e| format!("line {line_no}: {e}"))?;
+                        loaded.push(build_control_entry(
+                            id,
+                            format!("s {new_sustain}"),
+                            ControlSpec::SetSustain(new_sustain),
+                        ));
+                    }
+                    _ => return Err(format!("line {line_no}: expected control line")),
+                }
+                continue;
+            }
+
+            let fields = crate::session_v3::split_escaped_fields(line);
+            let id = fields
+                .get(1)
+                .ok_or_else(|| format!("line {line_no}: missing id"))?
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| format!("line {line_no}: bad id"))?;
+            if !ids.insert(id) {
+                return Err(format!("line {line_no}: duplicate id {id}"));
+            }
+            max_id = Some(max_id.map_or(id, |current: usize| current.max(id)));
+
+            match fields.first().map(String::as_str) {
+                Some("B") if fields.len() == 3 => {
+                    new_bpm = fields[2]
+                        .trim()
+                        .parse::<f64>()
+                        .map_err(|_| format!("line {line_no}: bad bpm"))?;
+                    if !(20.0..=400.0).contains(&new_bpm) {
+                        return Err(format!("line {line_no}: bpm out of range"));
+                    }
+                    loaded.push(build_control_entry(
+                        id,
+                        format!("bpm {new_bpm}"),
+                        ControlSpec::SetBpm(new_bpm),
+                    ));
+                }
+                Some("S") if fields.len() == 3 => {
+                    new_sustain = fields[2]
+                        .trim()
+                        .parse::<f64>()
+                        .map_err(|_| format!("line {line_no}: bad sustain"))?;
+                    if !(0.05..=10.0).contains(&new_sustain) {
+                        return Err(format!("line {line_no}: sustain out of range"));
+                    }
+                    loaded.push(build_control_entry(
+                        id,
+                        format!("s {new_sustain}"),
+                        ControlSpec::SetSustain(new_sustain),
+                    ));
+                }
+                Some("J") if fields.len() == 4 => {
+                    let target = fields[2]
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|_| format!("line {line_no}: bad jump target"))?;
+                    let times = fields[3]
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|_| format!("line {line_no}: bad jump times"))?;
+                    loaded.push(crate::sequencer::build_jump_entry(id, target, times.max(1)));
+                }
+                Some("P") if fields.len() == 4 => {
+                    let repeat = fields[2]
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|_| format!("line {line_no}: bad repeat"))?
+                        .max(1);
+                    let src = &fields[3];
+                    let parsed = command::parse(src).map_err(|e| format!("line {line_no}: {e}"))?;
+                    let Cmd::AddPhrase { specs, .. } = parsed else {
+                        return Err(format!("line {line_no}: expected phrase command"));
+                    };
+                    let resolved = resolve_rhythms(specs, &last_rhythm)
+                        .map_err(|e| format!("line {line_no}: {e}"))?;
+                    if let Some(rhythm) = resolved.last() {
+                        last_rhythm = rhythm.groups.clone();
+                    }
+                    loaded.push(build_phrase(id, src.clone(), resolved, 4, repeat));
+                }
+                _ => return Err(format!("line {line_no}: malformed V3 record")),
+            }
+        }
+
+        self.phrases = loaded.clone();
+        self.next_phrase_id = max_id.map_or(0, |id| id.saturating_add(1));
+        self.last_rhythm = last_rhythm;
+        self.bpm = new_bpm;
+        self.sustain = new_sustain;
+        self.vol = new_vol;
+        self.paused = false;
+        let (start_bpm, start_sustain) = self.sequence_start_settings();
+
+        let _ = self.audio_tx.send(AudioCmd::Clear);
+        let _ = self.audio_tx.send(AudioCmd::SetBpm(start_bpm));
+        let _ = self.audio_tx.send(AudioCmd::SetSustain(start_sustain));
+        let _ = self.audio_tx.send(AudioCmd::SetVol(self.vol));
+        let _ = self.audio_tx.send(AudioCmd::SetPaused(false));
+        for phrase in loaded {
+            let _ = self.audio_tx.send(AudioCmd::AddPhrase(phrase));
+        }
+        let _ = self.audio_tx.send(AudioCmd::SetCurPhrase(0));
+        Ok(())
     }
 
     fn load_session_v1<'a, I>(&mut self, lines: I) -> Result<(), String>
     where
         I: Iterator<Item = &'a str>,
     {
+        crate::tuning::Maqam::reset_to_defaults();
         let mut new_bpm = self.bpm;
         let mut new_sustain = self.sustain;
         let mut new_vol = self.vol;
@@ -975,7 +1121,17 @@ impl App {
         for (line_idx, raw_line) in lines.enumerate() {
             let line_no = line_idx + 2;
             let line = raw_line.trim();
-            if line.is_empty() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            if line.starts_with("create ") {
+                let parsed = command::parse(line).map_err(|e| format!("line {line_no}: {e}"))?;
+                let Cmd::CreateJins { name, ratios } = parsed else {
+                    return Err(format!("line {line_no}: expected create line"));
+                };
+                crate::tuning::Maqam::create(&name, ratios)
+                    .map_err(|e| format!("line {line_no}: {e}"))?;
                 continue;
             }
 
@@ -1339,4 +1495,150 @@ fn resolve_id_ref_in_phrases(phrases: &[Phrase], id_ref: isize) -> Option<usize>
         return None;
     }
     phrases.get(phrases.len() - back).map(|p| p.id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam_channel::bounded;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn session_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn loads_and_saves_v3_without_rewriting_input() {
+        let _guard = session_test_lock();
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let input_path = std::env::temp_dir().join(format!("maqam-v3-input-{suffix}.mq"));
+        let output_path = std::env::temp_dir().join(format!("maqam-v3-output-{suffix}.mq"));
+        let source = concat!(
+            "MAQAM_SESSION_V3\n",
+            "create testv3 1/1 9/8 5/4\n",
+            "vol 0.75\n",
+            "B|4|180\n",
+            "S|7|1.2\n",
+            "P|11|2|g testv3 332\n",
+            "J|15|11|3\n",
+        );
+        fs::write(&input_path, source).unwrap();
+
+        let (tx, _rx) = bounded(32);
+        let mut app = App::new(tx);
+        app.load_session(input_path.to_str().unwrap()).unwrap();
+
+        assert_eq!(fs::read_to_string(&input_path).unwrap(), source);
+        assert_eq!(
+            app.phrases
+                .iter()
+                .map(|phrase| phrase.id)
+                .collect::<Vec<_>>(),
+            vec![4, 7, 11, 15]
+        );
+        assert_eq!(app.phrases[2].repeat, 2);
+        assert_eq!(app.phrases[3].jump.as_ref().unwrap().target_id, 11);
+        assert_eq!(app.next_phrase_id, 16);
+
+        app.save_session(output_path.to_str().unwrap()).unwrap();
+        let saved = fs::read_to_string(&output_path).unwrap();
+        assert!(saved.starts_with("MAQAM_SESSION_V3\n"));
+        assert!(saved.contains("B|4|180\n"));
+        assert!(saved.contains("P|11|2|g testv3 332\n"));
+
+        let _ = fs::remove_file(input_path);
+        let _ = fs::remove_file(output_path);
+    }
+
+    #[test]
+    fn loads_legacy_control_lines_under_v3_header() {
+        let _guard = session_test_lock();
+        let (tx, _rx) = bounded(16);
+        let mut app = App::new(tx);
+        app.load_session_v3(["bpm 180", "s 1.2", "P|2|1|g hijaz 4444"].into_iter())
+            .unwrap();
+
+        assert_eq!(
+            app.phrases
+                .iter()
+                .map(|phrase| phrase.id)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(app.bpm, 180.0);
+        assert_eq!(app.sustain, 1.2);
+    }
+
+    #[test]
+    fn loads_rewritten_v1_session_with_custom_jins() {
+        let _guard = session_test_lock();
+        let (tx, _rx) = bounded(32);
+        let mut app = App::new(tx);
+        app.load_session_v1(
+            [
+                "create saba2 1/1 13/12 6/5 5/4",
+                "vol 1",
+                "bpm 180",
+                "s 2",
+                "P|2|1|d bayati, f hijaz 4444",
+                "J|3|0|3",
+                "P|4|1|a saba, c hijaz",
+                "P|5|1|a saba2, c hijaz",
+                "J|6|4|4",
+                "P|7|1|g rast 664664",
+                "J|8|7|4",
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+
+        assert_eq!(app.phrases.len(), 9);
+        assert_eq!(app.next_phrase_id, 9);
+    }
+
+    #[test]
+    fn bundled_v3_sessions_load() {
+        let _guard = session_test_lock();
+
+        for name in ["magiccarpet.mq", "growl.mq"] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
+            let source = fs::read_to_string(&path).unwrap();
+            assert!(source.starts_with("MAQAM_SESSION_V3\n"), "{name} is not V3");
+
+            let (tx, _rx) = bounded(32);
+            let mut app = App::new(tx);
+            app.load_session(path.to_str().unwrap())
+                .unwrap_or_else(|error| panic!("{name} failed to load: {error}"));
+
+            assert!(!app.phrases.is_empty(), "{name} loaded no timeline entries");
+            assert!(app
+                .phrases
+                .iter()
+                .all(|phrase| phrase.id < app.next_phrase_id));
+        }
+    }
+
+    #[test]
+    fn recording_errors_appear_in_response_area() {
+        let (audio_tx, _audio_rx) = bounded(1);
+        let mut app = App::new(audio_tx);
+        let (result_tx, result_rx) = bounded(1);
+        app.rec_rx = Some(result_rx);
+        result_tx
+            .send(Err("generated source background failed".to_string()))
+            .unwrap();
+
+        app.tick();
+
+        assert_eq!(
+            app.message.as_deref(),
+            Some("✗ generated source background failed")
+        );
+        assert!(app.rec_rx.is_none());
+    }
 }

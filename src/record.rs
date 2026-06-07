@@ -9,7 +9,7 @@
 mod record_old;
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use crate::sequencer::Phrase;
 
@@ -25,11 +25,20 @@ fn temp_path(name: &str) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
-fn overwrite_video_with_last_carpet_source(path: &str) -> anyhow::Result<bool> {
+fn command_failure(step: &str, output: &std::process::Output) -> anyhow::Error {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        anyhow::anyhow!("{step} failed with status {}", output.status)
+    } else {
+        anyhow::anyhow!("{step} failed: {detail}")
+    }
+}
+
+fn overwrite_video_with_last_carpet_source(path: &str) -> anyhow::Result<()> {
     let ppm = cwd_path("carpet.ppm");
     if !std::path::Path::new(&ppm).exists() {
-        eprintln!("carpet-guided-background: carpet PPM not found at {ppm}");
-        return Ok(false);
+        anyhow::bail!("generated carpet image is missing: {ppm}");
     }
 
     let tmp = format!("{path}.carpet-only.mp4");
@@ -48,18 +57,16 @@ fn overwrite_video_with_last_carpet_source(path: &str) -> anyhow::Result<bool> {
         .args(["-map", "0:v", "-map", "1:a?"])
         .args(["-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p"])
         .args(["-c:a", "copy", "-shortest", "-movflags", "+faststart", &tmp])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .output();
 
     match status {
-        Ok(s) if s.success() => {
+        Ok(output) if output.status.success() => {
             std::fs::rename(&tmp, path)?;
-            Ok(true)
+            Ok(())
         }
-        Ok(_) => {
+        Ok(output) => {
             let _ = std::fs::remove_file(&tmp);
-            Ok(false)
+            Err(command_failure("carpet source replacement", &output))
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             anyhow::bail!("carpet source replacement requires ffmpeg on your PATH")
@@ -68,11 +75,10 @@ fn overwrite_video_with_last_carpet_source(path: &str) -> anyhow::Result<bool> {
     }
 }
 
-fn burn_hud_back_onto(path: &str) -> anyhow::Result<bool> {
+fn burn_hud_back_onto(path: &str) -> anyhow::Result<()> {
     let ass_path = temp_path("maqam-live.ass");
     if !std::path::Path::new(&ass_path).exists() {
-        eprintln!("carpet-guided-background: HUD restore skipped; {ass_path} missing");
-        return Ok(false);
+        anyhow::bail!("HUD subtitle file is missing: {ass_path}");
     }
 
     let tmp = format!("{path}.hud.mp4");
@@ -82,18 +88,16 @@ fn burn_hud_back_onto(path: &str) -> anyhow::Result<bool> {
         .args(["-map", "0:v", "-map", "0:a?"])
         .args(["-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p"])
         .args(["-c:a", "copy", "-movflags", "+faststart", &tmp])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .output();
 
     match status {
-        Ok(s) if s.success() => {
+        Ok(output) if output.status.success() => {
             std::fs::rename(&tmp, path)?;
-            Ok(true)
+            Ok(())
         }
-        Ok(_) => {
+        Ok(output) => {
             let _ = std::fs::remove_file(&tmp);
-            Ok(false)
+            Err(command_failure("HUD restore", &output))
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             anyhow::bail!("HUD restore requires ffmpeg on your PATH")
@@ -110,23 +114,9 @@ pub fn record_cycle(
 ) -> anyhow::Result<String> {
     let path = record_old::record_cycle(phrases.clone(), bpm, sustain, cycle_repeat)?;
 
-    if crate::source_background::replace_video_with_generated_source_for_phrases(&path, &phrases)
-        .unwrap_or(false)
-    {
-        eprintln!("carpet-guided-background: generated carpet source written");
-        if overwrite_video_with_last_carpet_source(&path)? {
-            eprintln!("carpet-guided-background: forced carpet PPM as video background");
-        } else {
-            eprintln!("carpet-guided-background: carpet PPM force step skipped");
-        }
-        if burn_hud_back_onto(&path)? {
-            eprintln!("carpet-guided-background: restored HUD/subtitles over carpet source");
-        } else {
-            eprintln!("carpet-guided-background: HUD/subtitle restore skipped");
-        }
-    } else {
-        eprintln!("carpet-guided-background: generated source background skipped");
-    }
+    crate::source_background::replace_video_with_generated_source_for_phrases(&path, &phrases)?;
+    overwrite_video_with_last_carpet_source(&path)?;
+    burn_hud_back_onto(&path)?;
 
     Ok(path)
 }

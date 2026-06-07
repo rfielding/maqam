@@ -57,30 +57,14 @@ fn cli_commands(args: &[String]) -> Vec<String> {
     commands
 }
 
-fn normalize_load_target_if_needed(cmd: &str) {
-    let trimmed = cmd.trim();
-    let mut parts = trimmed.split_whitespace();
-    if parts.next() != Some("load") {
-        return;
-    }
-    if let Some(path) = parts.next() {
-        let _ = crate::session_v3::downgrade_v3_file_to_v2_for_current_loader(path);
-    }
-}
-
 fn run_cli(commands: Vec<String>) -> anyhow::Result<()> {
-    eprintln!("carpet-guided-background: controlled branch active");
-    eprintln!("carpet-guided-background: src/carpet.rs is present; record.rs wiring is next");
-
     let (tx, rx) = bounded::<sequencer::AudioCmd>(512);
     let _stream = audio::start_audio(rx)?;
     let mut app = app::App::new(tx);
 
     for cmd in &commands {
         eprintln!("> {cmd}");
-        normalize_load_target_if_needed(cmd);
         app.handle_command(cmd);
-        crate::session_v3::normalize_saved_message(app.message.as_ref());
         app.tick();
         if let Some(msg) = &app.message {
             eprintln!("{msg}");

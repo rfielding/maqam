@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use crate::{sequencer::Phrase, tuning::Maqam};
 
@@ -1527,7 +1527,7 @@ pub fn write_generated_source_image_for_phrases(
 pub fn replace_video_with_generated_source_for_phrases(
     path: &str,
     phrases: &[Phrase],
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<()> {
     let mut src = std::env::current_dir()?;
     src.push("carpet.ppm");
     let src = src.to_string_lossy().replace('\\', "/");
@@ -1549,19 +1549,32 @@ pub fn replace_video_with_generated_source_for_phrases(
         .args(["-map", "[v]", "-map", "1:a?"])
         .args(["-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p"])
         .args(["-c:a", "copy", "-shortest", &tmp])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .output();
     match status {
-        Ok(s) if s.success() => {
+        Ok(output) if output.status.success() => {
             std::fs::rename(&tmp, path)?;
-            Ok(true)
+            Ok(())
         }
-        _ => Ok(false),
+        Ok(output) => {
+            let _ = std::fs::remove_file(&tmp);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = stderr.trim();
+            if detail.is_empty() {
+                anyhow::bail!(
+                    "generated source background failed with status {}",
+                    output.status
+                );
+            }
+            anyhow::bail!("generated source background failed: {detail}");
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("generated source background requires ffmpeg on your PATH");
+        }
+        Err(error) => Err(error.into()),
     }
 }
 
 #[allow(dead_code)]
-pub fn replace_video_with_generated_source(path: &str) -> anyhow::Result<bool> {
+pub fn replace_video_with_generated_source(path: &str) -> anyhow::Result<()> {
     replace_video_with_generated_source_for_phrases(path, &[])
 }

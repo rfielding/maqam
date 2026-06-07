@@ -418,7 +418,6 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
             .filter(|s| !s.is_empty())
             .ok_or("usage: load <path>")?
             .to_string();
-        let _ = crate::session_v3::downgrade_v3_file_to_v2_for_current_loader(&path);
         return Ok(Cmd::Load { path });
     }
 

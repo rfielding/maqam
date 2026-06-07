@@ -233,10 +233,9 @@ load firstSong.mq; save firstSong.mq
 bpm *2; s *0.8; save firstSong.mq
 ```
 
-Saved `.mq` files are command-line sessions (`MAQAM_SESSION_V2`), so you will
-see lines like `bpm 240` and `s 1.0` directly in the file as sequence entries.
-Custom jins are also persisted as `create <Name> ...` lines and are restored
-on load.
+Saved `.mq` files use the explicit-ID `MAQAM_SESSION_V3` format, so you will
+see timeline records such as `B|0|240`, `S|1|1.0`, and `P|2|1|g hijaz 4444`.
+Custom jins are persisted as `create <Name> ...` lines and restored on load.
 
 If a session has been loaded or previously saved, bare `save` reuses that path.
 
