@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 // record.rs — offline render to MP4
 
 use std::collections::HashMap;
@@ -428,18 +430,19 @@ fn write_tiling_background(
 /// Returns a Vec of individual filter strings to be chained with commas.
 #[allow(dead_code)]
 fn build_ruler_boxes(
-    full_seq: &[(usize, usize, usize)],
+    full_seq: &[RenderEntry],
     phrases: &[Phrase],
-    subdiv_secs: f64,
-    bar_samples_for: &dyn Fn(usize) -> usize,
+    bar_samples_for: &dyn Fn(usize, f64) -> usize,
     total_secs: f64,
 ) -> Vec<String> {
     let mut parts: Vec<String> = Vec::new();
     let mut sample: usize = 0;
     let n_seq = full_seq.len();
 
-    for (seq_i, &(phrase_idx, _play, _snap)) in full_seq.iter().enumerate() {
-        let bs = bar_samples_for(phrase_idx);
+    for (seq_i, entry) in full_seq.iter().enumerate() {
+        let phrase_idx = entry.phrase_idx;
+        let subdiv_secs = 60.0 / (entry.bpm * 2.0);
+        let bs = bar_samples_for(phrase_idx, entry.bpm);
         let t0 = sample as f64 / SR;
         // Last entry extends to total_secs so the ruler stays visible through the tail
         let t1 = if seq_i + 1 == n_seq {
@@ -967,40 +970,25 @@ pub fn record_cycle(
 
     let result = (|| -> anyhow::Result<String> {
         // ── Build filter complex ──────────────────────────────────────────────
-        let (bg_path, bg_w, content_right) = write_tiling_background(&full_seq, &phrases)?;
-        let scroll_range = bg_w.saturating_sub(1280);
-        const BG_START_X: usize = 1100;
-        const BG_STEP_X: usize = 22;
-        let base_subdiv_secs = full_seq
-            .first()
-            .map(|entry| 60.0 / (entry.bpm * 2.0))
-            .unwrap_or(0.5);
-
-        let start_x = BG_START_X;
-        let right_margin = 28usize;
-        let latest_target = 1280usize.saturating_sub(right_margin);
-        let scroll_expr = if scroll_range == 0 {
-            "0".to_string()
+        let ruler_boxes = build_ruler_boxes(&full_seq, &phrases, &bar_samples_for, total_secs);
+        let ruler_chain = if ruler_boxes.is_empty() {
+            String::new()
         } else {
-            let max_follow = content_right
-                .saturating_sub(latest_target)
-                .min(scroll_range);
-            format!(
-                "min(max(0,({start_x}+{step}*floor(t/{:.6}))-{latest_target}),{max_follow})",
-                base_subdiv_secs.max(0.001),
-                step = BG_STEP_X
-            )
+            format!("{},", ruler_boxes.join(","))
         };
 
         let filter_with_subs = format!(
-            "[1:v]crop=1280:720:x='{scroll_expr}':y=0[bg];\
-             [bg]subtitles={ass_path}[v]"
+            "[0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x002222,\
+             pad=1280:720:0:360:color=black[wv];\
+             [wv]{ruler_chain}subtitles={ass_path}[v]"
         );
         let filter_plain = format!(
-            "[1:v]crop=1280:720:x='{scroll_expr}':y=0[bg];\
-             [bg]null[v]"
+            "[0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x220022,\
+             pad=1280:720:0:360:color=black[wv];\
+             [wv]{ruler_chain}null[v]"
         );
-        let filter_bare = format!("[1:v]crop=1280:720:x='{scroll_expr}':y=0[v]");
+        let filter_bare = "[0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x555555,\
+             pad=1280:720:0:360:color=black[v]";
 
         // Write to script file to sidestep OS command-line length limits.
         let fscript_path = temp_path("maqam-filter.txt");
@@ -1021,12 +1009,6 @@ pub fn record_cycle(
                     "-y",
                     "-i",
                     wav_path,
-                    "-loop",
-                    "1",
-                    "-framerate",
-                    "30",
-                    "-i",
-                    &bg_path,
                     "-filter_complex_script",
                     &fscript_path,
                     "-map",
@@ -1037,8 +1019,6 @@ pub fn record_cycle(
                     "libx264",
                     "-crf",
                     "18",
-                    "-pix_fmt",
-                    "yuv420p",
                     "-movflags",
                     "+faststart",
                     "-c:a",
@@ -1047,7 +1027,6 @@ pub fn record_cycle(
                     "320k",
                     "-r",
                     "30",
-                    "-shortest",
                     &out,
                 ])
                 .stdout(Stdio::null())
@@ -1066,12 +1045,6 @@ pub fn record_cycle(
                         "-y",
                         "-i",
                         wav_path,
-                        "-loop",
-                        "1",
-                        "-framerate",
-                        "30",
-                        "-i",
-                        &bg_path,
                         "-filter_complex",
                         &filter_with_subs,
                         "-map",
@@ -1082,8 +1055,6 @@ pub fn record_cycle(
                         "libx264",
                         "-crf",
                         "18",
-                        "-pix_fmt",
-                        "yuv420p",
                         "-movflags",
                         "+faststart",
                         "-c:a",
@@ -1092,7 +1063,6 @@ pub fn record_cycle(
                         "320k",
                         "-r",
                         "30",
-                        "-shortest",
                         &out,
                     ])
                     .stdout(Stdio::null())
@@ -1107,12 +1077,6 @@ pub fn record_cycle(
                             "-y",
                             "-i",
                             wav_path,
-                            "-loop",
-                            "1",
-                            "-framerate",
-                            "30",
-                            "-i",
-                            &bg_path,
                             "-filter_complex",
                             &filter_plain,
                             "-map",
@@ -1123,8 +1087,6 @@ pub fn record_cycle(
                             "libx264",
                             "-crf",
                             "18",
-                            "-pix_fmt",
-                            "yuv420p",
                             "-movflags",
                             "+faststart",
                             "-c:a",
@@ -1133,7 +1095,6 @@ pub fn record_cycle(
                             "320k",
                             "-r",
                             "30",
-                            "-shortest",
                             &out,
                         ])
                         .stdout(Stdio::null())
@@ -1141,21 +1102,15 @@ pub fn record_cycle(
                 )?;
 
                 if !ok3 {
-                    // Pass 4: plain background, no subtitles
+                    // Pass 4: plain waveform, no subtitles
                     ffmpeg_status(
                         Command::new("ffmpeg")
                             .args([
                                 "-y",
                                 "-i",
                                 wav_path,
-                                "-loop",
-                                "1",
-                                "-framerate",
-                                "30",
-                                "-i",
-                                &bg_path,
                                 "-filter_complex",
-                                &filter_bare,
+                                filter_bare,
                                 "-map",
                                 "[v]",
                                 "-map",
@@ -1164,8 +1119,6 @@ pub fn record_cycle(
                                 "libx264",
                                 "-crf",
                                 "18",
-                                "-pix_fmt",
-                                "yuv420p",
                                 "-movflags",
                                 "+faststart",
                                 "-c:a",
@@ -1174,7 +1127,6 @@ pub fn record_cycle(
                                 "320k",
                                 "-r",
                                 "30",
-                                "-shortest",
                                 &out,
                             ])
                             .stdout(Stdio::null())
