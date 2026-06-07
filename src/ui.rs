@@ -85,6 +85,7 @@ pub fn run(app: &mut App) -> anyhow::Result<()> {
                         app.input.clear();
                         app.cursor_pos = 0;
                         app.handle_command(&cmd);
+                        crate::session_v3::normalize_saved_message(app.message.as_ref());
                     }
                     KeyCode::Up    => { app.history_up(); }
                     KeyCode::Down  => { app.history_down(); }
