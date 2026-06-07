@@ -4,6 +4,9 @@
 // id.  The renderer must consume loaded Phrase values, not infer ids from raw
 // anonymous text lines.
 
+use std::fs;
+use std::path::Path;
+
 use crate::sequencer::{ControlSpec, Phrase};
 
 pub const HEADER: &str = "MAQAM_SESSION_V3";
@@ -77,4 +80,89 @@ pub fn split_escaped_fields(line: &str) -> Vec<String> {
     }
     fields.push(cur);
     fields
+}
+
+fn split_repeat_suffix(line: &str) -> (String, usize) {
+    let trimmed = line.trim_end();
+    if let Some((head, tail)) = trimmed.rsplit_once(char::is_whitespace) {
+        if let Some(n) = tail.strip_prefix('r') {
+            if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) {
+                if let Ok(repeat) = n.parse::<usize>() {
+                    return (head.trim_end().to_string(), repeat.max(1));
+                }
+            }
+        }
+    }
+    (trimmed.to_string(), 1)
+}
+
+pub fn upgrade_v2_text_to_v3(src: &str) -> Option<String> {
+    let mut lines = src.lines();
+    let header = lines.next()?.trim();
+    if header == HEADER {
+        return None;
+    }
+    if header != "MAQAM_SESSION_V2" {
+        return None;
+    }
+
+    let mut out = String::new();
+    out.push_str(HEADER);
+    out.push('\n');
+    let mut id = 0usize;
+
+    for raw in lines {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with("create ") || line.starts_with("vol ") {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if let Some(v) = line.strip_prefix("bpm ") {
+            out.push_str(&format!("B|{}|{}\n", id, v.trim()));
+            id += 1;
+            continue;
+        }
+        if let Some(v) = line.strip_prefix("s ").or_else(|| line.strip_prefix("sus ")) {
+            out.push_str(&format!("S|{}|{}\n", id, v.trim()));
+            id += 1;
+            continue;
+        }
+        if let Some(v) = line.strip_prefix("j ") {
+            let mut parts = v.split_whitespace();
+            if let (Some(target), Some(times)) = (parts.next(), parts.next()) {
+                out.push_str(&format!("J|{}|{}|{}\n", id, target, times));
+                id += 1;
+                continue;
+            }
+        }
+        let (src_line, repeat) = split_repeat_suffix(line);
+        out.push_str(&format!("P|{}|{}|{}\n", id, repeat, escape_field(&src_line)));
+        id += 1;
+    }
+
+    Some(out)
+}
+
+pub fn normalize_v2_file_to_v3(path: impl AsRef<Path>) -> Result<bool, String> {
+    let path = path.as_ref();
+    let src = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let Some(upgraded) = upgrade_v2_text_to_v3(&src) else { return Ok(false); };
+    fs::write(path, upgraded).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+pub fn saved_path_from_message(msg: Option<&String>) -> Option<String> {
+    let msg = msg?;
+    let path = msg.strip_prefix("saved session → ")?;
+    Some(path.trim().to_string())
+}
+
+pub fn normalize_saved_message(msg: Option<&String>) {
+    if let Some(path) = saved_path_from_message(msg) {
+        let _ = normalize_v2_file_to_v3(path);
+    }
 }
