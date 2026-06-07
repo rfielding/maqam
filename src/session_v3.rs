@@ -139,13 +139,13 @@ pub fn upgrade_v2_text_to_v3(src: &str) -> Option<String> {
     Some(out)
 }
 
-pub fn downgrade_v3_text_to_v2(src: &str) -> Option<String> {
+pub fn downgrade_v3_text_to_v1_for_current_loader(src: &str) -> Option<String> {
     let mut lines = src.lines();
     let header = lines.next()?.trim();
     if header != HEADER { return None; }
 
     let mut out = String::new();
-    out.push_str("MAQAM_SESSION_V2\n");
+    out.push_str("MAQAM_SESSION_V1\n");
 
     for raw in lines {
         let line = raw.trim();
@@ -164,13 +164,10 @@ pub fn downgrade_v3_text_to_v2(src: &str) -> Option<String> {
                 out.push_str(&format!("s {}\n", fields[2].trim()));
             }
             Some("J") if fields.len() >= 4 => {
-                out.push_str(&format!("j {} {}\n", fields[2].trim(), fields[3].trim()));
+                out.push_str(&format!("J|{}|{}|{}\n", fields[1].trim(), fields[2].trim(), fields[3].trim()));
             }
             Some("P") if fields.len() >= 4 => {
-                let repeat = fields[2].trim().parse::<usize>().unwrap_or(1).max(1);
-                let src = fields[3].trim();
-                if repeat > 1 { out.push_str(&format!("{} r{}\n", src, repeat)); }
-                else { out.push_str(src); out.push('\n'); }
+                out.push_str(&format!("P|{}|{}|{}\n", fields[1].trim(), fields[2].trim(), escape_field(fields[3].trim())));
             }
             _ => return None,
         }
@@ -190,7 +187,7 @@ pub fn normalize_v2_file_to_v3(path: impl AsRef<Path>) -> Result<bool, String> {
 pub fn downgrade_v3_file_to_v2_for_current_loader(path: impl AsRef<Path>) -> Result<bool, String> {
     let path = path.as_ref();
     let src = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let Some(downgraded) = downgrade_v3_text_to_v2(&src) else { return Ok(false); };
+    let Some(downgraded) = downgrade_v3_text_to_v1_for_current_loader(&src) else { return Ok(false); };
     let backup = path.with_extension("mq.v3.bak");
     let _ = fs::write(&backup, &src);
     fs::write(path, downgraded).map_err(|e| e.to_string())?;
