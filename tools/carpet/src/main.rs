@@ -18,6 +18,8 @@ struct Args {
     #[arg(long, default_value_t = 2)] knot_px: u32,
     #[arg(long, default_value_t = 40)] fringe_top: u32,
     #[arg(long, default_value_t = 80)] fringe_side: u32,
+    #[arg(long, default_value_t = 2)] supersample: u32,
+    #[arg(long, default_value_t = 9)] jitter_samples: u32,
 }
 
 const MAGICCARPET: &str = r#"MAQAM_SESSION_V3
@@ -79,8 +81,9 @@ fn dark(c: (u8,u8,u8), t: f64) -> (u8,u8,u8) { mix(c, (0,0,0), t) }
 fn base(s: &str) -> String { s.trim().to_lowercase().trim_end_matches(|c: char| c.is_ascii_digit()).to_string() }
 fn maqam_color(s: &str) -> (u8,u8,u8) {
     match base(s).as_str() {
-        "bayati" => (92,170,128), "hijaz" => (176,92,58), "saba" => (126,88,164), "rast" => (178,145,68),
-        "ajam" => (180,152,84), "kurd" => (86,118,98), "nahawand" => (76,130,178), "zaba" => (150,96,144), _ => (120,110,90),
+        "bayati" => (92,170,128), "hijaz" => (176,92,58), "saba" => (126,88,164),
+        "rast" => (178,145,68), "ajam" => (180,152,84), "kurd" => (86,118,98),
+        "nahawand" => (76,130,178), "zaba" => (150,96,144), _ => (120,110,90),
     }
 }
 
@@ -95,61 +98,38 @@ fn hash(parts: &[String]) -> u64 {
 macro_rules! noise { ($($x:expr),* $(,)?) => {{ let v = vec![$($x.to_string()),*]; ((hash(&v) >> 11) as f64) / ((1_u64 << 53) as f64) }}; }
 
 fn thick_line(img: &mut RgbaImage, a: Pt, b: Pt, color: (u8,u8,u8), width: f64, alpha: u8) {
-    let d = b.sub(a);
-    let n = Pt::new(-d.y, d.x).norm();
-    let half = (width / 2.0).ceil() as i32;
-    for k in -half..=half {
-        let o = n.mul(k as f64);
-        draw_line_segment_mut(img, ((a.x + o.x) as f32, (a.y + o.y) as f32), ((b.x + o.x) as f32, (b.y + o.y) as f32), rgba(color, alpha));
-    }
+    let d = b.sub(a); let n = Pt::new(-d.y, d.x).norm(); let half = (width / 2.0).ceil() as i32;
+    for k in -half..=half { let o = n.mul(k as f64); draw_line_segment_mut(img, ((a.x + o.x) as f32, (a.y + o.y) as f32), ((b.x + o.x) as f32, (b.y + o.y) as f32), rgba(color, alpha)); }
 }
 fn thread(img: &mut RgbaImage, pts: &[Pt], color: (u8,u8,u8), width: f64, alpha: u8) {
-    for p in pts.windows(2) {
-        thick_line(img, p[0], p[1], dark(color, 0.75), width + 4.0, alpha);
-        thick_line(img, p[0], p[1], color, width, alpha);
-    }
+    for p in pts.windows(2) { thick_line(img, p[0], p[1], dark(color, 0.75), width + 4.0, alpha); thick_line(img, p[0], p[1], color, width, alpha); }
 }
 
 fn gosper(order: usize) -> Vec<Pt> {
     let mut s = "A".to_string();
     for _ in 0..order {
         let mut out = String::new();
-        for ch in s.chars() {
-            match ch { 'A' => out.push_str("A-B--B+A++AA+B-"), 'B' => out.push_str("+A-BB--B-A++A+B"), _ => out.push(ch) }
-        }
+        for ch in s.chars() { match ch { 'A' => out.push_str("A-B--B+A++AA+B-"), 'B' => out.push_str("+A-BB--B-A++A+B"), _ => out.push(ch) } }
         s = out;
     }
     let (mut x, mut y, mut heading): (f64, f64, f64) = (0.0, 0.0, 0.0);
     let mut pts = vec![Pt::new(x, y)];
     for ch in s.chars() {
-        match ch {
-            'A' | 'B' => { x += heading.cos(); y += heading.sin(); pts.push(Pt::new(x, y)); }
-            '+' => heading += PI / 3.0,
-            '-' => heading -= PI / 3.0,
-            _ => {}
-        }
+        match ch { 'A' | 'B' => { x += heading.cos(); y += heading.sin(); pts.push(Pt::new(x, y)); }, '+' => heading += PI / 3.0, '-' => heading -= PI / 3.0, _ => {} }
     }
     pts
 }
 fn fit(pts: &[Pt], rect: (f64,f64,f64,f64), margin: f64) -> Vec<Pt> {
-    let min_x = pts.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
-    let max_x = pts.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
-    let min_y = pts.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
-    let max_y = pts.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max);
-    let sx = (rect.2 - rect.0 - 2.0 * margin) / (max_x - min_x).max(1e-9);
-    let sy = (rect.3 - rect.1 - 2.0 * margin) / (max_y - min_y).max(1e-9);
-    let sc = sx.min(sy);
-    let ox = rect.0 + (rect.2 - rect.0 - (max_x - min_x) * sc) / 2.0 - min_x * sc;
-    let oy = rect.1 + (rect.3 - rect.1 - (max_y - min_y) * sc) / 2.0 - min_y * sc;
+    let min_x = pts.iter().map(|p| p.x).fold(f64::INFINITY, f64::min); let max_x = pts.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
+    let min_y = pts.iter().map(|p| p.y).fold(f64::INFINITY, f64::min); let max_y = pts.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max);
+    let sx = (rect.2 - rect.0 - 2.0 * margin) / (max_x - min_x).max(1e-9); let sy = (rect.3 - rect.1 - 2.0 * margin) / (max_y - min_y).max(1e-9); let sc = sx.min(sy);
+    let ox = rect.0 + (rect.2 - rect.0 - (max_x - min_x) * sc) / 2.0 - min_x * sc; let oy = rect.1 + (rect.3 - rect.1 - (max_y - min_y) * sc) / 2.0 - min_y * sc;
     pts.iter().map(|p| Pt::new(ox + p.x * sc, oy + p.y * sc)).collect()
 }
 
 fn parse_voice(s: &str) -> Voice {
-    let mut toks: Vec<&str> = s.split_whitespace().collect();
-    let mut rhythm = String::new();
-    if let Some(last) = toks.last().copied() {
-        if last.chars().all(|c| c.is_ascii_digit() || "xX._-".contains(c)) { rhythm = last.to_string(); toks.pop(); }
-    }
+    let mut toks: Vec<&str> = s.split_whitespace().collect(); let mut rhythm = String::new();
+    if let Some(last) = toks.last().copied() { if last.chars().all(|c| c.is_ascii_digit() || "xX._-".contains(c)) { rhythm = last.to_string(); toks.pop(); } }
     Voice { scale: toks.get(1).copied().unwrap_or("rast").to_lowercase(), rhythm }
 }
 fn parse(name: &str, text: &str) -> Score {
@@ -164,33 +144,27 @@ fn parse(name: &str, text: &str) -> Score {
             _ => {}
         }
     }
-    phrases.sort_by_key(|p| p.id); jumps.sort_by_key(|j| j.id);
-    Score { name: name.to_string(), phrases, jumps, scales }
+    phrases.sort_by_key(|p| p.id); jumps.sort_by_key(|j| j.id); Score { name: name.to_string(), phrases, jumps, scales }
 }
 fn default_ratios(scale: &str) -> Vec<String> {
-    match base(scale).as_str() {
-        "bayati" => "1/1 12/11 32/27 4/3 3/2", "hijaz" => "1/1 256/243 81/64 4/3 3/2",
-        "saba" => "1/1 13/12 32/27 5/4", "rast" => "1/1 9/8 27/22 4/3 3/2", _ => "",
-    }.split_whitespace().map(|s| s.to_string()).collect()
+    match base(scale).as_str() { "bayati" => "1/1 12/11 32/27 4/3 3/2", "hijaz" => "1/1 256/243 81/64 4/3 3/2", "saba" => "1/1 13/12 32/27 5/4", "rast" => "1/1 9/8 27/22 4/3 3/2", _ => "" }.split_whitespace().map(|s| s.to_string()).collect()
 }
 fn ratio_text(score: &Score, scale: &str) -> String {
-    let b = base(scale);
-    let ratios = score.scales.get(scale).or_else(|| score.scales.get(&b)).cloned().unwrap_or_else(|| default_ratios(scale));
-    ratios.into_iter().filter(|r| r != "1/1").collect::<Vec<_>>().join(" ")
+    let b = base(scale); let ratios = score.scales.get(scale).or_else(|| score.scales.get(&b)).cloned().unwrap_or_else(|| default_ratios(scale)); ratios.into_iter().filter(|r| r != "1/1").collect::<Vec<_>>().join(" ")
 }
 
 fn glyph(c: char) -> [u8; 7] {
     match c.to_ascii_uppercase() {
-        'A' => [14,17,17,31,17,17,17], 'B' => [30,17,17,30,17,17,30], 'C' => [14,17,16,16,16,17,14], 'D' => [30,17,17,17,17,17,30],
-        'E' => [31,16,16,30,16,16,31], 'F' => [31,16,16,30,16,16,16], 'G' => [14,17,16,23,17,17,14], 'H' => [17,17,17,31,17,17,17],
-        'I' => [14,4,4,4,4,4,14], 'J' => [7,2,2,2,18,18,12], 'K' => [17,18,20,24,20,18,17], 'L' => [16,16,16,16,16,16,31],
-        'M' => [17,27,21,21,17,17,17], 'N' => [17,25,21,19,17,17,17], 'O' => [14,17,17,17,17,17,14], 'P' => [30,17,17,30,16,16,16],
-        'Q' => [14,17,17,17,21,18,13], 'R' => [30,17,17,30,20,18,17], 'S' => [15,16,16,14,1,1,30], 'T' => [31,4,4,4,4,4,4],
-        'U' => [17,17,17,17,17,17,14], 'V' => [17,17,17,17,17,10,4], 'W' => [17,17,17,21,21,21,10], 'X' => [17,17,10,4,10,17,17],
-        'Y' => [17,17,10,4,4,4,4], 'Z' => [31,1,2,4,8,16,31], '0' => [14,17,19,21,25,17,14], '1' => [4,12,4,4,4,4,14],
-        '2' => [14,17,1,2,4,8,31], '3' => [30,1,1,14,1,1,30], '4' => [2,6,10,18,31,2,2], '5' => [31,16,16,30,1,1,30],
-        '6' => [14,16,16,30,17,17,14], '7' => [31,1,2,4,8,8,8], '8' => [14,17,17,14,17,17,14], '9' => [14,17,17,15,1,1,14],
-        '/' => [1,1,2,4,8,16,16], '-' => [0,0,0,31,0,0,0], _ => [0,0,0,0,0,0,0],
+        'A'=>[14,17,17,31,17,17,17],'B'=>[30,17,17,30,17,17,30],'C'=>[14,17,16,16,16,17,14],'D'=>[30,17,17,17,17,17,30],
+        'E'=>[31,16,16,30,16,16,31],'F'=>[31,16,16,30,16,16,16],'G'=>[14,17,16,23,17,17,14],'H'=>[17,17,17,31,17,17,17],
+        'I'=>[14,4,4,4,4,4,14],'J'=>[7,2,2,2,18,18,12],'K'=>[17,18,20,24,20,18,17],'L'=>[16,16,16,16,16,16,31],
+        'M'=>[17,27,21,21,17,17,17],'N'=>[17,25,21,19,17,17,17],'O'=>[14,17,17,17,17,17,14],'P'=>[30,17,17,30,16,16,16],
+        'Q'=>[14,17,17,17,21,18,13],'R'=>[30,17,17,30,20,18,17],'S'=>[15,16,16,14,1,1,30],'T'=>[31,4,4,4,4,4,4],
+        'U'=>[17,17,17,17,17,17,14],'V'=>[17,17,17,17,17,10,4],'W'=>[17,17,17,21,21,21,10],'X'=>[17,17,10,4,10,17,17],
+        'Y'=>[17,17,10,4,4,4,4],'Z'=>[31,1,2,4,8,16,31],'0'=>[14,17,19,21,25,17,14],'1'=>[4,12,4,4,4,4,14],
+        '2'=>[14,17,1,2,4,8,31],'3'=>[30,1,1,14,1,1,30],'4'=>[2,6,10,18,31,2,2],'5'=>[31,16,16,30,1,1,30],
+        '6'=>[14,16,16,30,17,17,14],'7'=>[31,1,2,4,8,8,8],'8'=>[14,17,17,14,17,17,14],'9'=>[14,17,17,15,1,1,14],
+        '/'=>[1,1,2,4,8,16,16],'-'=>[0,0,0,31,0,0,0], _ => [0,0,0,0,0,0,0]
     }
 }
 fn draw_text(img: &mut RgbaImage, text: &str, x: i32, y: i32, scale: i32, color: Rgba<u8>) {
@@ -208,32 +182,10 @@ fn draw_label_box(img: &mut RgbaImage, x: i32, y: i32, scale: &str, ratio: &str)
 #[derive(Clone)]
 struct Group { phrase_id: i32, start: f64, end: f64, angles: Vec<f64>, kinds: Vec<bool> }
 fn groups(score: &Score) -> Vec<Group> {
-    let mut phrase_ticks = Vec::new();
-    let mut total_ticks = 0_usize;
-    for p in &score.phrases {
-        let rhythm = p.voices.iter().rev().find(|v| !v.rhythm.is_empty()).map(|v| v.rhythm.as_str()).unwrap_or("4");
-        let ticks = rhythm.chars().filter_map(|c| c.to_digit(10)).map(|d| d as usize).sum::<usize>().max(1);
-        phrase_ticks.push((p, rhythm.to_string(), ticks));
-        total_ticks += ticks;
-    }
-    total_ticks = total_ticks.max(1);
-    let gap = 10.0_f64.to_radians();
-    let step = (2.0 * PI - score.phrases.len() as f64 * gap) / total_ticks as f64;
-    let mut a = -PI / 2.0;
-    let mut out = Vec::new();
-    for (p, rhythm, _ticks) in phrase_ticks {
-        let start = a;
-        let mut angles = Vec::new();
-        let mut kinds = Vec::new();
-        for ch in rhythm.chars().filter_map(|c| c.to_digit(10)) {
-            angles.push(a + step * 0.5); kinds.push(true); a += step;
-            for _ in 1..ch { angles.push(a + step * 0.5); kinds.push(false); a += step; }
-        }
-        if angles.is_empty() { angles.push(a + step * 0.5); kinds.push(true); a += step; }
-        let end = a;
-        out.push(Group { phrase_id: p.id, start, end, angles, kinds });
-        a += gap;
-    }
+    let mut phrase_ticks = Vec::new(); let mut total_ticks = 0_usize;
+    for p in &score.phrases { let rhythm = p.voices.iter().rev().find(|v| !v.rhythm.is_empty()).map(|v| v.rhythm.as_str()).unwrap_or("4"); let ticks = rhythm.chars().filter_map(|c| c.to_digit(10)).map(|d| d as usize).sum::<usize>().max(1); phrase_ticks.push((p, rhythm.to_string(), ticks)); total_ticks += ticks; }
+    total_ticks = total_ticks.max(1); let gap = 10.0_f64.to_radians(); let step = (2.0 * PI - score.phrases.len() as f64 * gap) / total_ticks as f64; let mut a = -PI / 2.0; let mut out = Vec::new();
+    for (p, rhythm, _ticks) in phrase_ticks { let start = a; let mut angles = Vec::new(); let mut kinds = Vec::new(); for ch in rhythm.chars().filter_map(|c| c.to_digit(10)) { angles.push(a + step * 0.5); kinds.push(true); a += step; for _ in 1..ch { angles.push(a + step * 0.5); kinds.push(false); a += step; } } if angles.is_empty() { angles.push(a + step * 0.5); kinds.push(true); a += step; } let end = a; out.push(Group { phrase_id: p.id, start, end, angles, kinds }); a += gap; }
     out
 }
 fn draw_arc(img: &mut RgbaImage, cx: f64, cy: f64, rr: f64, a0: f64, a1: f64, color: (u8,u8,u8), width: f64) { let mut pts = Vec::new(); for i in 0..128 { let a = a0 + (a1 - a0) * (i as f64) / 127.0; pts.push(Pt::new(cx + rr * a.cos(), cy + rr * a.sin())); } thread(img, &pts, color, width, 255); }
@@ -257,8 +209,31 @@ fn render(score: &Score, w: u32, h: u32) -> RgbaImage {
     draw_jumps(&mut img, score, cx, cy, rr, &gs); img
 }
 
-fn carpet(design: &RgbaImage, kw: u32, kh: u32, kp: u32) -> RgbaImage { let mut out = RgbaImage::from_pixel(kw * kp, kh * kp, rgba((12,11,10),255)); for y in 0..kh { for x in 0..kw { let sx = x * (design.width() - 1) / (kw - 1).max(1); let sy = y * (design.height() - 1) / (kh - 1).max(1); let mut p = *design.get_pixel(sx, sy); let v = (noise!("knot", x, y) - 0.5) * 18.0; p[0] = (p[0] as f64 + v).round().clamp(0.0, 255.0) as u8; p[1] = (p[1] as f64 + v).round().clamp(0.0, 255.0) as u8; p[2] = (p[2] as f64 + v).round().clamp(0.0, 255.0) as u8; let cx = (x*kp + kp/2) as i32; let cy = (y*kp + kp/2) as i32; let px = kp as i32; let poly = [Point::new(cx, cy - px/2), Point::new(cx + px/2, cy), Point::new(cx, cy + px/2), Point::new(cx - px/2, cy)]; draw_polygon_mut(&mut out, &poly, p); } } out }
-fn add_fringes(rug: &RgbaImage, top: u32, side: u32) -> RgbaImage { let mut out = RgbaImage::from_pixel(rug.width() + side*2, rug.height() + top*2, rgba((9,8,7),255)); image::imageops::overlay(&mut out, rug, side.into(), top.into()); for x in (side+8..side+rug.width()-8).step_by(6) { let i = x - side; let len = (24.0 + noise!("fringe", i) * 32.0) as i32; let bend = ((noise!("fringe-b", i) - 0.5) * 28.0) as i32; draw_line_segment_mut(&mut out, (x as f32, top as f32), ((x as i32 + bend) as f32, (top as i32 - len) as f32), rgba((116,100,76),210)); draw_line_segment_mut(&mut out, (x as f32, (top + rug.height()) as f32), ((x as i32 - bend) as f32, (top as i32 + rug.height() as i32 + len) as f32), rgba((116,100,76),210)); } out }
-
-fn build(name: &str, text: &str, out: &PathBuf, args: &Args) -> Result<()> { let score = parse(name, text); let design = render(&score, args.w, args.h); let rug = carpet(&design, args.knots_w, args.knots_h, args.knot_px); let img = add_fringes(&rug, args.fringe_top, args.fringe_side); img.save(out)?; Ok(()) }
+fn sample_bilinear(img: &RgbaImage, fx: f64, fy: f64) -> Rgba<u8> {
+    let w = img.width() as i32; let h = img.height() as i32; let x = fx.clamp(0.0, (w - 1) as f64); let y = fy.clamp(0.0, (h - 1) as f64);
+    let x0 = x.floor() as i32; let y0 = y.floor() as i32; let x1 = (x0 + 1).min(w - 1); let y1 = (y0 + 1).min(h - 1); let tx = x - x0 as f64; let ty = y - y0 as f64;
+    let p00 = img.get_pixel(x0 as u32, y0 as u32).0; let p10 = img.get_pixel(x1 as u32, y0 as u32).0; let p01 = img.get_pixel(x0 as u32, y1 as u32).0; let p11 = img.get_pixel(x1 as u32, y1 as u32).0;
+    let mut out = [0_u8; 4];
+    for i in 0..4 { let a = (1.0 - tx) * p00[i] as f64 + tx * p10[i] as f64; let b = (1.0 - tx) * p01[i] as f64 + tx * p11[i] as f64; out[i] = ((1.0 - ty) * a + ty * b).round().clamp(0.0, 255.0) as u8; }
+    Rgba(out)
+}
+fn jittered_sample(img: &RgbaImage, fx: f64, fy: f64, samples: u32, name: &str, x: u32, y: u32) -> Rgba<u8> {
+    let n = samples.max(1); let mut acc = [0.0_f64; 4];
+    for i in 0..n { let jx = (noise!(name, "jx", x, y, i) - 0.5) * 1.7; let jy = (noise!(name, "jy", x, y, i) - 0.5) * 1.7; let p = sample_bilinear(img, fx + jx, fy + jy).0; for k in 0..4 { acc[k] += p[k] as f64; } }
+    Rgba([(acc[0]/n as f64).round().clamp(0.0,255.0) as u8, (acc[1]/n as f64).round().clamp(0.0,255.0) as u8, (acc[2]/n as f64).round().clamp(0.0,255.0) as u8, (acc[3]/n as f64).round().clamp(0.0,255.0) as u8])
+}
+fn loom_tint(mut p: Rgba<u8>, x: u32, y: u32) -> Rgba<u8> { let warp = if x % 2 == 0 { 1.06 } else { 0.92 }; let weft = if y % 2 == 0 { 0.96 } else { 1.04 }; let diag = if (x + y) % 4 == 0 { 1.03 } else { 0.98 }; let m = warp * weft * diag; for c in 0..3 { p[c] = ((p[c] as f64) * m).round().clamp(0.0,255.0) as u8; } p }
+fn loom_overlay(img: &mut RgbaImage) { let w = img.width(); let h = img.height(); for y in (0..h).step_by(4) { let a = if y % 8 == 0 { 24 } else { 12 }; draw_line_segment_mut(img, (0.0, y as f32), (w as f32, y as f32), rgba((28,24,18), a)); } for x in (0..w).step_by(4) { let a = if x % 8 == 0 { 20 } else { 9 }; draw_line_segment_mut(img, (x as f32, 0.0), (x as f32, h as f32), rgba((16,16,16), a)); } }
+fn carpet(design: &RgbaImage, kw: u32, kh: u32, kp: u32, samples: u32, name: &str) -> RgbaImage {
+    let mut out = RgbaImage::from_pixel(kw * kp, kh * kp, rgba((12,11,10),255));
+    for y in 0..kh { for x in 0..kw { let fx = ((x as f64) + 0.5) * design.width() as f64 / kw as f64 - 0.5; let fy = ((y as f64) + 0.5) * design.height() as f64 / kh as f64 - 0.5; let mut p = jittered_sample(design, fx, fy, samples, name, x, y); let v = (noise!("knot", x, y) - 0.5) * 14.0; for c in 0..3 { p[c] = (p[c] as f64 + v).round().clamp(0.0,255.0) as u8; } p = loom_tint(p, x, y); let cx = (x*kp + kp/2) as i32; let cy = (y*kp + kp/2) as i32; let px = kp as i32; let poly = [Point::new(cx, cy - px/2), Point::new(cx + px/2, cy), Point::new(cx, cy + px/2), Point::new(cx - px/2, cy)]; draw_polygon_mut(&mut out, &poly, p); } }
+    loom_overlay(&mut out); out
+}
+fn add_fringes(rug: &RgbaImage, top: u32, side: u32) -> RgbaImage {
+    let mut out = RgbaImage::from_pixel(rug.width() + side*2, rug.height() + top*2, rgba((9,8,7),255)); image::imageops::overlay(&mut out, rug, side.into(), top.into()); let fc = rgba((116,100,76),210);
+    for x in (side+8..side+rug.width()-8).step_by(6) { let i = x - side; let len = (24.0 + noise!("fringe-tb", i) * 32.0) as i32; let bend = ((noise!("fringe-bend-tb", i) - 0.5) * 28.0) as i32; draw_line_segment_mut(&mut out, (x as f32, top as f32), ((x as i32 + bend) as f32, (top as i32 - len) as f32), fc); draw_line_segment_mut(&mut out, (x as f32, (top + rug.height()) as f32), ((x as i32 - bend) as f32, (top as i32 + rug.height() as i32 + len) as f32), fc); }
+    for y in (top+8..top+rug.height()-8).step_by(6) { let i = y - top; let len = (18.0 + noise!("fringe-lr", i) * 26.0) as i32; let bend = ((noise!("fringe-bend-lr", i) - 0.5) * 24.0) as i32; draw_line_segment_mut(&mut out, (side as f32, y as f32), ((side as i32 - len) as f32, (y as i32 + bend) as f32), fc); draw_line_segment_mut(&mut out, ((side + rug.width()) as f32, y as f32), ((side as i32 + rug.width() as i32 + len) as f32, (y as i32 - bend) as f32), fc); }
+    out
+}
+fn build(name: &str, text: &str, out: &PathBuf, args: &Args) -> Result<()> { let score = parse(name, text); let ss = args.supersample.max(1); let design = render(&score, args.w * ss, args.h * ss); let rug = carpet(&design, args.knots_w, args.knots_h, args.knot_px, args.jitter_samples, &score.name); let img = add_fringes(&rug, args.fringe_top, args.fringe_side); img.save(out)?; Ok(()) }
 fn main() -> Result<()> { let args = Args::parse(); if args.all || args.mq.is_none() { build("magiccarpet.mq", MAGICCARPET, &PathBuf::from("magiccarpet_rust.png"), &args)?; build("growl.mq", GROWL, &PathBuf::from("growl_rust.png"), &args)?; } else { let text = fs::read_to_string(args.mq.as_ref().unwrap())?; build(&args.name, &text, args.out.as_ref().unwrap(), &args)?; } Ok(()) }
