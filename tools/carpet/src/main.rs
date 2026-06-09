@@ -69,7 +69,7 @@ struct Phrase { id: i32, voices: Vec<Voice> }
 struct Jump { id: i32, target: i32 }
 struct Score { name: String, phrases: Vec<Phrase>, jumps: Vec<Jump>, scales: HashMap<String, Vec<String>> }
 
-fn rgba(c: (u8, u8, u8), a: u8) -> Rgba<u8> { Rgba([c.0, c.1, c.2, a]) }
+fn rgba(c: (u8,u8,u8), a: u8) -> Rgba<u8> { Rgba([c.0,c.1,c.2,a]) }
 fn mix(a: (u8,u8,u8), b: (u8,u8,u8), t: f64) -> (u8,u8,u8) {
     let f = |x: u8, y: u8| ((1.0 - t) * x as f64 + t * y as f64).round().clamp(0.0, 255.0) as u8;
     (f(a.0,b.0), f(a.1,b.1), f(a.2,b.2))
@@ -79,9 +79,8 @@ fn dark(c: (u8,u8,u8), t: f64) -> (u8,u8,u8) { mix(c, (0,0,0), t) }
 fn base(s: &str) -> String { s.trim().to_lowercase().trim_end_matches(|c: char| c.is_ascii_digit()).to_string() }
 fn maqam_color(s: &str) -> (u8,u8,u8) {
     match base(s).as_str() {
-        "bayati" => (92,170,128), "hijaz" => (176,92,58), "saba" => (126,88,164),
-        "rast" => (178,145,68), "ajam" => (180,152,84), "kurd" => (86,118,98),
-        "nahawand" => (76,130,178), "zaba" => (150,96,144), _ => (120,110,90),
+        "bayati" => (92,170,128), "hijaz" => (176,92,58), "saba" => (126,88,164), "rast" => (178,145,68),
+        "ajam" => (180,152,84), "kurd" => (86,118,98), "nahawand" => (76,130,178), "zaba" => (150,96,144), _ => (120,110,90),
     }
 }
 
@@ -106,7 +105,7 @@ fn thick_line(img: &mut RgbaImage, a: Pt, b: Pt, color: (u8,u8,u8), width: f64, 
 }
 fn thread(img: &mut RgbaImage, pts: &[Pt], color: (u8,u8,u8), width: f64, alpha: u8) {
     for p in pts.windows(2) {
-        thick_line(img, p[0], p[1], dark(color, 0.7), width + 4.0, alpha);
+        thick_line(img, p[0], p[1], dark(color, 0.75), width + 4.0, alpha);
         thick_line(img, p[0], p[1], color, width, alpha);
     }
 }
@@ -115,7 +114,9 @@ fn gosper(order: usize) -> Vec<Pt> {
     let mut s = "A".to_string();
     for _ in 0..order {
         let mut out = String::new();
-        for ch in s.chars() { match ch { 'A' => out.push_str("A-B--B+A++AA+B-"), 'B' => out.push_str("+A-BB--B-A++A+B"), _ => out.push(ch) } }
+        for ch in s.chars() {
+            match ch { 'A' => out.push_str("A-B--B+A++AA+B-"), 'B' => out.push_str("+A-BB--B-A++A+B"), _ => out.push(ch) }
+        }
         s = out;
     }
     let (mut x, mut y, mut heading): (f64, f64, f64) = (0.0, 0.0, 0.0);
@@ -207,31 +208,47 @@ fn draw_label_box(img: &mut RgbaImage, x: i32, y: i32, scale: &str, ratio: &str)
 #[derive(Clone)]
 struct Group { phrase_id: i32, start: f64, end: f64, angles: Vec<f64>, kinds: Vec<bool> }
 fn groups(score: &Score) -> Vec<Group> {
-    let total_ticks: usize = score.phrases.iter().map(|p| { let rhythm = p.voices.iter().rev().find(|v| !v.rhythm.is_empty()).map(|v| v.rhythm.as_str()).unwrap_or("4"); rhythm.chars().filter_map(|c| c.to_digit(10)).map(|d| d as usize).sum::<usize>().max(1) }).sum::<usize>().max(1);
-    let gap = 10.0_f64.to_radians(); let step = (2.0 * PI - score.phrases.len() as f64 * gap) / total_ticks as f64; let mut a = -PI / 2.0; let mut out = Vec::new();
-    for p in &score.phrases { let rhythm = p.voices.iter().rev().find(|v| !v.rhythm.is_empty()).map(|v| v.rhythm.as_str()).unwrap_or("4"); let mut angles = Vec::new(); let mut kinds = Vec::new(); let start = a; for ch in rhythm.chars().filter_map(|c| c.to_digit(10)) { angles.push(a); kinds.push(true); a += step; for _ in 1..ch { angles.push(a); kinds.push(false); a += step; } } if angles.is_empty() { angles.push(a); kinds.push(true); a += step; } let end = *angles.last().unwrap_or(&start); out.push(Group { phrase_id: p.id, start, end, angles, kinds }); a += gap; }
+    let mut phrase_ticks = Vec::new();
+    let mut total_ticks = 0_usize;
+    for p in &score.phrases {
+        let rhythm = p.voices.iter().rev().find(|v| !v.rhythm.is_empty()).map(|v| v.rhythm.as_str()).unwrap_or("4");
+        let ticks = rhythm.chars().filter_map(|c| c.to_digit(10)).map(|d| d as usize).sum::<usize>().max(1);
+        phrase_ticks.push((p, rhythm.to_string(), ticks));
+        total_ticks += ticks;
+    }
+    total_ticks = total_ticks.max(1);
+    let gap = 10.0_f64.to_radians();
+    let step = (2.0 * PI - score.phrases.len() as f64 * gap) / total_ticks as f64;
+    let mut a = -PI / 2.0;
+    let mut out = Vec::new();
+    for (p, rhythm, _ticks) in phrase_ticks {
+        let start = a;
+        let mut angles = Vec::new();
+        let mut kinds = Vec::new();
+        for ch in rhythm.chars().filter_map(|c| c.to_digit(10)) {
+            angles.push(a + step * 0.5); kinds.push(true); a += step;
+            for _ in 1..ch { angles.push(a + step * 0.5); kinds.push(false); a += step; }
+        }
+        if angles.is_empty() { angles.push(a + step * 0.5); kinds.push(true); a += step; }
+        let end = a;
+        out.push(Group { phrase_id: p.id, start, end, angles, kinds });
+        a += gap;
+    }
     out
 }
-fn draw_arc(img: &mut RgbaImage, cx: f64, cy: f64, rr: f64, a0: f64, a1: f64, color: (u8,u8,u8), width: f64) { let mut pts = Vec::new(); for i in 0..96 { let a = a0 + (a1 - a0) * (i as f64) / 95.0; pts.push(Pt::new(cx + rr * a.cos(), cy + rr * a.sin())); } thread(img, &pts, color, width, 255); }
+fn draw_arc(img: &mut RgbaImage, cx: f64, cy: f64, rr: f64, a0: f64, a1: f64, color: (u8,u8,u8), width: f64) { let mut pts = Vec::new(); for i in 0..128 { let a = a0 + (a1 - a0) * (i as f64) / 127.0; pts.push(Pt::new(cx + rr * a.cos(), cy + rr * a.sin())); } thread(img, &pts, color, width, 255); }
 fn draw_chevrons(img: &mut RgbaImage, pts: &[Pt], color: (u8,u8,u8), width: f64) { let mut dist = 0.0; for p in pts.windows(2) { let seg = p[1].sub(p[0]); let len = seg.len(); dist += len; if dist > 38.0 { dist = 0.0; let t = seg.norm(); let n = Pt::new(-t.y, t.x); let mid = p[0].add(p[1]).mul(0.5); thick_line(img, mid.sub(t.mul(9.0)).add(n.mul(7.0)), mid.add(t.mul(9.0)), color, width, 255); thick_line(img, mid.sub(t.mul(9.0)).sub(n.mul(7.0)), mid.add(t.mul(9.0)), color, width, 255); } } }
 fn draw_jumps(img: &mut RgbaImage, score: &Score, cx: f64, cy: f64, rr: f64, gs: &[Group]) { for j in &score.jumps { let src = gs.iter().filter(|g| g.phrase_id < j.id).last().or_else(|| gs.last()); let dst = gs.iter().find(|g| g.phrase_id >= j.target).or_else(|| gs.first()); let (Some(src), Some(dst)) = (src, dst) else { continue; }; let a0 = src.end; let a1 = dst.start; let p0 = Pt::new(cx + (rr - 20.0) * a0.cos(), cy + (rr - 20.0) * a0.sin()); let p3 = Pt::new(cx + (rr - 20.0) * a1.cos(), cy + (rr - 20.0) * a1.sin()); let c1 = Pt::new(cx + (rr * 0.25) * a0.cos(), cy + (rr * 0.25) * a0.sin()); let c2 = Pt::new(cx + (rr * 0.25) * a1.cos(), cy + (rr * 0.25) * a1.sin()); let mut pts = Vec::new(); for i in 0..140 { let t = i as f64 / 139.0; let u = 1.0 - t; pts.push(p0.mul(u*u*u).add(c1.mul(3.0*u*u*t)).add(c2.mul(3.0*u*t*t)).add(p3.mul(t*t*t))); } thread(img, &pts, (8,8,8), 10.0, 190); draw_chevrons(img, &pts, (245,245,245), 3.0); } }
 
-fn draw_micro_weave(img: &mut RgbaImage, w: u32, h: u32, name: &str) {
-    for y in (0..h).step_by(9) { let c = if y % 18 == 0 { (24,20,18) } else { (14,18,18) }; draw_line_segment_mut(img, (0.0, y as f32), (w as f32, y as f32), rgba(c, 80)); }
-    for x in (0..w).step_by(13) { let c = if x % 26 == 0 { (20,18,24) } else { (15,17,14) }; draw_line_segment_mut(img, (x as f32, 0.0), (x as f32, h as f32), rgba(c, 45)); }
-    for _i in 0..700 { let x = (noise!(name, "speckx", _i) * w as f64) as i32; let y = (noise!(name, "specky", _i) * h as f64) as i32; let c = if noise!(name, "speckc", _i) > 0.5 { (43,34,23) } else { (18,28,24) }; draw_filled_circle_mut(img, (x,y), 1, rgba(c, 150)); }
-}
-fn draw_sector_tendrils(img: &mut RgbaImage, cx: f64, cy: f64, rr: f64, g: &Group, scale: &str, idx: usize) {
-    let col = dark(maqam_color(scale), 0.25); let span = (g.end - g.start).max(0.01);
-    for t in 0..7 { let a = g.start + span * (t as f64 + 0.5) / 7.0; let mut pts = Vec::new(); for k in 0..10 { let r = rr + 62.0 + k as f64 * 46.0; let wig = (noise!("tendril", idx, t, k) - 0.5) * 0.035; let aa = a + wig; pts.push(Pt::new(cx + r * aa.cos(), cy + r * aa.sin())); } thread(img, &pts, col, 3.0, 120); }
-}
+fn draw_micro_weave(img: &mut RgbaImage, w: u32, h: u32, name: &str) { for y in (0..h).step_by(9) { let c = if y % 18 == 0 { (24,20,18) } else { (14,18,18) }; draw_line_segment_mut(img, (0.0, y as f32), (w as f32, y as f32), rgba(c, 80)); } for x in (0..w).step_by(13) { let c = if x % 26 == 0 { (20,18,24) } else { (15,17,14) }; draw_line_segment_mut(img, (x as f32, 0.0), (x as f32, h as f32), rgba(c, 45)); } for i in 0..700 { let x = (noise!(name, "speckx", i) * w as f64) as i32; let y = (noise!(name, "specky", i) * h as f64) as i32; let c = if noise!(name, "speckc", i) > 0.5 { (43,34,23) } else { (18,28,24) }; draw_filled_circle_mut(img, (x,y), 1, rgba(c, 150)); } }
+fn draw_sector_tendrils(img: &mut RgbaImage, cx: f64, cy: f64, rr: f64, g: &Group, scale: &str, idx: usize) { let col = dark(maqam_color(scale), 0.25); let span = (g.end - g.start).max(0.01); for t in 0..7 { let a = g.start + span * (t as f64 + 0.5) / 7.0; let mut pts = Vec::new(); for k in 0..10 { let r = rr + 62.0 + k as f64 * 46.0; let wig = (noise!("tendril", idx, t, k) - 0.5) * 0.035; let aa = a + wig; pts.push(Pt::new(cx + r * aa.cos(), cy + r * aa.sin())); } thread(img, &pts, col, 3.0, 120); } }
 
 fn render(score: &Score, w: u32, h: u32) -> RgbaImage {
     let mut img = RgbaImage::from_pixel(w, h, rgba((8,10,12),255));
     for y in (0..h).step_by(5) { for x in (0..w).step_by(5) { let v = noise!(&score.name, "field", x / 5, y / 5); let c = if v > 0.70 { (25,22,20) } else if v > 0.45 { (18,23,22) } else { (16,15,14) }; img.put_pixel(x, y, rgba(c,255)); } }
     draw_micro_weave(&mut img, w, h, &score.name);
     let rect = (w as f64 * 0.18, h as f64 * 0.20, w as f64 * 0.82, h as f64 * 0.80); let cx = (rect.0 + rect.2) / 2.0; let cy = (rect.1 + rect.3) / 2.0; let rr = ((rect.2 - rect.0).min(rect.3 - rect.1)) * 0.60;
-    let center = fit(&gosper(3), rect, 28.0); thread(&mut img, &center, (8,8,8), 12.0, 255); draw_chevrons(&mut img, &center, (90,72,42), 2.0);
+    let gosper_pts = fit(&gosper(4), rect, 20.0); thread(&mut img, &gosper_pts, (5,5,5), 7.0, 255); thread(&mut img, &gosper_pts, (18,14,10), 3.0, 230);
     let gs = groups(score); let phrase_map: HashMap<i32, &Phrase> = score.phrases.iter().map(|p| (p.id, p)).collect();
     for (gi, g) in gs.iter().enumerate() { let Some(p) = phrase_map.get(&g.phrase_id) else { continue; }; let scale = p.voices.first().map(|v| v.scale.as_str()).unwrap_or("rast"); let col = maqam_color(scale); draw_sector_tendrils(&mut img, cx, cy, rr, g, scale, gi); draw_arc(&mut img, cx, cy, rr, g.start, g.end, (96,76,44), 18.0); draw_arc(&mut img, cx, cy, rr - 18.0, g.start, g.end, (26,21,16), 4.0);
         for ring in 0..7 { let r2 = rr + 58.0 + ring as f64 * 50.0; let count = 5 + ring * 2; for k in 0..count { let a = g.start + (g.end - g.start) * (k as f64 + 0.5) / count as f64; let jitter = (noise!("motif", &score.name, gi, ring, k) - 0.5) * 18.0; let x = cx + (r2 + jitter) * a.cos(); let y = cy + (r2 + jitter) * a.sin(); let s = if ring % 2 == 0 { 7 } else { 5 }; draw_filled_circle_mut(&mut img, (x as i32, y as i32), s + 5, rgba(dark(col,0.55),180)); draw_filled_circle_mut(&mut img, (x as i32, y as i32), s, rgba(light(col,0.10),215)); } }
@@ -240,11 +257,7 @@ fn render(score: &Score, w: u32, h: u32) -> RgbaImage {
     draw_jumps(&mut img, score, cx, cy, rr, &gs); img
 }
 
-fn carpet(design: &RgbaImage, kw: u32, kh: u32, kp: u32) -> RgbaImage {
-    let mut out = RgbaImage::from_pixel(kw * kp, kh * kp, rgba((12,11,10),255));
-    for y in 0..kh { for x in 0..kw { let sx = x * (design.width() - 1) / (kw - 1).max(1); let sy = y * (design.height() - 1) / (kh - 1).max(1); let mut p = *design.get_pixel(sx, sy); let v = (noise!("knot", x, y) - 0.5) * 18.0; p[0] = (p[0] as f64 + v).round().clamp(0.0, 255.0) as u8; p[1] = (p[1] as f64 + v).round().clamp(0.0, 255.0) as u8; p[2] = (p[2] as f64 + v).round().clamp(0.0, 255.0) as u8; let cx = (x*kp + kp/2) as i32; let cy = (y*kp + kp/2) as i32; let px = kp as i32; let poly = [Point::new(cx, cy - px/2), Point::new(cx + px/2, cy), Point::new(cx, cy + px/2), Point::new(cx - px/2, cy)]; draw_polygon_mut(&mut out, &poly, p); } }
-    out
-}
+fn carpet(design: &RgbaImage, kw: u32, kh: u32, kp: u32) -> RgbaImage { let mut out = RgbaImage::from_pixel(kw * kp, kh * kp, rgba((12,11,10),255)); for y in 0..kh { for x in 0..kw { let sx = x * (design.width() - 1) / (kw - 1).max(1); let sy = y * (design.height() - 1) / (kh - 1).max(1); let mut p = *design.get_pixel(sx, sy); let v = (noise!("knot", x, y) - 0.5) * 18.0; p[0] = (p[0] as f64 + v).round().clamp(0.0, 255.0) as u8; p[1] = (p[1] as f64 + v).round().clamp(0.0, 255.0) as u8; p[2] = (p[2] as f64 + v).round().clamp(0.0, 255.0) as u8; let cx = (x*kp + kp/2) as i32; let cy = (y*kp + kp/2) as i32; let px = kp as i32; let poly = [Point::new(cx, cy - px/2), Point::new(cx + px/2, cy), Point::new(cx, cy + px/2), Point::new(cx - px/2, cy)]; draw_polygon_mut(&mut out, &poly, p); } } out }
 fn add_fringes(rug: &RgbaImage, top: u32, side: u32) -> RgbaImage { let mut out = RgbaImage::from_pixel(rug.width() + side*2, rug.height() + top*2, rgba((9,8,7),255)); image::imageops::overlay(&mut out, rug, side.into(), top.into()); for x in (side+8..side+rug.width()-8).step_by(6) { let i = x - side; let len = (24.0 + noise!("fringe", i) * 32.0) as i32; let bend = ((noise!("fringe-b", i) - 0.5) * 28.0) as i32; draw_line_segment_mut(&mut out, (x as f32, top as f32), ((x as i32 + bend) as f32, (top as i32 - len) as f32), rgba((116,100,76),210)); draw_line_segment_mut(&mut out, (x as f32, (top + rug.height()) as f32), ((x as i32 - bend) as f32, (top as i32 + rug.height() as i32 + len) as f32), rgba((116,100,76),210)); } out }
 
 fn build(name: &str, text: &str, out: &PathBuf, args: &Args) -> Result<()> { let score = parse(name, text); let design = render(&score, args.w, args.h); let rug = carpet(&design, args.knots_w, args.knots_h, args.knot_px); let img = add_fringes(&rug, args.fringe_top, args.fringe_side); img.save(out)?; Ok(()) }
