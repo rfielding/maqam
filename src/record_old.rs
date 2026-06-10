@@ -28,23 +28,10 @@ fn ffmpeg_status(cmd: &mut Command) -> anyhow::Result<bool> {
 }
 
 #[derive(Clone, Copy)]
-struct RenderOccurrence {
-    phrase_idx: usize,
-    snap_idx: usize,
-    bpm: f64,
-    sustain: f64,
-    arrived_via_jump: Option<usize>,
-}
+struct RenderOccurrence { phrase_idx: usize, snap_idx: usize, bpm: f64, sustain: f64, arrived_via_jump: Option<usize> }
 
 #[derive(Clone, Copy)]
-struct RenderEntry {
-    phrase_idx: usize,
-    play_num: usize,
-    snap_idx: usize,
-    bpm: f64,
-    sustain: f64,
-    arrived_via_jump: Option<usize>,
-}
+struct RenderEntry { phrase_idx: usize, play_num: usize, snap_idx: usize, bpm: f64, sustain: f64, arrived_via_jump: Option<usize> }
 
 fn build_carpet_tick_highlights(
     full_seq: &[RenderEntry],
@@ -53,15 +40,8 @@ fn build_carpet_tick_highlights(
 ) -> Vec<String> {
     let score = crate::carpet::WeaveScore::from_phrases(phrases);
     let layout = crate::carpet::score_border_layout(&score);
-    let positions: HashMap<(usize, usize), crate::carpet::BorderTickLayout> = layout
-        .into_iter()
-        .map(|tick| ((tick.phrase_id, tick.score_tick), tick))
-        .collect();
-    let tick_counts: HashMap<usize, usize> = score
-        .phrases
-        .iter()
-        .map(|phrase| (phrase.phrase_id, phrase.tick_count))
-        .collect();
+    let positions: HashMap<(usize, usize), crate::carpet::BorderTickLayout> = layout.into_iter().map(|tick| ((tick.phrase_id, tick.score_tick), tick)).collect();
+    let tick_counts: HashMap<usize, usize> = score.phrases.iter().map(|phrase| (phrase.phrase_id, phrase.tick_count)).collect();
     let jump_cells = crate::carpet::jump_link_cells(phrases);
     let mut parts = Vec::new();
     let mut sample = 0usize;
@@ -92,9 +72,7 @@ fn build_carpet_tick_highlights(
                         let size = cell.size;
                         let x = cell.x.round() as i32 - size / 2;
                         let y = cell.y.round() as i32 - size / 2;
-                        parts.push(format!(
-                            "drawbox=x={x}:y={y}:w={size}:h={size}:color=0xFFFFFF@0.88:t=fill:enable='between(t,{start:.6},{end:.6})'"
-                        ));
+                        parts.push(format!("drawbox=x={x}:y={y}:w={size}:h={size}:color=0xFFFFFF@0.88:t=fill:enable='between(t,{start:.6},{end:.6})'"));
                     }
                 }
             }
@@ -104,11 +82,7 @@ fn build_carpet_tick_highlights(
     parts
 }
 
-fn expand_one_cycle(
-    phrases: &[Phrase],
-    start_bpm: f64,
-    start_sustain: f64,
-) -> (Vec<RenderOccurrence>, Vec<HashMap<usize, (usize, usize)>>) {
+fn expand_one_cycle(phrases: &[Phrase], start_bpm: f64, start_sustain: f64) -> (Vec<RenderOccurrence>, Vec<HashMap<usize, (usize, usize)>>) {
     let mut out = Vec::new();
     let mut snapshots = Vec::new();
     let mut cur = 0usize;
@@ -126,17 +100,8 @@ fn expand_one_cycle(
             let remaining = jc.entry(pid).or_insert(js.times.saturating_sub(1));
             if *remaining > 0 {
                 *remaining -= 1;
-                let target = phrases
-                    .iter()
-                    .position(|p| p.id == js.target_id)
-                    .unwrap_or(0)
-                    .min(phrases.len().saturating_sub(1));
-                let ids: Vec<usize> = if target < cur {
-                    phrases[target..cur]
-                        .iter()
-                        .filter_map(|p| p.jump.as_ref().map(|_| p.id))
-                        .collect()
-                } else { vec![] };
+                let target = phrases.iter().position(|p| p.id == js.target_id).unwrap_or(0).min(phrases.len().saturating_sub(1));
+                let ids: Vec<usize> = if target < cur { phrases[target..cur].iter().filter_map(|p| p.jump.as_ref().map(|_| p.id)).collect() } else { vec![] };
                 for id in ids { jc.remove(&id); }
                 cur = target;
                 arrived_via_jump = Some(pid);
@@ -147,23 +112,17 @@ fn expand_one_cycle(
             continue;
         }
         if let Some(ctrl) = phrase.control {
-            match ctrl {
-                ControlSpec::SetBpm(v) => bpm = v,
-                ControlSpec::SetSustain(v) => sustain = v,
-            }
+            match ctrl { ControlSpec::SetBpm(v) => bpm = v, ControlSpec::SetSustain(v) => sustain = v }
             cur += 1;
             continue;
         }
-        let snap: HashMap<usize, (usize, usize)> = phrases
-            .iter()
-            .filter_map(|p| {
-                p.jump.as_ref().map(|js| {
-                    let remaining = jc.get(&p.id).copied().unwrap_or(js.times.saturating_sub(1));
-                    let pass = js.times.saturating_sub(remaining);
-                    (p.id, (pass, js.times))
-                })
+        let snap: HashMap<usize, (usize, usize)> = phrases.iter().filter_map(|p| {
+            p.jump.as_ref().map(|js| {
+                let remaining = jc.get(&p.id).copied().unwrap_or(js.times.saturating_sub(1));
+                let pass = js.times.saturating_sub(remaining);
+                (p.id, (pass, js.times))
             })
-            .collect();
+        }).collect();
         out.push(RenderOccurrence { phrase_idx: cur, snap_idx: snapshots.len(), bpm, sustain, arrived_via_jump });
         arrived_via_jump = None;
         snapshots.push(snap);
@@ -173,12 +132,7 @@ fn expand_one_cycle(
 }
 
 #[allow(unused_variables)]
-pub fn record_cycle(
-    phrases: Vec<Phrase>,
-    bpm: f64,
-    sustain: f64,
-    cycle_repeat: usize,
-) -> anyhow::Result<String> {
+pub fn record_cycle(phrases: Vec<Phrase>, bpm: f64, sustain: f64, cycle_repeat: usize) -> anyhow::Result<String> {
     if phrases.is_empty() { return Err(anyhow::anyhow!("nothing to record")); }
 
     let bar_samples_for = |idx: usize, bpm: f64| -> usize {
@@ -198,24 +152,13 @@ pub fn record_cycle(
             let idx = occ.phrase_idx;
             tail_sustain = occ.sustain;
             for play in 0..phrases[idx].repeat.max(1) {
-                full_seq.push(RenderEntry {
-                    phrase_idx: idx,
-                    play_num: play,
-                    snap_idx: occ.snap_idx,
-                    bpm: occ.bpm,
-                    sustain: occ.sustain,
-                    arrived_via_jump: if play == 0 { occ.arrived_via_jump } else { None },
-                });
+                full_seq.push(RenderEntry { phrase_idx: idx, play_num: play, snap_idx: occ.snap_idx, bpm: occ.bpm, sustain: occ.sustain, arrived_via_jump: if play == 0 { occ.arrived_via_jump } else { None } });
             }
         }
     }
 
     let tail_samples = (SR * (tail_sustain + 1.0)) as usize;
-    let render_samples = full_seq
-        .iter()
-        .map(|entry| bar_samples_for(entry.phrase_idx, entry.bpm))
-        .sum::<usize>()
-        + tail_samples;
+    let render_samples = full_seq.iter().map(|entry| bar_samples_for(entry.phrase_idx, entry.bpm)).sum::<usize>() + tail_samples;
     crate::REC_SAMPLES_TOTAL.store(render_samples, std::sync::atomic::Ordering::Relaxed);
     crate::REC_SAMPLES_DONE.store(0, std::sync::atomic::Ordering::Relaxed);
     crate::REC_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -252,31 +195,16 @@ pub fn record_cycle(
                     last_subdiv = Some(curr);
                     let is_last_play = play_num + 1 >= repeats;
                     let is_last_subdiv = curr + 1 >= total_subdivs;
-                    let next_is_different = full_seq
-                        .get(seq_pos + 1)
-                        .map_or(false, |next| next.phrase_idx != phrase_idx);
-                    let milestone = if is_first && curr == 0 {
-                        Milestone::PhraseStart
-                    } else if is_last_play && is_last_subdiv {
-                        if next_is_different { Milestone::Turnaround } else { Milestone::CrossPhraseWarning }
-                    } else { Milestone::None };
+                    let next_is_different = full_seq.get(seq_pos + 1).map_or(false, |next| next.phrase_idx != phrase_idx);
+                    let milestone = if is_first && curr == 0 { Milestone::PhraseStart } else if is_last_play && is_last_subdiv { if next_is_different { Milestone::Turnaround } else { Milestone::CrossPhraseWarning } } else { Milestone::None };
                     phrases_v[phrase_idx].bar.events.get(curr).copied().map(|e| (e, milestone))
                 } else { None };
                 bar_pos += 1;
                 ev
             } else { None };
-
-            if let Some((ev, milestone)) = ev {
-                spawn_voices(ev, sustain, &mut voices, milestone, &phrases_v[phrase_idx].bar.frequencies);
-            }
-
+            if let Some((ev, milestone)) = ev { spawn_voices(ev, sustain, &mut voices, milestone, &phrases_v[phrase_idx].bar.frequencies); }
             let (mut l, mut r) = (0f32, 0f32);
-            for v in voices.iter_mut() {
-                let s = v.sample(SR);
-                let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
-                l += s * angle.cos();
-                r += s * angle.sin();
-            }
+            for v in voices.iter_mut() { let s = v.sample(SR); let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4; l += s * angle.cos(); r += s * angle.sin(); }
             left_buf.push(l);
             right_buf.push(r);
             voices.retain(|v| !v.done);
@@ -285,19 +213,10 @@ pub fn record_cycle(
         evolve_bar(&mut phrases_v[phrase_idx].bar, true);
     }
 
-    if let Some(first) = full_seq.first() {
-        let root_hz = phrases_v[first.phrase_idx].bar.root_hz;
-        spawn_phrase_start(root_hz, first.sustain, &mut voices);
-        spawn_sub_bass(root_hz, first.sustain.min(2.0), &mut voices);
-    }
+    if let Some(first) = full_seq.first() { let root_hz = phrases_v[first.phrase_idx].bar.root_hz; spawn_phrase_start(root_hz, first.sustain, &mut voices); spawn_sub_bass(root_hz, first.sustain.min(2.0), &mut voices); }
     for _ in 0..tail_samples {
         let (mut l, mut r) = (0f32, 0f32);
-        for v in voices.iter_mut() {
-            let s = v.sample(SR);
-            let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
-            l += s * angle.cos();
-            r += s * angle.sin();
-        }
+        for v in voices.iter_mut() { let s = v.sample(SR); let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4; l += s * angle.cos(); r += s * angle.sin(); }
         left_buf.push(l);
         right_buf.push(r);
         voices.retain(|v| !v.done);
@@ -311,27 +230,9 @@ pub fn record_cycle(
         let sr = SR as u32;
         let dl = n * 4;
         let mut f = std::fs::File::create(&wav_path_s)?;
-        f.write_all(b"RIFF")?;
-        f.write_all(&(36 + dl).to_le_bytes())?;
-        f.write_all(b"WAVE")?;
-        f.write_all(b"fmt ")?;
-        f.write_all(&16u32.to_le_bytes())?;
-        f.write_all(&1u16.to_le_bytes())?;
-        f.write_all(&2u16.to_le_bytes())?;
-        f.write_all(&sr.to_le_bytes())?;
-        f.write_all(&(sr * 4).to_le_bytes())?;
-        f.write_all(&4u16.to_le_bytes())?;
-        f.write_all(&16u16.to_le_bytes())?;
-        f.write_all(b"data")?;
-        f.write_all(&dl.to_le_bytes())?;
-        for i in 0..left_buf.len() {
-            let l = (left_buf[i] * gain * 32767.0).clamp(-32768.0, 32767.0) as i16;
-            let r = (right_buf[i] * gain * 32767.0).clamp(-32768.0, 32767.0) as i16;
-            f.write_all(&l.to_le_bytes())?;
-            f.write_all(&r.to_le_bytes())?;
-        }
-        f.flush()?;
-        f.sync_all()?;
+        f.write_all(b"RIFF")?; f.write_all(&(36 + dl).to_le_bytes())?; f.write_all(b"WAVE")?; f.write_all(b"fmt ")?; f.write_all(&16u32.to_le_bytes())?; f.write_all(&1u16.to_le_bytes())?; f.write_all(&2u16.to_le_bytes())?; f.write_all(&sr.to_le_bytes())?; f.write_all(&(sr * 4).to_le_bytes())?; f.write_all(&4u16.to_le_bytes())?; f.write_all(&16u16.to_le_bytes())?; f.write_all(b"data")?; f.write_all(&dl.to_le_bytes())?;
+        for i in 0..left_buf.len() { let l = (left_buf[i] * gain * 32767.0).clamp(-32768.0, 32767.0) as i16; let r = (right_buf[i] * gain * 32767.0).clamp(-32768.0, 32767.0) as i16; f.write_all(&l.to_le_bytes())?; f.write_all(&r.to_le_bytes())?; }
+        f.flush()?; f.sync_all()?;
     }
     let wav_path = wav_path_s.as_str();
 
@@ -347,25 +248,15 @@ pub fn record_cycle(
         writeln!(f, "WrapStyle: 0")?;
         writeln!(f, "[V4+ Styles]")?;
         writeln!(f, "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,Strikeout,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding")?;
-        writeln!(f, "Style: Line,Courier New,22,&H0088FF88,&H0088FF88,&H00081402,&H00081402,-1,0,0,0,108,100,0,0,1,3,0,7,20,20,10,1")?;
-        writeln!(f, "Style: URL,Courier New,18,&H0066CC66,&H0066CC66,&H00081402,&H00081402,-1,0,0,0,106,100,0,0,1,2,0,1,20,20,38,1")?;
-        writeln!(f, "Style: JumpCounter,Courier New,20,&H00F4E6B8,&H00F4E6B8,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,0,0,0,1")?;
+        writeln!(f, "Style: Line,Arial,24,&H00A0FF70,&H00A0FF70,&H00102004,&H00102004,-1,0,0,0,112,104,0,0,1,4,1,7,20,20,10,1")?;
+        writeln!(f, "Style: URL,Arial,20,&H0078DD78,&H0078DD78,&H00102004,&H00102004,-1,0,0,0,110,102,0,0,1,3,1,1,20,20,38,1")?;
+        writeln!(f, "Style: JumpCounter,Arial,20,&H00B89848,&H00B89848,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,0,0,0,1")?;
         writeln!(f, "[Events]")?;
         writeln!(f, "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text")?;
 
         let one_len: usize = one_cycle_seq.iter().map(|occ| phrases[occ.phrase_idx].repeat.max(1)).sum();
-        let fmt_t = |s: f64| -> String {
-            let hh = (s / 3600.0) as u32;
-            let mm = ((s % 3600.0) / 60.0) as u32;
-            let ss = (s % 60.0) as u32;
-            let cs = ((s % 1.0) * 100.0) as u32;
-            format!("{hh}:{mm:02}:{ss:02}.{cs:02}")
-        };
-        let counter_layout: HashMap<usize, crate::carpet::JumpCounterLayout> = crate::carpet::jump_counter_layout(&phrases)
-            .into_iter()
-            .map(|pos| (pos.jump_id, pos))
-            .collect();
-
+        let fmt_t = |s: f64| -> String { let hh = (s / 3600.0) as u32; let mm = ((s % 3600.0) / 60.0) as u32; let ss = (s % 60.0) as u32; let cs = ((s % 1.0) * 100.0) as u32; format!("{hh}:{mm:02}:{ss:02}.{cs:02}") };
+        let counter_layout: HashMap<usize, crate::carpet::JumpCounterLayout> = crate::carpet::jump_counter_layout(&phrases).into_iter().map(|pos| (pos.jump_id, pos)).collect();
         let mut sample = 0usize;
         for (i, entry) in full_seq.iter().enumerate() {
             let phrase_idx = entry.phrase_idx;
@@ -374,27 +265,13 @@ pub fn record_cycle(
             let bs = bar_samples_for(phrase_idx, entry.bpm);
             let start_s = sample as f64 / SR;
             let end_s = if i + 1 < full_seq.len() { (sample + bs) as f64 / SR } else { total_secs };
-            let t0 = fmt_t(start_s);
-            let t1 = fmt_t(end_s);
+            let t0 = fmt_t(start_s); let t1 = fmt_t(end_s);
             let cycle_num = if one_len > 0 { i / one_len } else { 0 };
             let cycle_disp = if cycles > 1 { format!("  cycle {}/{}", cycle_num + 1, cycles) } else { String::new() };
             let hdr = format!("   bpm:{:<4} sus:{:.1}s{}", entry.bpm.round() as u32, entry.sustain, cycle_disp);
             writeln!(f, "Dialogue: 0,{t0},{t1},Line,,0,0,0,,{hdr}")?;
             writeln!(f, "Dialogue: 0,{t0},{t1},URL,,0,0,0,,https://github.com/rfielding/maqam")?;
-
-            if let Some(snap) = one_cycle_snaps.get(snap_idx % one_cycle_snaps.len().max(1)) {
-                for p in phrases.iter().filter(|p| p.jump.is_some()) {
-                    let Some(js) = &p.jump else { continue; };
-                    let (pass, total) = snap.get(&p.id).copied().unwrap_or((0, js.times));
-                    if let Some(pos) = counter_layout.get(&p.id) {
-                        let x = pos.x.round() as i32;
-                        let y = pos.y.round() as i32;
-                        let text = format!("[{:>1}/{}]", pass, total);
-                        writeln!(f, "Dialogue: 2,{t0},{t1},JumpCounter,,0,0,0,,{{\\pos({x},{y})\\an5}}{text}")?;
-                    }
-                }
-            }
-
+            if let Some(snap) = one_cycle_snaps.get(snap_idx % one_cycle_snaps.len().max(1)) { for p in phrases.iter().filter(|p| p.jump.is_some()) { let Some(js) = &p.jump else { continue; }; let (pass, total) = snap.get(&p.id).copied().unwrap_or((0, js.times)); if let Some(pos) = counter_layout.get(&p.id) { let x = pos.x.round() as i32; let y = pos.y.round() as i32; let text = format!("[{:>1}/{}]", pass, total); writeln!(f, "Dialogue: 2,{t0},{t1},JumpCounter,,0,0,0,,{{\\pos({x},{y})\\an5}}{text}")?; } } }
             let subdiv_secs = 60.0 / (entry.bpm * 2.0);
             let line_h = 26usize;
             let mut margin_v = 30usize;
@@ -419,9 +296,7 @@ pub fn record_cycle(
                         let ts1 = fmt_t((start_s + (si + 1) as f64 * subdiv_secs).min(end_s));
                         let mut rhy = String::new();
                         for (ci, ch) in rhythm_plain.chars().enumerate() {
-                            if ci == si {
-                                rhy.push_str(&format!("{{\\1c&H00000000&\\3c&H00FFFFFF&\\bord6\\shad0}}{ch}{{\\1c&H0000FF00&\\3c&H00000000&\\bord2\\shad0}}"));
-                            } else { rhy.push(ch); }
+                            if ci == si { rhy.push_str(&format!("{{\\1c&H00000000&\\3c&H00FFFFFF&\\bord6\\shad0}}{ch}{{\\1c&H0000FF00&\\3c&H00000000&\\bord2\\shad0}}")); } else { rhy.push(ch); }
                         }
                         let pad = " ".repeat(10usize.saturating_sub(rhythm_plain.chars().count()));
                         let repeat_display = if si == 0 { ctr.as_str() } else { "" };
@@ -430,12 +305,7 @@ pub fn record_cycle(
                         writeln!(f, "Dialogue: 0,{ts0},{ts1},Line,,0,0,{margin_v},,{text}")?;
                     }
                     let phrase_end_s = start_s + n as f64 * subdiv_secs;
-                    if phrase_end_s < end_s {
-                        let ts0 = fmt_t(phrase_end_s);
-                        let body = format!("{:<20} {:<10} {:<16} {}", p.src, rhythm_plain, maqam_str, ctr);
-                        let text = format!("> {id}: {body}");
-                        writeln!(f, "Dialogue: 0,{ts0},{t1},Line,,0,0,{margin_v},,{text}")?;
-                    }
+                    if phrase_end_s < end_s { let ts0 = fmt_t(phrase_end_s); let body = format!("{:<20} {:<10} {:<16} {}", p.src, rhythm_plain, maqam_str, ctr); let text = format!("> {id}: {body}"); writeln!(f, "Dialogue: 0,{ts0},{t1},Line,,0,0,{margin_v},,{text}")?; }
                 } else {
                     let rhythm = p.bar.rhythm_display();
                     let maqam_str = p.bar.ratio_strs.join(" | ");
@@ -456,38 +326,15 @@ pub fn record_cycle(
         crate::carpet::write_carpet_background(&carpet_path, &[], &phrases)?;
         let tick_highlights = build_carpet_tick_highlights(&full_seq, &phrases, &bar_samples_for);
         let highlight_chain = if tick_highlights.is_empty() { "null".to_string() } else { tick_highlights.join(",") };
-        let filter_with_subs = format!(
-            "[1:v]{highlight_chain}[carpet];\
-             [0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x20140C,\
-             pad=1280:720:0:360:color=black,colorkey=0x000000:0.04:0.25,\
-             format=rgba,colorchannelmixer=aa=0.16[wv];\
-             [carpet][wv]overlay=format=auto[base];\
-             [base]subtitles={ass_path}[v]"
-        );
-        let filter_plain = format!(
-            "[1:v]{highlight_chain}[carpet];\
-             [0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x20140C,\
-             pad=1280:720:0:360:color=black,colorkey=0x000000:0.04:0.25,\
-             format=rgba,colorchannelmixer=aa=0.16[wv];\
-             [carpet][wv]overlay=format=auto[v]"
-        );
+        let filter_with_subs = format!("[1:v]{highlight_chain}[carpet];[0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x20140C,pad=1280:720:0:360:color=black,colorkey=0x000000:0.04:0.25,format=rgba,colorchannelmixer=aa=0.16[wv];[carpet][wv]overlay=format=auto[base];[base]subtitles={ass_path}[v]");
+        let filter_plain = format!("[1:v]{highlight_chain}[carpet];[0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x20140C,pad=1280:720:0:360:color=black,colorkey=0x000000:0.04:0.25,format=rgba,colorchannelmixer=aa=0.16[wv];[carpet][wv]overlay=format=auto[v]");
         let fscript_path = temp_path("maqam-filter.txt");
         std::fs::write(&fscript_path, &filter_with_subs)?;
         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         let out = format!("./maqam-{ts}.mp4");
         let log_path = temp_path("maqam-ffmpeg.log");
-        let ok1 = ffmpeg_status(Command::new("ffmpeg").args([
-            "-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &carpet_path,
-            "-filter_complex_script", &fscript_path, "-map", "[v]", "-map", "0:a", "-c:v", "libx264",
-            "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-c:a", "aac", "-b:a", "320k", "-r", "30", "-shortest", &out,
-        ]).stdout(Stdio::null()).stderr(std::fs::File::create(&log_path).map(Stdio::from).unwrap_or(Stdio::null())))?;
-        if !ok1 {
-            ffmpeg_status(Command::new("ffmpeg").args([
-                "-y", "-i", wav_path, "-loop", "1", "-framerate", "30", "-i", &carpet_path,
-                "-filter_complex", &filter_plain, "-map", "[v]", "-map", "0:a", "-c:v", "libx264",
-                "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-c:a", "aac", "-b:a", "320k", "-r", "30", "-shortest", &out,
-            ]).stdout(Stdio::null()).stderr(Stdio::null()))?;
-        }
+        let ok1 = ffmpeg_status(Command::new("ffmpeg").args(["-y","-i",wav_path,"-loop","1","-framerate","30","-i",&carpet_path,"-filter_complex_script",&fscript_path,"-map","[v]","-map","0:a","-c:v","libx264","-crf","18","-pix_fmt","yuv420p","-movflags","+faststart","-c:a","aac","-b:a","320k","-r","30","-shortest",&out]).stdout(Stdio::null()).stderr(std::fs::File::create(&log_path).map(Stdio::from).unwrap_or(Stdio::null())))?;
+        if !ok1 { ffmpeg_status(Command::new("ffmpeg").args(["-y","-i",wav_path,"-loop","1","-framerate","30","-i",&carpet_path,"-filter_complex",&filter_plain,"-map","[v]","-map","0:a","-c:v","libx264","-crf","18","-pix_fmt","yuv420p","-movflags","+faststart","-c:a","aac","-b:a","320k","-r","30","-shortest",&out]).stdout(Stdio::null()).stderr(Stdio::null()))?; }
         Ok(out)
     })();
 
