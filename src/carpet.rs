@@ -112,10 +112,10 @@ fn draw_label_box(buf: &mut [u8], w: usize, x: i32, y: i32, title: &str, ratios:
     let bw = tw + 16; let bh = 8 + 7*ts + 5 + 7*rs + 8;
     let mut x0 = x - bw/2; let mut y0 = y - bh/2;
     x0 = x0.clamp(74, w as i32 - bw - 74); y0 = y0.clamp(58, CARPET_H as i32 - bh - 58);
-    for yy in y0..y0+bh { for xx in x0..x0+bw { blend_px(buf,w,xx,yy,[0,0,0],0.94); } }
-    thick_line(buf,w,x0,y0,x0+bw,y0,[56,45,32],0.84,2); thick_line(buf,w,x0,y0+bh,x0+bw,y0+bh,[56,45,32],0.84,2); thick_line(buf,w,x0,y0,x0,y0+bh,[56,45,32],0.84,2); thick_line(buf,w,x0+bw,y0,x0+bw,y0+bh,[56,45,32],0.84,2);
-    draw_text(buf,w,title,x0+8,y0+7,ts,[220,216,198],0.90);
-    draw_text(buf,w,ratios,x0+8,y0+7+7*ts+5,rs,[192,186,166],0.86);
+    for yy in y0..y0+bh { for xx in x0..x0+bw { blend_px(buf,w,xx,yy,[0,0,0],0.96); } }
+    thick_line(buf,w,x0,y0,x0+bw,y0,[48,36,18],0.82,2); thick_line(buf,w,x0,y0+bh,x0+bw,y0+bh,[48,36,18],0.82,2); thick_line(buf,w,x0,y0,x0,y0+bh,[48,36,18],0.82,2); thick_line(buf,w,x0+bw,y0,x0+bw,y0+bh,[48,36,18],0.82,2);
+    draw_text(buf,w,title,x0+8,y0+7,ts,[150,112,54],0.78);
+    draw_text(buf,w,ratios,x0+8,y0+7+7*ts+5,rs,[118,88,42],0.72);
 }
 
 fn hilbert_rot(n: i32, x: &mut i32, y: &mut i32, rx: i32, ry: i32) { if ry == 0 { if rx == 1 { *x = n-1-*x; *y = n-1-*y; } std::mem::swap(x, y); } }
