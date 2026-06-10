@@ -47,11 +47,15 @@ fn build_carpet_tick_highlights(full_seq: &[RenderEntry], phrases: &[Phrase], ba
             parts.push(format!("drawbox=x={xo}:y={yo}:w={outer}:h={outer}:color=0x44FF88@0.20:t=fill:enable='between(t,{start:.6},{end:.6})',drawbox=x={xi}:y={yi}:w={inner}:h={inner}:color=0xD8FFAA@0.82:t=fill:enable='between(t,{start:.6},{end:.6})'"));
             if subdivision == 0 {
                 if let Some(jump_id) = entry.arrived_via_jump {
-                    for cell in jump_cells.iter().filter(|cell| cell.jump_id == jump_id) {
-                        let size = cell.size;
+                    for (ji, cell) in jump_cells.iter().filter(|cell| cell.jump_id == jump_id).enumerate() {
+                        // Do not redraw every sample of the arc; that turns overlapping jumps into a white smear.
+                        // The static carpet already has the full lane.  This pulse marks the active lane sparsely,
+                        // so distinct radii stay visible and the counter-clockwise direction remains readable.
+                        if ji % 7 != 0 { continue; }
+                        let size = (cell.size + 3).max(8);
                         let x = cell.x.round() as i32 - size / 2;
                         let y = cell.y.round() as i32 - size / 2;
-                        parts.push(format!("drawbox=x={x}:y={y}:w={size}:h={size}:color=0xD8B060@0.82:t=fill:enable='between(t,{start:.6},{end:.6})'"));
+                        parts.push(format!("drawbox=x={x}:y={y}:w={size}:h={size}:color=0xD8B060@0.70:t=fill:enable='between(t,{start:.6},{end:.6})'"));
                     }
                 }
             }
