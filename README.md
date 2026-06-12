@@ -1,11 +1,11 @@
 # maqam-live
 
 A real-time terminal sequencer for Arabic maqam music using just intonation synthesis.
-Live-code phrases of stacked jins, record to MP4 with a synchronized pitch ruler.
+Live-code phrases of stacked jins, and record to MP4 with a woven score background.
 
 ![maqam-live screenshot](screenshot1.png)
 
-The woven carpet image above is a visual target for generated score backgrounds. It is not loaded at runtime; backgrounds are generated from the current score when you press `m`.
+The woven carpet image above is a visual target for generated score backgrounds. It is not loaded at runtime; backgrounds are generated from the current score when you press `m`, with maqam-colored borders, border-band legend text, and jump arrows layered into the carpet.
 
 ```
 ┌─ maqam-live ──────────────────────────────────────────────────────────────────┐
