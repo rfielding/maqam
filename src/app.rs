@@ -31,6 +31,8 @@ pub struct App {
     last_rhythm: Vec<u8>,
     auditioning_jins: bool,
     audio_tx: Sender<AudioCmd>,
+    /// Sender to push BPM updates into the clockout thread (None if not started)
+    clockout_tx: Option<crossbeam_channel::Sender<f64>>,
 }
 
 impl App {
@@ -59,6 +61,7 @@ impl App {
             last_rhythm: vec![3, 3, 2],
             auditioning_jins: false,
             audio_tx,
+            clockout_tx: None,
         }
     }
 
@@ -342,6 +345,24 @@ impl App {
             if part.is_empty() {
                 continue;
             }
+
+            // clockin <device> — receive MIDI clock, sync BPM to external gear
+            if let Some(dev) = part.strip_prefix("clockin ") {
+                let dev = dev.trim().to_string();
+                crate::midi_clock::start_clock_receiver(dev.clone(), self.audio_tx.clone());
+                self.message = Some(format!("clock ← {dev}"));
+                continue;
+            }
+
+            // clockout <device> — send MIDI clock, slave external gear to maqam-live BPM
+            if let Some(dev) = part.strip_prefix("clockout ") {
+                let dev = dev.trim().to_string();
+                let tx = crate::midi_clockout::start_clock_sender(dev.clone(), self.bpm);
+                self.clockout_tx = Some(tx);
+                self.message = Some(format!("clock → {dev}"));
+                continue;
+            }
+
             match command::parse(part) {
                 Ok(cmd) => self.execute(cmd),
                 Err(msg) => {
@@ -706,6 +727,7 @@ impl App {
                 self.bpm = bpm;
                 let _ = self.audio_tx.send(AudioCmd::AddPhrase(entry));
                 let _ = self.audio_tx.send(AudioCmd::SetBpm(bpm));
+                self.push_clockout_bpm(bpm);
                 self.message = Some(format!("BPM line → {bpm:.2}"));
             }
             Cmd::SetSustain(change) => {
@@ -911,6 +933,13 @@ impl App {
                 self.phrases.push(phrase);
                 self.message = None;
             }
+        }
+    }
+
+    /// Push a BPM update to the clockout thread if it's running.
+    fn push_clockout_bpm(&self, bpm: f64) {
+        if let Some(tx) = &self.clockout_tx {
+            let _ = tx.send(bpm);
         }
     }
 

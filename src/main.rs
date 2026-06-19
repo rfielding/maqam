@@ -4,6 +4,8 @@ mod app;
 mod audio;
 mod carpet;
 mod command;
+mod midi_clock;
+mod midi_clockout;
 mod record;
 mod renderer;
 mod sequencer;
