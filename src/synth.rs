@@ -345,20 +345,38 @@ pub fn spawn_voices(
     voices: &mut Vec<Voice>,
     milestone: Milestone,
     scale: &[f64],
+    root_hz: f64,
+    subdiv_secs: f64,
 ) {
     // Milestone sounds fire regardless of whether the event is a kick or snare.
     // Previously these were inside the Kick arm, so rhythms ending on '.' (snare)
     // never triggered the turnaround/warning sounds.
     match milestone {
         Milestone::Turnaround => {
-            let mut v = Voice::mk(VoiceKind::Rimshot, 200.0, 0.0);
-            v.pan = 0.0;
-            voices.push(v);
+            // Same phrase repeating — double kick, no leading tone
+            let mut tom1 = Voice::mk(VoiceKind::FloorTom, 40.0, 0.0);
+            tom1.pan = 0.0;
+            voices.push(tom1);
+            let mut tom2 = Voice::mk(VoiceKind::FloorTom, 35.0, 0.0);
+            tom2.pan = 0.0;
+            voices.push(tom2);
         }
         Milestone::CrossPhraseWarning => {
-            let mut rim = Voice::mk(VoiceKind::FloorTom, 30.0, 0.0);
-            rim.pan = 0.0;
-            voices.push(rim);
+            // Different phrase coming — double kick + leading tone (8/9 * root)
+            let mut tom1 = Voice::mk(VoiceKind::FloorTom, 40.0, 0.0);
+            tom1.pan = 0.0;
+            voices.push(tom1);
+            let mut tom2 = Voice::mk(VoiceKind::FloorTom, 35.0, 0.0);
+            tom2.pan = 0.0;
+            voices.push(tom2);
+            if root_hz > 8.0 {
+                // Leading tone = 8/9 * root, two octaves down for deep bass
+                let lt_hz = root_hz * 8.0 / 9.0 * 0.25;
+                let mut lt = Voice::mk(VoiceKind::SubBass, lt_hz, subdiv_secs * 2.0);
+                lt.gain_override = Some(0.30);
+                lt.pan = 0.0;
+                voices.push(lt);
+            }
         }
         Milestone::PhraseStart => {
             let mut v = Voice::mk(VoiceKind::Crash, 400.0, 0.0);
@@ -383,6 +401,14 @@ pub fn spawn_voices(
             let octave = snap_to_scale(hz * 2.0, scale);
             voices.push(panned(Voice::melody_gain(fifth, sustain * 0.85, 0.14)));
             voices.push(panned(Voice::melody_gain(octave, sustain * 0.60, 0.08)));
+            // Root bass on every kick, one octave down, held one subdivision
+            if root_hz > 8.0 {
+                let bass_freq = root_hz * 0.5;
+                let mut bass = Voice::mk(VoiceKind::SubBass, bass_freq, subdiv_secs * 0.95);
+                bass.gain_override = Some(0.20);
+                bass.pan = 0.0;
+                voices.push(bass);
+            }
         }
         SubdivEvent::Snare(hz) => {
             voices.push(panned(Voice::snare()));

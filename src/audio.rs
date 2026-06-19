@@ -236,7 +236,12 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                             .get(cur_phrase)
                             .map(|pp| pp.phrase.bar.frequencies.clone())
                             .unwrap_or_default();
-                        spawn_voices(ev, sustain, &mut voices, milestone, &scale);
+                        let root_hz = phrases
+                            .get(cur_phrase)
+                            .map(|pp| pp.phrase.bar.root_hz)
+                            .unwrap_or(0.0);
+                        let subdiv_secs = 60.0 / (bpm * 2.0);
+                        spawn_voices(ev, sustain, &mut voices, milestone, &scale, root_hz, subdiv_secs);
                     }
                 }
 

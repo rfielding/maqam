@@ -334,12 +334,15 @@ pub fn record_cycle(
                 None
             };
             if let Some((ev, milestone)) = ev {
+                let root_hz = phrases_v[phrase_idx].bar.root_hz;
                 spawn_voices(
                     ev,
                     sustain,
                     &mut voices,
                     milestone,
                     &phrases_v[phrase_idx].bar.frequencies,
+                    root_hz,
+                    0.25,
                 );
             }
             let (mut l, mut r) = (0f32, 0f32);
