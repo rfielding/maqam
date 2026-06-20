@@ -328,7 +328,7 @@ fn draw_phrases(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
             if playing && phrase.repeat > 1 {
                 spans.push(Span::styled(
-                    format!(" {}/{}", cur_plays + 1, phrase.repeat),
+                    format!(" [{}/{}]", cur_plays + 1, phrase.repeat),
                     Style::default()
                         .fg(Color::Rgb(180, 180, 100))
                         .bg(BG)

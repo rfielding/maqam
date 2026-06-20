@@ -352,32 +352,30 @@ pub fn spawn_voices(
     match milestone {
         Milestone::Turnaround => {
             // Same phrase repeating — double kick, no leading tone
-            let mut tom2 = Voice::mk(VoiceKind::FloorTom, 35.0, 0.0);
+            let mut tom2 = Voice::mk(VoiceKind::FloorTom, 35.0, 0.2);
             tom2.pan = 0.0;
             voices.push(tom2);
-            if root_hz > 8.0 {
-                // Yeden ... use a fourth down
-                let lt_hz = root_hz * 0.5 * 3.0 / 4.0;
-                // we should never be using absolute time units. it must be in terms of ticks
-                let mut lt = Voice::mk(VoiceKind::SubBass, lt_hz, subdiv_secs * 0.5);
-                lt.gain_override = Some(0.45);
-                lt.pan = 0.0;
-                voices.push(lt);
-            }
+            // Yeden ... use a fourth down
+            let lt_hz = root_hz * 0.5 * 3.0 / 4.0;
+            // we should never be using absolute time units. it must be in terms of ticks
+            let mut lt = Voice::mk(VoiceKind::SubBass, lt_hz, subdiv_secs * 0.5);
+            lt.gain_override = Some(0.45);
+            lt.pan = 0.0;
+            voices.push(lt);
         }
         Milestone::CrossPhraseWarning => {
-            // Different phrase coming — double kick + leading tone (8/9 * root)
-            let mut tom1 = Voice::mk(VoiceKind::FloorTom, 60.0, 0.0);
+            // repeat
+            let mut tom1 = Voice::mk(VoiceKind::FloorTom, 60.0, 0.25);
             tom1.pan = 0.0;
             voices.push(tom1);
         }
         Milestone::PhraseStart => {
-            let mut v = Voice::mk(VoiceKind::Crash, 400.0, 0.0);
+            let mut v = Voice::mk(VoiceKind::Crash, 400.0, 0.3);
             v.pan = 0.0;
             voices.push(v);
         }
         Milestone::PhraseChange => {
-            let mut v = Voice::mk(VoiceKind::PhraseChange, 60.0, 0.0);
+            let mut v = Voice::mk(VoiceKind::PhraseChange, 60.0, 0.2);
             v.pan = 0.0;
             voices.push(v);
         }
@@ -386,22 +384,21 @@ pub fn spawn_voices(
 
     match event {
         SubdivEvent::Kick(hz) => {
-            let mut tom = Voice::mk(VoiceKind::FloorTom, 40.0, 0.0);
+            let mut tom = Voice::mk(VoiceKind::FloorTom, 40.0, 0.25);
             tom.pan = 0.0;
             voices.push(tom);
             voices.push(panned(Voice::melody(hz, sustain)));
-            let fifth = snap_to_scale(hz * 1.5, scale);
-            let octave = snap_to_scale(hz * 2.0, scale);
-            voices.push(panned(Voice::melody_gain(fifth, sustain * 0.85, 0.14)));
-            voices.push(panned(Voice::melody_gain(octave, sustain * 0.60, 0.08)));
+            let octave2 = snap_to_scale(root_hz / 8.0, scale);
+            let octave = snap_to_scale(root_hz / 4.0, scale);
+            voices.push(panned(Voice::melody_gain(octave2, sustain * 0.85, 0.1)));
+            voices.push(panned(Voice::melody_gain(octave, sustain * 0.20, 0.1)));
             // Root bass on every kick, one octave down, held one subdivision
-            if root_hz > 8.0 {
-                let bass_freq = root_hz * 0.5;
-                let mut bass = Voice::mk(VoiceKind::SubBass, bass_freq, subdiv_secs * 0.95);
-                bass.gain_override = Some(0.20);
-                bass.pan = 0.0;
-                voices.push(bass);
-            }
+            let bass_freq = root_hz * 0.5;
+            // again... no absolute time should be used. we must use ticks
+            let mut bass = Voice::mk(VoiceKind::SubBass, bass_freq, subdiv_secs * 0.95);
+            bass.gain_override = Some(0.15);
+            bass.pan = 0.0;
+            voices.push(bass);
         }
         SubdivEvent::Snare(hz) => {
             voices.push(panned(Voice::snare()));
