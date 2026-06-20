@@ -116,12 +116,11 @@ pub fn evolve_bar(bar: &mut Bar, is_last_bar: bool) {
 pub enum VoiceKind {
     FloorTom,
     Snare,
-    Rimshot,
     Crash,
     PhraseChange,
     MelodyFm,
     SubBass,
-    #[allow(dead_code)]
+    Rimshot,
     Accent,
 }
 
@@ -130,7 +129,6 @@ pub struct Voice {
     pub age: usize,
     pub freq: f64,
     pub phase: f64,
-    #[allow(dead_code)]
     pub mod_phase: f64,
     pub sustain_secs: f64,
     pub gain_override: Option<f32>,
@@ -300,7 +298,7 @@ impl Voice {
             VoiceKind::PhraseChange => 0.50,
             VoiceKind::MelodyFm => 0.20,
             VoiceKind::Accent => 0.35,
-            VoiceKind::SubBass => 0.30,
+            VoiceKind::SubBass => 0.50,
         });
         (osc * amp * gain * release_gain).clamp(-1.0, 1.0)
     }
@@ -354,29 +352,24 @@ pub fn spawn_voices(
     match milestone {
         Milestone::Turnaround => {
             // Same phrase repeating — double kick, no leading tone
-            let mut tom1 = Voice::mk(VoiceKind::FloorTom, 40.0, 0.0);
-            tom1.pan = 0.0;
-            voices.push(tom1);
-            let mut tom2 = Voice::mk(VoiceKind::FloorTom, 35.0, 0.0);
-            tom2.pan = 0.0;
-            voices.push(tom2);
-        }
-        Milestone::CrossPhraseWarning => {
-            // Different phrase coming — double kick + leading tone (8/9 * root)
-            let mut tom1 = Voice::mk(VoiceKind::FloorTom, 40.0, 0.0);
-            tom1.pan = 0.0;
-            voices.push(tom1);
             let mut tom2 = Voice::mk(VoiceKind::FloorTom, 35.0, 0.0);
             tom2.pan = 0.0;
             voices.push(tom2);
             if root_hz > 8.0 {
-                // Leading tone = 8/9 * root, two octaves down for deep bass
-                let lt_hz = root_hz * 8.0 / 9.0 * 0.25;
-                let mut lt = Voice::mk(VoiceKind::SubBass, lt_hz, subdiv_secs * 2.0);
-                lt.gain_override = Some(0.30);
+                // Yeden ... use a fourth down
+                let lt_hz = root_hz * 0.5 * 3.0 / 4.0;
+                // we should never be using absolute time units. it must be in terms of ticks
+                let mut lt = Voice::mk(VoiceKind::SubBass, lt_hz, subdiv_secs * 0.5);
+                lt.gain_override = Some(0.45);
                 lt.pan = 0.0;
                 voices.push(lt);
             }
+        }
+        Milestone::CrossPhraseWarning => {
+            // Different phrase coming — double kick + leading tone (8/9 * root)
+            let mut tom1 = Voice::mk(VoiceKind::FloorTom, 60.0, 0.0);
+            tom1.pan = 0.0;
+            voices.push(tom1);
         }
         Milestone::PhraseStart => {
             let mut v = Voice::mk(VoiceKind::Crash, 400.0, 0.0);
