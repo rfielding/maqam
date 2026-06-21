@@ -4,12 +4,14 @@
 mod record_old;
 
 use crate::sequencer::Phrase;
+use crate::vcf::VcfSettings;
 
 pub fn record_cycle(
     phrases: Vec<Phrase>,
     bpm: f64,
     sustain: f64,
+    vcf: VcfSettings,
     cycle_repeat: usize,
 ) -> anyhow::Result<String> {
-    record_old::record_cycle(phrases, bpm, sustain, cycle_repeat)
+    record_old::record_cycle(phrases, bpm, sustain, vcf, cycle_repeat)
 }

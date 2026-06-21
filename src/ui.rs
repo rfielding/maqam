@@ -413,12 +413,25 @@ fn draw_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Style::default().fg(col).bg(BG),
         )])
     } else {
+        let vcf_status = if app.vcf.enabled {
+            format!(
+                "{}:{:.0}/{:.2}/{:.1}/{}",
+                app.vcf.target.as_str(),
+                app.vcf.cutoff_hz,
+                app.vcf.resonance,
+                app.vcf.drive,
+                app.vcf.wave.as_str()
+            )
+        } else {
+            "off".to_string()
+        };
         Line::from(vec![Span::styled(
             format!(
-                "  {}BPM:{} sus:{:.1}s vol:{:.2} phrases:{}  [?] help  [z] pause",
+                "  {}BPM:{} sus:{:.1}s vcf:{} vol:{:.2} phrases:{}  [?] help  [z] pause",
                 if app.paused { "⏸ PAUSED  " } else { "" },
                 app.bpm,
                 app.sustain,
+                vcf_status,
                 app.vol,
                 app.phrases.len()
             ),

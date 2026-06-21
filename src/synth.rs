@@ -1,6 +1,7 @@
 // synth.rs — shared voice synthesis, PRNG, and melody evolution
 
 use crate::sequencer::{Bar, SubdivEvent};
+use crate::vcf::VcoWave;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // ── PRNG ─────────────────────────────────────────────────────────────────────
@@ -113,6 +114,7 @@ pub fn evolve_bar(bar: &mut Bar, is_last_bar: bool) {
 
 // ── Voice ─────────────────────────────────────────────────────────────────────
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VoiceKind {
     FloorTom,
     Snare,
@@ -178,6 +180,10 @@ impl Voice {
     }
 
     pub fn sample(&mut self, sr: f64) -> f32 {
+        self.sample_with_wave(sr, None)
+    }
+
+    pub fn sample_with_wave(&mut self, sr: f64, wave: Option<VcoWave>) -> f32 {
         let dt = 1.0 / sr;
         let t = self.age as f64 * dt;
 
@@ -185,14 +191,14 @@ impl Voice {
             VoiceKind::FloorTom => {
                 let freq = self.freq * (1.0 + 1.8 * (-t * 12.0).exp());
                 self.phase += freq * dt;
-                let osc = (self.phase * std::f64::consts::TAU).sin() as f32;
+                let osc = wave_sample(self.phase, wave);
                 let amp = (-t * 7.0).exp() as f32;
                 (osc, amp, t > 0.55)
             }
             VoiceKind::Rimshot => {
                 let freq = self.freq * (1.0 + 1.8 * (-t * 12.0).exp()) * 0.25;
                 self.phase += freq * dt;
-                let osc = (self.phase * std::f64::consts::TAU).sin() as f32;
+                let osc = wave_sample(self.phase, wave);
                 let amp = (-t * 7.0).exp() as f32;
                 (osc, amp, t > 0.55)
             }
@@ -212,7 +218,7 @@ impl Voice {
             VoiceKind::PhraseChange => {
                 let freq = self.freq * 3.0 * (1.0 + 1.5 * (-t * 20.0).exp());
                 self.phase += freq * dt;
-                let osc = (self.phase * std::f64::consts::TAU).sin() as f32;
+                let osc = wave_sample(self.phase, wave);
                 let amp = (-t * 14.0).exp() as f32;
                 (osc, amp, t > 0.25)
             }
@@ -237,7 +243,7 @@ impl Voice {
             VoiceKind::SubBass => {
                 let sus = self.sustain_secs;
                 self.phase += self.freq * dt;
-                let osc = (self.phase * std::f64::consts::TAU).sin() as f32;
+                let osc = wave_sample(self.phase, wave);
                 let amp = if t < 0.10 {
                     (t / 0.10) as f32
                 } else if t < sus {
@@ -253,10 +259,13 @@ impl Voice {
                 let sus = self.sustain_secs;
                 self.phase += self.freq * dt;
                 let p = self.phase * std::f64::consts::TAU;
-                let osc = (p.sin()
-                    + p.mul_add(2.0, 0.0).sin() * 0.25
-                    + p.mul_add(3.0, 0.0).sin() * 0.10) as f32
-                    / 1.35;
+                let osc = if let Some(wave) = wave {
+                    wave.sample(self.phase)
+                } else {
+                    (p.sin() + p.mul_add(2.0, 0.0).sin() * 0.25 + p.mul_add(3.0, 0.0).sin() * 0.10)
+                        as f32
+                        / 1.35
+                };
                 let amp = if t < 0.015 {
                     (t / 0.015) as f32
                 } else if t < 0.20 {
@@ -302,6 +311,12 @@ impl Voice {
         });
         (osc * amp * gain * release_gain).clamp(-1.0, 1.0)
     }
+}
+
+#[inline]
+fn wave_sample(phase: f64, wave: Option<VcoWave>) -> f32 {
+    wave.map(|wave| wave.sample(phase))
+        .unwrap_or_else(|| (phase * std::f64::consts::TAU).sin() as f32)
 }
 
 // ── Milestone ─────────────────────────────────────────────────────────────────

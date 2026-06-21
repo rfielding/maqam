@@ -10,8 +10,9 @@ use crossbeam_channel::Receiver;
 
 use crate::sequencer::{AudioCmd, ControlSpec, Phrase, SubdivEvent};
 use crate::synth::{
-    evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Milestone, Voice,
+    evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Milestone, Voice, VoiceKind,
 };
+use crate::vcf::{MoogLadder, VcfSettings, VcfTarget};
 
 // ── Playback state ────────────────────────────────────────────────────────────
 
@@ -60,6 +61,7 @@ impl PlayingPhrase {
 enum PendingControl {
     SetBpm(f64),
     SetSustain(f64),
+    SetVcf(VcfSettings),
 }
 
 fn make_bar_states(phrase: &Phrase, sr: f64, bpm: f64) -> Vec<BarState> {
@@ -95,6 +97,9 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
     let mut bpm = 120.0f64;
     let mut sustain = 1.25f64;
     let mut vol = 1.0f32;
+    let mut vcf = VcfSettings::default();
+    let mut vcf_l = MoogLadder::new(sr as f32);
+    let mut vcf_r = MoogLadder::new(sr as f32);
     let mut paused = false;
     let mut jump_counters: std::collections::HashMap<usize, usize> =
         std::collections::HashMap::new();
@@ -126,6 +131,11 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                     }
                     AudioCmd::SetSustain(s) => {
                         sustain = s;
+                    }
+                    AudioCmd::SetVcf(v) => {
+                        vcf = v;
+                        vcf_l.set_settings(v);
+                        vcf_r.set_settings(v);
                     }
                     AudioCmd::SetVol(v) => {
                         vol = v;
@@ -214,6 +224,11 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                         PendingControl::SetSustain(v) => {
                             sustain = v;
                         }
+                        PendingControl::SetVcf(v) => {
+                            vcf = v;
+                            vcf_l.set_settings(v);
+                            vcf_r.set_settings(v);
+                        }
                     }
                 }
 
@@ -241,17 +256,54 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                             .map(|pp| pp.phrase.bar.root_hz)
                             .unwrap_or(0.0);
                         let subdiv_secs = 60.0 / (bpm * 2.0);
-                        spawn_voices(ev, sustain, &mut voices, milestone, &scale, root_hz, subdiv_secs);
+                        spawn_voices(
+                            ev,
+                            sustain,
+                            &mut voices,
+                            milestone,
+                            &scale,
+                            root_hz,
+                            subdiv_secs,
+                        );
                     }
                 }
 
-                let (mut left, mut right) = (0f32, 0f32);
-                for v in voices.iter_mut() {
-                    let s = v.sample(sr);
-                    let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
-                    left += s * angle.cos();
-                    right += s * angle.sin();
+                voices.retain(|v| !v.done);
+                if voices.is_empty() {
+                    vcf_l.reset();
+                    vcf_r.reset();
+                    for sample in frame.iter_mut() {
+                        *sample = 0.0;
+                    }
+                    continue;
                 }
+
+                let (mut dry_left, mut dry_right) = (0f32, 0f32);
+                let (mut vcf_left, mut vcf_right) = (0f32, 0f32);
+                for v in voices.iter_mut() {
+                    let routed_to_vcf = vcf.enabled && vcf_matches(vcf.target, v.kind);
+                    let s = v.sample_with_wave(sr, routed_to_vcf.then_some(vcf.wave));
+                    let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
+                    let left = s * angle.cos();
+                    let right = s * angle.sin();
+                    if routed_to_vcf {
+                        vcf_left += left;
+                        vcf_right += right;
+                    } else {
+                        dry_left += left;
+                        dry_right += right;
+                    }
+                }
+                let mut left = if vcf.enabled {
+                    dry_left + vcf_l.process(vcf_left)
+                } else {
+                    dry_left
+                };
+                let mut right = if vcf.enabled {
+                    dry_right + vcf_r.process(vcf_right)
+                } else {
+                    dry_right
+                };
                 left = (left * vol).clamp(-1.0, 1.0);
                 right = (right * vol).clamp(-1.0, 1.0);
 
@@ -337,6 +389,7 @@ fn tick_sequencer(
             let pending = match ctrl {
                 ControlSpec::SetBpm(v) => PendingControl::SetBpm(v),
                 ControlSpec::SetSustain(v) => PendingControl::SetSustain(v),
+                ControlSpec::SetVcf(v) => PendingControl::SetVcf(v),
             };
             *cur_phrase += 1;
             if *cur_phrase >= phrases.len() {
@@ -439,4 +492,13 @@ fn tick_sequencer(
     }
 
     (ev, milestone, None)
+}
+
+fn vcf_matches(target: VcfTarget, kind: VoiceKind) -> bool {
+    match target {
+        VcfTarget::All => true,
+        VcfTarget::Bass => matches!(kind, VoiceKind::SubBass),
+        VcfTarget::Kanun => matches!(kind, VoiceKind::MelodyFm),
+        VcfTarget::Kick => matches!(kind, VoiceKind::FloorTom),
+    }
 }

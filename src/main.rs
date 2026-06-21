@@ -14,6 +14,7 @@ mod source_background;
 mod synth;
 mod tuning;
 mod ui;
+mod vcf;
 
 /// Shared atomic: audio thread writes current phrase index, TUI reads it.
 pub static CUR_PHRASE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

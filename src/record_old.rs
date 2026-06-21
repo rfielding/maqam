@@ -8,8 +8,9 @@ use std::process::{Command, Stdio};
 
 use crate::sequencer::{ControlSpec, Phrase};
 use crate::synth::{
-    evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Milestone, Voice,
+    evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Milestone, Voice, VoiceKind,
 };
+use crate::vcf::{MoogLadder, VcfSettings, VcfTarget};
 
 const SR: f64 = 44100.0;
 
@@ -71,6 +72,7 @@ struct RenderOccurrence {
     snap_idx: usize,
     bpm: f64,
     sustain: f64,
+    vcf: VcfSettings,
     arrived_via_jump: Option<usize>,
 }
 #[derive(Clone, Copy)]
@@ -80,6 +82,7 @@ struct RenderEntry {
     snap_idx: usize,
     bpm: f64,
     sustain: f64,
+    vcf: VcfSettings,
     arrived_via_jump: Option<usize>,
 }
 
@@ -148,6 +151,7 @@ fn expand_one_cycle(
     phrases: &[Phrase],
     start_bpm: f64,
     start_sustain: f64,
+    start_vcf: VcfSettings,
 ) -> (Vec<RenderOccurrence>, Vec<HashMap<usize, (usize, usize)>>) {
     let mut out = Vec::new();
     let mut snapshots = Vec::new();
@@ -155,6 +159,7 @@ fn expand_one_cycle(
     let mut jc: HashMap<usize, usize> = HashMap::new();
     let mut bpm = start_bpm;
     let mut sustain = start_sustain;
+    let mut vcf = start_vcf;
     let mut arrived_via_jump = None;
     let max_items = phrases.len() * 512 + 1;
     while out.len() < max_items {
@@ -195,6 +200,7 @@ fn expand_one_cycle(
             match ctrl {
                 ControlSpec::SetBpm(v) => bpm = v,
                 ControlSpec::SetSustain(v) => sustain = v,
+                ControlSpec::SetVcf(v) => vcf = v,
             }
             cur += 1;
             continue;
@@ -214,6 +220,7 @@ fn expand_one_cycle(
             snap_idx: snapshots.len(),
             bpm,
             sustain,
+            vcf,
             arrived_via_jump,
         });
         arrived_via_jump = None;
@@ -228,6 +235,7 @@ pub fn record_cycle(
     phrases: Vec<Phrase>,
     bpm: f64,
     sustain: f64,
+    vcf: VcfSettings,
     cycle_repeat: usize,
 ) -> anyhow::Result<String> {
     if phrases.is_empty() {
@@ -238,7 +246,7 @@ pub fn record_cycle(
         let subdiv_samples = SR * subdiv_secs;
         ((subdiv_samples * phrases[idx].bar.total_subdivs as f64).round() as usize).max(1)
     };
-    let (one_cycle_seq, one_cycle_snaps) = expand_one_cycle(&phrases, bpm, sustain);
+    let (one_cycle_seq, one_cycle_snaps) = expand_one_cycle(&phrases, bpm, sustain, vcf);
     if one_cycle_seq.is_empty() {
         return Err(anyhow::anyhow!("no musical phrases to render"));
     }
@@ -256,6 +264,7 @@ pub fn record_cycle(
                     snap_idx: occ.snap_idx,
                     bpm: occ.bpm,
                     sustain: occ.sustain,
+                    vcf: occ.vcf,
                     arrived_via_jump: if play == 0 {
                         occ.arrived_via_jump
                     } else {
@@ -276,6 +285,8 @@ pub fn record_cycle(
     crate::REC_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
     let mut phrases_v = phrases.to_vec();
     let mut voices: Vec<Voice> = Vec::new();
+    let mut left_vcf = MoogLadder::new(SR as f32);
+    let mut right_vcf = MoogLadder::new(SR as f32);
     let mut left_buf: Vec<f32> = Vec::new();
     let mut right_buf: Vec<f32> = Vec::new();
     for (seq_pos, entry) in full_seq.iter().enumerate() {
@@ -287,6 +298,8 @@ pub fn record_cycle(
         let subdiv_secs = 60.0 / (entry.bpm * 2.0);
         let subdiv_samples = SR * subdiv_secs;
         let sustain = entry.sustain;
+        left_vcf.set_settings(entry.vcf);
+        right_vcf.set_settings(entry.vcf);
         if is_first {
             let root_hz = phrases_v[phrase_idx].bar.root_hz;
             let phrase_secs =
@@ -345,15 +358,37 @@ pub fn record_cycle(
                     0.25,
                 );
             }
-            let (mut l, mut r) = (0f32, 0f32);
-            for v in voices.iter_mut() {
-                let s = v.sample(SR);
-                let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
-                l += s * angle.cos();
-                r += s * angle.sin();
+            voices.retain(|v| !v.done);
+            if voices.is_empty() {
+                left_vcf.reset();
+                right_vcf.reset();
+                left_buf.push(0.0);
+                right_buf.push(0.0);
+                continue;
             }
-            left_buf.push(l);
-            right_buf.push(r);
+            let (mut dry_l, mut dry_r) = (0f32, 0f32);
+            let (mut filt_l, mut filt_r) = (0f32, 0f32);
+            for v in voices.iter_mut() {
+                let routed_to_vcf = entry.vcf.enabled && vcf_matches(entry.vcf.target, v.kind);
+                let s = v.sample_with_wave(SR, routed_to_vcf.then_some(entry.vcf.wave));
+                let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
+                let l = s * angle.cos();
+                let r = s * angle.sin();
+                if routed_to_vcf {
+                    filt_l += l;
+                    filt_r += r;
+                } else {
+                    dry_l += l;
+                    dry_r += r;
+                }
+            }
+            if entry.vcf.enabled {
+                left_buf.push((dry_l + left_vcf.process(filt_l)).clamp(-1.0, 1.0));
+                right_buf.push((dry_r + right_vcf.process(filt_r)).clamp(-1.0, 1.0));
+            } else {
+                left_buf.push(dry_l.clamp(-1.0, 1.0));
+                right_buf.push(dry_r.clamp(-1.0, 1.0));
+            }
             voices.retain(|v| !v.done);
         }
         crate::REC_SAMPLES_DONE.store(
@@ -362,21 +397,46 @@ pub fn record_cycle(
         );
         evolve_bar(&mut phrases_v[phrase_idx].bar, true);
     }
+    let tail_vcf = full_seq.first().map(|entry| entry.vcf).unwrap_or(vcf);
+    left_vcf.set_settings(tail_vcf);
+    right_vcf.set_settings(tail_vcf);
     if let Some(first) = full_seq.first() {
         let root_hz = phrases_v[first.phrase_idx].bar.root_hz;
         spawn_phrase_start(root_hz, first.sustain, &mut voices);
         spawn_sub_bass(root_hz, first.sustain.min(2.0), &mut voices);
     }
     for _ in 0..tail_samples {
-        let (mut l, mut r) = (0f32, 0f32);
-        for v in voices.iter_mut() {
-            let s = v.sample(SR);
-            let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
-            l += s * angle.cos();
-            r += s * angle.sin();
+        voices.retain(|v| !v.done);
+        if voices.is_empty() {
+            left_vcf.reset();
+            right_vcf.reset();
+            left_buf.push(0.0);
+            right_buf.push(0.0);
+            continue;
         }
-        left_buf.push(l);
-        right_buf.push(r);
+        let (mut dry_l, mut dry_r) = (0f32, 0f32);
+        let (mut filt_l, mut filt_r) = (0f32, 0f32);
+        for v in voices.iter_mut() {
+            let routed_to_vcf = tail_vcf.enabled && vcf_matches(tail_vcf.target, v.kind);
+            let s = v.sample_with_wave(SR, routed_to_vcf.then_some(tail_vcf.wave));
+            let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
+            let l = s * angle.cos();
+            let r = s * angle.sin();
+            if routed_to_vcf {
+                filt_l += l;
+                filt_r += r;
+            } else {
+                dry_l += l;
+                dry_r += r;
+            }
+        }
+        if tail_vcf.enabled {
+            left_buf.push((dry_l + left_vcf.process(filt_l)).clamp(-1.0, 1.0));
+            right_buf.push((dry_r + right_vcf.process(filt_r)).clamp(-1.0, 1.0));
+        } else {
+            left_buf.push(dry_l.clamp(-1.0, 1.0));
+            right_buf.push(dry_r.clamp(-1.0, 1.0));
+        }
         voices.retain(|v| !v.done);
     }
     let peak = left_buf
@@ -650,4 +710,13 @@ pub fn record_cycle(
     crate::REC_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
     crate::REC_SAMPLES_DONE.store(render_samples, std::sync::atomic::Ordering::Relaxed);
     result
+}
+
+fn vcf_matches(target: VcfTarget, kind: VoiceKind) -> bool {
+    match target {
+        VcfTarget::All => true,
+        VcfTarget::Bass => matches!(kind, VoiceKind::SubBass),
+        VcfTarget::Kanun => matches!(kind, VoiceKind::MelodyFm),
+        VcfTarget::Kick => matches!(kind, VoiceKind::FloorTom),
+    }
 }

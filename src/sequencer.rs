@@ -5,6 +5,7 @@
 
 use crate::synth::{expand_degrees, zigzag_walk};
 use crate::tuning::{snap_to_oud_lattice, Maqam, Pitch};
+use crate::vcf::VcfSettings;
 
 // ── Bar event ─────────────────────────────────────────────────────────────────
 
@@ -66,6 +67,7 @@ pub struct JumpSpec {
 pub enum ControlSpec {
     SetBpm(f64),
     SetSustain(f64),
+    SetVcf(VcfSettings),
 }
 
 #[derive(Debug, Clone)]
@@ -372,6 +374,7 @@ pub enum AudioCmd {
     Rotate,
     SetBpm(f64),
     SetSustain(f64),
+    SetVcf(VcfSettings),
     Clear,
     SetVol(f32),
     SetPaused(bool),

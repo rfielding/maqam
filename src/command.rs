@@ -1,12 +1,23 @@
 // command.rs — mini-language parser
 
 use crate::tuning::{Maqam, Pitch};
+use crate::vcf::{VcfTarget, VcoWave};
 
 pub struct JinsSpec {
     pub src: String,
     pub root: Pitch,
     pub maqam: Maqam,
     pub groups: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VcfChange {
+    pub enabled: Option<bool>,
+    pub target: Option<VcfTarget>,
+    pub cutoff_hz: Option<ValueChange>,
+    pub resonance: Option<ValueChange>,
+    pub drive: Option<ValueChange>,
+    pub wave: Option<VcoWave>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -76,6 +87,10 @@ pub enum Cmd {
         before: isize,
         change: ValueChange,
     },
+    InsertVcf {
+        before: isize,
+        change: VcfChange,
+    },
     MoveUp(isize),
     MoveDown(isize),
     Edit {
@@ -96,6 +111,10 @@ pub enum Cmd {
         id: isize,
         change: ValueChange,
     },
+    EditVcf {
+        id: isize,
+        change: VcfChange,
+    },
     InsertJump {
         before: isize,
         to: isize,
@@ -105,6 +124,7 @@ pub enum Cmd {
     Rotate,
     SetBpm(ValueChange),
     SetSustain(ValueChange),
+    SetVcf(VcfChange),
     SetVol(f32),
     Record(usize),
     TogglePause {
@@ -230,6 +250,7 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
             Cmd::Jump { to, times } => Ok(Cmd::EditJump { id, to, times }),
             Cmd::SetBpm(change) => Ok(Cmd::EditBpm { id, change }),
             Cmd::SetSustain(change) => Ok(Cmd::EditSustain { id, change }),
+            Cmd::SetVcf(change) => Ok(Cmd::EditVcf { id, change }),
             _ => Err("unsupported command after edit".into()),
         };
     }
@@ -281,6 +302,7 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
             Cmd::Jump { to, times } => Ok(Cmd::InsertJump { before, to, times }),
             Cmd::SetBpm(change) => Ok(Cmd::InsertBpm { before, change }),
             Cmd::SetSustain(change) => Ok(Cmd::InsertSustain { before, change }),
+            Cmd::SetVcf(change) => Ok(Cmd::InsertVcf { before, change }),
             _ => Err("unsupported command after insert".into()),
         };
     }
@@ -303,6 +325,15 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
             .ok_or("usage: s <secs|*k|/k|+n|-n>")?;
         let change = ValueChange::parse(tok, "usage: s <secs|*k|/k|+n|-n>")?;
         return Ok(Cmd::SetSustain(change));
+    }
+
+    // ── VCF ──────────────────────────────────────────────────────────────
+    if matches!(
+        al.as_str(),
+        "vcf" | "filter" | "filt" | "cut" | "cutoff" | "res" | "q" | "drive" | "drv"
+    ) && digits.is_empty()
+    {
+        return Ok(Cmd::SetVcf(parse_vcf_change(input)?));
     }
 
     // ── VOL ───────────────────────────────────────────────────────────────
@@ -509,4 +540,126 @@ fn parse_ratio(s: &str) -> Option<(u32, u32)> {
         return None;
     }
     Some((p, q))
+}
+
+fn parse_vcf_change(input: &str) -> Result<VcfChange, String> {
+    let usage = "usage: vcf [all|bass|kanun|kick] <cutoff> [res] [drive] [sin|tri|squ|saw] | vcf [target] off | vcf bass cut=<hz> res=<0..1> drive=<n> wave=<shape> | cut <hz> | res <0..1> | drive <n>";
+    let mut toks = input.split_whitespace();
+    let head = toks.next().unwrap_or("").to_ascii_lowercase();
+    let mut out = VcfChange::default();
+
+    if matches!(head.as_str(), "cut" | "cutoff" | "filt" | "filter") {
+        let tok = toks.next().ok_or(usage)?;
+        out.enabled = Some(true);
+        out.cutoff_hz = Some(ValueChange::parse(tok, usage)?);
+        return Ok(out);
+    }
+    if matches!(head.as_str(), "res" | "q") {
+        let tok = toks.next().ok_or(usage)?;
+        out.enabled = Some(true);
+        out.resonance = Some(ValueChange::parse(tok, usage)?);
+        return Ok(out);
+    }
+    if matches!(head.as_str(), "drive" | "drv") {
+        let tok = toks.next().ok_or(usage)?;
+        out.enabled = Some(true);
+        out.drive = Some(ValueChange::parse(tok, usage)?);
+        return Ok(out);
+    }
+
+    let mut rest: Vec<&str> = toks.collect();
+    if rest.is_empty() {
+        return Err(usage.into());
+    }
+    if let Some(target) = rest.first().and_then(|tok| VcfTarget::parse(tok)) {
+        out.target = Some(target);
+        rest.remove(0);
+        if rest.is_empty() {
+            return Err(usage.into());
+        }
+    }
+    if rest.len() == 1 && rest[0].eq_ignore_ascii_case("off") {
+        out.enabled = Some(false);
+        if out.target.is_none() {
+            out.target = Some(VcfTarget::All);
+        }
+        return Ok(out);
+    }
+
+    let has_named = rest.iter().any(|tok| {
+        tok.contains('=')
+            || matches!(
+                tok.to_ascii_lowercase().as_str(),
+                "cut"
+                    | "cutoff"
+                    | "freq"
+                    | "frequency"
+                    | "res"
+                    | "q"
+                    | "reso"
+                    | "resonance"
+                    | "drive"
+                    | "drv"
+                    | "wave"
+                    | "wav"
+                    | "shape"
+            )
+    });
+
+    if !has_named {
+        out.enabled = Some(true);
+        if let Some(wave) = rest.last().and_then(|tok| VcoWave::parse(tok)) {
+            out.wave = Some(wave);
+            rest.pop();
+        }
+        if rest.is_empty() {
+            return Err(usage.into());
+        }
+        out.cutoff_hz = Some(ValueChange::parse(rest[0], usage)?);
+        if let Some(tok) = rest.get(1) {
+            out.resonance = Some(ValueChange::parse(tok, usage)?);
+        }
+        if let Some(tok) = rest.get(2) {
+            out.drive = Some(ValueChange::parse(tok, usage)?);
+        }
+        if rest.len() > 3 {
+            return Err(usage.into());
+        }
+        return Ok(out);
+    }
+
+    if let Some(wave) = rest.last().and_then(|tok| VcoWave::parse(tok)) {
+        out.wave = Some(wave);
+        rest.pop();
+    }
+
+    let mut i = 0usize;
+    while i < rest.len() {
+        out.enabled = Some(true);
+        let tok = rest[i];
+        let (name, value) = if let Some((name, value)) = tok.split_once('=') {
+            (name.to_ascii_lowercase(), value)
+        } else {
+            let name = tok.to_ascii_lowercase();
+            i += 1;
+            let value = rest.get(i).ok_or(usage)?;
+            (name, *value)
+        };
+        match name.as_str() {
+            "cut" | "cutoff" | "freq" | "frequency" => {
+                out.cutoff_hz = Some(ValueChange::parse(value, usage)?)
+            }
+            "res" | "q" | "reso" | "resonance" => {
+                out.resonance = Some(ValueChange::parse(value, usage)?)
+            }
+            "drive" | "drv" => out.drive = Some(ValueChange::parse(value, usage)?),
+            "wave" | "wav" | "shape" => {
+                out.wave = Some(VcoWave::parse(value).ok_or(usage)?);
+            }
+            _ => return Err(format!("unknown vcf parameter '{name}'")),
+        }
+        i += 1;
+    }
+
+    Ok(out)
 }

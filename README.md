@@ -126,6 +126,7 @@ i <id> <phrase>                 ← insert phrase before id
 i <id> j <target> [times]       ← insert jump entry before id
 i <id> bpm <n|+n|-n|*k|/k>      ← insert BPM settings entry before id
 i <id> s <n|+n|-n|*k|/k>        ← insert sustain settings entry before id
+i <id> vcf <target> <cut> [res] [drive] [wave] ← insert VCF/VCO settings entry before id
 ```
 
 ```
@@ -133,6 +134,7 @@ i 2 f hijaz 332                 ← insert hijaz before phrase 2
 i 1 j 0 3                       ← insert "loop back to 0, 3 times" before phrase 1
 i 1 bpm 180                     ← insert a tempo change before phrase 1
 i 1 sus 1.5                     ← insert a sustain change before phrase 1
+i 1 vcf bass 900 0.65 3.5 saw   ← insert a bass filter change before phrase 1
 ```
 
 #### Edit
@@ -142,6 +144,7 @@ edit <id> <phrase>              ← replace with a phrase
 edit <id> j <target> [times]    ← replace with a jump entry
 edit <id> bpm <n|+n|-n|*k|/k>   ← replace with a BPM settings entry
 edit <id> s <n|+n|-n|*k|/k>     ← replace with a sustain settings entry
+edit <id> vcf <target> <cut> [res] [drive] [wave] ← replace with a VCF/VCO settings entry
 ```
 
 ```
@@ -149,6 +152,7 @@ edit 2 d kurd 44                ← change phrase 2 to D Kurd with rhythm 44
 edit 1 j 0 6                    ← change phrase 1 to loop 6 times
 edit 1 bpm 180                  ← change entry 1 to a tempo change
 edit 1 sus 1.5                  ← change entry 1 to a sustain change
+edit 1 vcf kanun cut=900 res=0.65 drive=3.5 tri
 ```
 
 Editing the currently-playing phrase is blocked.
@@ -190,6 +194,14 @@ bpm <n>         tempo in BPM (20–400), default 120
 bpm <+n|-n|*k|/k>   relative tempo change from current BPM
 s <n>           sustain in seconds (0.05–10), default 1.25
 s <+n|-n|*k|/k>     relative sustain change from current value
+vcf <target> <cut> [res] [drive] [wave] Moog-ish VCO into low-pass VCF, default off
+vcf off         bypass VCF entirely
+vcf <target> off disable VCF for one target
+vcf targets: all, bass, kanun, kick
+vcf waves: sin, tri, squ, saw
+cut <n>         update VCF cutoff in Hz (10–22000)
+res <n>         update VCF resonance (0–0.98)
+drive <n>       update VCF drive (0.1–12)
 vol <n>         volume multiplier (0–2), default 1.0
 ```
 
@@ -198,10 +210,15 @@ bpm 180
 bpm *2
 s 2
 s *0.8
+vcf bass 900 0.65 3.5 saw
+vcf kanun cut=2400 res=0.35 drive=2.0 tri
+vcf kick cut=700 res=0.25 drive=2.5 squ
+vcf off
+cut +100
 vol 0.8
 ```
 
-`bpm ...` and `s ...` add settings entries to the sequence as well as updating
+`bpm ...`, `s ...`, and `vcf ...` add settings entries to the sequence as well as updating
 the current global playback state, so they can be moved with `up`/`down` and
 saved directly into `.mq` sessions.
 
