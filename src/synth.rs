@@ -122,8 +122,6 @@ pub enum VoiceKind {
     PhraseChange,
     MelodyFm,
     SubBass,
-    Rimshot,
-    Accent,
 }
 
 pub struct Voice {
@@ -131,7 +129,6 @@ pub struct Voice {
     pub age: usize,
     pub freq: f64,
     pub phase: f64,
-    pub mod_phase: f64,
     pub sustain_secs: f64,
     pub gain_override: Option<f32>,
     pub pan: f32,
@@ -140,14 +137,6 @@ pub struct Voice {
 }
 
 impl Voice {
-    #[allow(dead_code)]
-    pub fn floor_tom() -> Self {
-        Self::mk(VoiceKind::FloorTom, 40.0, 0.0)
-    }
-    #[allow(dead_code)]
-    pub fn kick() -> Self {
-        Self::mk(VoiceKind::FloorTom, 40.0, 0.0)
-    }
     pub fn snare() -> Self {
         Self::mk(VoiceKind::Snare, 0.0, 0.0)
     }
@@ -159,10 +148,6 @@ impl Voice {
         v.gain_override = Some(gain);
         v
     }
-    #[allow(dead_code)]
-    pub fn accent(hz: f64) -> Self {
-        Self::mk(VoiceKind::Accent, hz, 0.0)
-    }
 
     fn mk(kind: VoiceKind, freq: f64, sustain_secs: f64) -> Self {
         Voice {
@@ -170,17 +155,12 @@ impl Voice {
             age: 0,
             freq,
             phase: 0.0,
-            mod_phase: 0.0,
             sustain_secs,
             gain_override: None,
             pan: 0.0,
             release_frames: None,
             done: false,
         }
-    }
-
-    pub fn sample(&mut self, sr: f64) -> f32 {
-        self.sample_with_wave(sr, None)
     }
 
     pub fn sample_with_wave(&mut self, sr: f64, wave: Option<VcoWave>) -> f32 {
@@ -190,13 +170,6 @@ impl Voice {
         let (osc, amp, fin): (f32, f32, bool) = match self.kind {
             VoiceKind::FloorTom => {
                 let freq = self.freq * (1.0 + 1.8 * (-t * 12.0).exp());
-                self.phase += freq * dt;
-                let osc = wave_sample(self.phase, wave);
-                let amp = (-t * 7.0).exp() as f32;
-                (osc, amp, t > 0.55)
-            }
-            VoiceKind::Rimshot => {
-                let freq = self.freq * (1.0 + 1.8 * (-t * 12.0).exp()) * 0.25;
                 self.phase += freq * dt;
                 let osc = wave_sample(self.phase, wave);
                 let amp = (-t * 7.0).exp() as f32;
@@ -223,23 +196,6 @@ impl Voice {
                 (osc, amp, t > 0.25)
             }
             VoiceKind::Snare => (rand_f32(), (-t * 28.0).exp() as f32, t > 0.14),
-            VoiceKind::Accent => {
-                let noise = rand_f32();
-                let shimmer_freq = self.freq * 6.0;
-                self.phase += shimmer_freq * dt;
-                let shimmer = (self.phase * std::f64::consts::TAU).sin() as f32;
-                let osc = noise * 0.75 + shimmer * 0.25;
-                let amp = if t < 0.003 {
-                    (t / 0.003) as f32
-                } else if t < 0.04 {
-                    (1.0 - (t - 0.003) / 0.037) as f32 * 0.9 + 0.1
-                } else if t < 0.18 {
-                    (0.1 * (1.0 - (t - 0.04) / 0.14)).max(0.0) as f32
-                } else {
-                    0.0
-                };
-                (osc, amp, t > 0.20)
-            }
             VoiceKind::SubBass => {
                 let sus = self.sustain_secs;
                 self.phase += self.freq * dt;
@@ -302,11 +258,9 @@ impl Voice {
         let gain: f32 = self.gain_override.unwrap_or_else(|| match self.kind {
             VoiceKind::FloorTom => 0.65,
             VoiceKind::Snare => 0.28,
-            VoiceKind::Rimshot => 0.45,
             VoiceKind::Crash => 0.42,
             VoiceKind::PhraseChange => 0.50,
             VoiceKind::MelodyFm => 0.20,
-            VoiceKind::Accent => 0.35,
             VoiceKind::SubBass => 0.50,
         });
         (osc * amp * gain * release_gain).clamp(-1.0, 1.0)

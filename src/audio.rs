@@ -17,8 +17,6 @@ use crate::vcf::{MoogLadder, VcfSettings, VcfTarget};
 // ── Playback state ────────────────────────────────────────────────────────────
 
 struct BarState {
-    #[allow(dead_code)]
-    bar_samples: usize,
     subdiv_samples: f64,
     bar_pos: usize,
     last_subdiv: Option<usize>,
@@ -27,8 +25,6 @@ struct BarState {
 struct PlayingPhrase {
     phrase: Phrase,
     bar_states: Vec<BarState>,
-    #[allow(dead_code)]
-    current_bar: usize,
     plays_done: usize,
 }
 
@@ -38,7 +34,6 @@ impl PlayingPhrase {
         PlayingPhrase {
             phrase,
             bar_states,
-            current_bar: 0,
             plays_done: 0,
         }
     }
@@ -67,11 +62,9 @@ enum PendingControl {
 fn make_bar_states(phrase: &Phrase, sr: f64, bpm: f64) -> Vec<BarState> {
     let subdiv_secs = 60.0 / (bpm * 2.0);
     std::iter::once(&phrase.bar)
-        .map(|bar| {
+        .map(|_| {
             let subdiv_samples = sr * subdiv_secs;
-            let bar_samples = (subdiv_samples * bar.total_subdivs as f64).round() as usize;
             BarState {
-                bar_samples: bar_samples.max(1),
                 subdiv_samples,
                 bar_pos: 0,
                 last_subdiv: None,
