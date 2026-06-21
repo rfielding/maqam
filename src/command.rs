@@ -1,7 +1,8 @@
 // command.rs — mini-language parser
 
+use crate::fx::FxSettings;
 use crate::tuning::{Maqam, Pitch};
-use crate::vcf::{VcfTarget, VcoWave};
+use crate::vcf::{VcfBank, VcfSettings, VcfTarget, VcoWave};
 
 pub struct JinsSpec {
     pub src: String,
@@ -20,17 +21,33 @@ pub struct VcfChange {
     pub wave: Option<VcoWave>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FxChange {
+    pub reverb_enabled: Option<bool>,
+    pub reverb_mix: Option<ValueChange>,
+    pub reverb_decay: Option<ValueChange>,
+    pub delay_enabled: Option<bool>,
+    pub delay_time_secs: Option<ValueChange>,
+    pub delay_feedback: Option<ValueChange>,
+    pub delay_mix: Option<ValueChange>,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum ValueChange {
     Set(f64),
     Add(f64),
     Mul(f64),
     Div(f64),
+    Tick(f64),
 }
 
 impl ValueChange {
     fn parse(token: &str, usage: &str) -> Result<Self, String> {
         let t = token.trim();
+        if let Some(step) = t.strip_suffix('t') {
+            let n = step.parse::<f64>().map_err(|_| usage.to_string())?;
+            return Ok(ValueChange::Tick(n));
+        }
         if t.len() >= 2 {
             let (op, rest) = t.split_at(1);
             let n = rest.parse::<f64>().map_err(|_| usage.to_string())?;
@@ -60,6 +77,7 @@ impl ValueChange {
                 }
                 Ok(current / n)
             }
+            ValueChange::Tick(_) => Ok(current),
         }
     }
 }
@@ -91,6 +109,10 @@ pub enum Cmd {
         before: isize,
         change: VcfChange,
     },
+    InsertFx {
+        before: isize,
+        change: FxChange,
+    },
     MoveUp(isize),
     MoveDown(isize),
     Edit {
@@ -115,6 +137,10 @@ pub enum Cmd {
         id: isize,
         change: VcfChange,
     },
+    EditFx {
+        id: isize,
+        change: FxChange,
+    },
     InsertJump {
         before: isize,
         to: isize,
@@ -125,6 +151,7 @@ pub enum Cmd {
     SetBpm(ValueChange),
     SetSustain(ValueChange),
     SetVcf(VcfChange),
+    SetFx(FxChange),
     SetVol(f32),
     Record(usize),
     TogglePause {
@@ -251,6 +278,7 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
             Cmd::SetBpm(change) => Ok(Cmd::EditBpm { id, change }),
             Cmd::SetSustain(change) => Ok(Cmd::EditSustain { id, change }),
             Cmd::SetVcf(change) => Ok(Cmd::EditVcf { id, change }),
+            Cmd::SetFx(change) => Ok(Cmd::EditFx { id, change }),
             _ => Err("unsupported command after edit".into()),
         };
     }
@@ -303,6 +331,7 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
             Cmd::SetBpm(change) => Ok(Cmd::InsertBpm { before, change }),
             Cmd::SetSustain(change) => Ok(Cmd::InsertSustain { before, change }),
             Cmd::SetVcf(change) => Ok(Cmd::InsertVcf { before, change }),
+            Cmd::SetFx(change) => Ok(Cmd::InsertFx { before, change }),
             _ => Err("unsupported command after insert".into()),
         };
     }
@@ -334,6 +363,11 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
     ) && digits.is_empty()
     {
         return Ok(Cmd::SetVcf(parse_vcf_change(input)?));
+    }
+
+    // ── FX ───────────────────────────────────────────────────────────────
+    if matches!(al.as_str(), "fx" | "reverb" | "rev" | "delay" | "pingpong") && digits.is_empty() {
+        return Ok(Cmd::SetFx(parse_fx_change(input)?));
     }
 
     // ── VOL ───────────────────────────────────────────────────────────────
@@ -543,7 +577,7 @@ fn parse_ratio(s: &str) -> Option<(u32, u32)> {
 }
 
 fn parse_vcf_change(input: &str) -> Result<VcfChange, String> {
-    let usage = "usage: vcf [all|bass|kanun|kick] <cutoff> [res] [drive] [sin|tri|squ|saw] | vcf [target] off | vcf bass cut=<hz> res=<0..1> drive=<n> wave=<shape> | cut <hz> | res <0..1> | drive <n>";
+    let usage = "usage: vcf [all|bass|kanun|kick] <cutoff> [res] [drive] | vcf [target] off | vcf bass cut=<hz|+n|-n|+nt> res=<0..1|+n|-n|+nt> drive=<n|+n|-n|+nt> wave=<shape> | cut <hz> | res <0..1> | drive <n>";
     let mut toks = input.split_whitespace();
     let head = toks.next().unwrap_or("").to_ascii_lowercase();
     let mut out = VcfChange::default();
@@ -608,10 +642,6 @@ fn parse_vcf_change(input: &str) -> Result<VcfChange, String> {
 
     if !has_named {
         out.enabled = Some(true);
-        if let Some(wave) = rest.last().and_then(|tok| VcoWave::parse(tok)) {
-            out.wave = Some(wave);
-            rest.pop();
-        }
         if rest.is_empty() {
             return Err(usage.into());
         }
@@ -628,9 +658,43 @@ fn parse_vcf_change(input: &str) -> Result<VcfChange, String> {
         return Ok(out);
     }
 
-    if let Some(wave) = rest.last().and_then(|tok| VcoWave::parse(tok)) {
-        out.wave = Some(wave);
-        rest.pop();
+    let mut positional = Vec::new();
+    while let Some(tok) = rest.first() {
+        let lower = tok.to_ascii_lowercase();
+        let is_named_token = tok.contains('=')
+            || matches!(
+                lower.as_str(),
+                "cut"
+                    | "cutoff"
+                    | "freq"
+                    | "frequency"
+                    | "res"
+                    | "q"
+                    | "reso"
+                    | "resonance"
+                    | "drive"
+                    | "drv"
+                    | "wave"
+                    | "wav"
+                    | "shape"
+            );
+        if is_named_token {
+            break;
+        }
+        positional.push(rest.remove(0));
+        if positional.len() > 3 {
+            return Err(usage.into());
+        }
+    }
+    if !positional.is_empty() {
+        out.enabled = Some(true);
+        out.cutoff_hz = Some(ValueChange::parse(positional[0], usage)?);
+        if let Some(tok) = positional.get(1) {
+            out.resonance = Some(ValueChange::parse(tok, usage)?);
+        }
+        if let Some(tok) = positional.get(2) {
+            out.drive = Some(ValueChange::parse(tok, usage)?);
+        }
     }
 
     let mut i = 0usize;
@@ -662,4 +726,218 @@ fn parse_vcf_change(input: &str) -> Result<VcfChange, String> {
     }
 
     Ok(out)
+}
+
+pub fn apply_vcf_change(current: VcfBank, change: VcfChange) -> Result<VcfSettings, String> {
+    let target = change.target.unwrap_or(current.focus);
+    let current = current.get(target);
+    let mut cutoff_step_per_tick = current.cutoff_step_per_tick;
+    let cutoff_hz = match change.cutoff_hz {
+        Some(ValueChange::Tick(step)) => {
+            cutoff_step_per_tick = step as f32;
+            current.cutoff_hz
+        }
+        Some(ValueChange::Add(0.0)) => {
+            cutoff_step_per_tick = 0.0;
+            current.cutoff_hz
+        }
+        Some(change) => change.apply(current.cutoff_hz as f64)? as f32,
+        None => current.cutoff_hz,
+    };
+    if !(10.0..=22_000.0).contains(&cutoff_hz) {
+        return Err(format!("vcf cutoff {cutoff_hz} Hz out of range 10..22000"));
+    }
+
+    let mut resonance_step_per_tick = current.resonance_step_per_tick;
+    let resonance = match change.resonance {
+        Some(ValueChange::Tick(step)) => {
+            resonance_step_per_tick = step as f32;
+            current.resonance
+        }
+        Some(ValueChange::Add(0.0)) => {
+            resonance_step_per_tick = 0.0;
+            current.resonance
+        }
+        Some(change) => change.apply(current.resonance as f64)? as f32,
+        None => current.resonance,
+    };
+    if !(0.0..=0.98).contains(&resonance) {
+        return Err(format!("vcf resonance {resonance} out of range 0..0.98"));
+    }
+
+    let mut drive_step_per_tick = current.drive_step_per_tick;
+    let drive = match change.drive {
+        Some(ValueChange::Tick(step)) => {
+            drive_step_per_tick = step as f32;
+            current.drive
+        }
+        Some(ValueChange::Add(0.0)) => {
+            drive_step_per_tick = 0.0;
+            current.drive
+        }
+        Some(change) => change.apply(current.drive as f64)? as f32,
+        None => current.drive,
+    };
+    if !(0.1..=12.0).contains(&drive) {
+        return Err(format!("vcf drive {drive} out of range 0.1..12"));
+    }
+
+    Ok(VcfSettings {
+        enabled: change.enabled.unwrap_or(current.enabled),
+        target,
+        cutoff_hz,
+        resonance,
+        drive,
+        cutoff_step_per_tick,
+        resonance_step_per_tick,
+        drive_step_per_tick,
+        wave: change.wave.unwrap_or(current.wave),
+    })
+}
+
+fn parse_fx_change(input: &str) -> Result<FxChange, String> {
+    let usage = "usage: reverb mix=<0..1> decay=<0..0.98> | delay time=<secs> feedback=<0..0.95> mix=<0..1> | pingpong ... | reverb off | delay off | fx off";
+    let mut toks = input.split_whitespace();
+    let head = toks.next().unwrap_or("").to_ascii_lowercase();
+    let rest: Vec<&str> = toks.collect();
+    let mut out = FxChange::default();
+
+    if head == "fx" {
+        if rest.len() == 1 && rest[0].eq_ignore_ascii_case("off") {
+            out.reverb_enabled = Some(false);
+            out.delay_enabled = Some(false);
+            return Ok(out);
+        }
+        return Err(usage.into());
+    }
+
+    let is_reverb = matches!(head.as_str(), "reverb" | "rev");
+    let is_delay = matches!(head.as_str(), "delay" | "pingpong");
+    if !is_reverb && !is_delay {
+        return Err(usage.into());
+    }
+    if rest.len() == 1 && rest[0].eq_ignore_ascii_case("off") {
+        if is_reverb {
+            out.reverb_enabled = Some(false);
+        } else {
+            out.delay_enabled = Some(false);
+        }
+        return Ok(out);
+    }
+    if rest.is_empty() || (rest.len() == 1 && rest[0].eq_ignore_ascii_case("on")) {
+        if is_reverb {
+            out.reverb_enabled = Some(true);
+        } else {
+            out.delay_enabled = Some(true);
+        }
+        return Ok(out);
+    }
+
+    if is_reverb {
+        out.reverb_enabled = Some(true);
+    } else {
+        out.delay_enabled = Some(true);
+    }
+
+    let mut i = 0usize;
+    while i < rest.len() {
+        let tok = rest[i];
+        let (name, value) = if let Some((name, value)) = tok.split_once('=') {
+            (name.to_ascii_lowercase(), value)
+        } else {
+            let name = tok.to_ascii_lowercase();
+            i += 1;
+            let value = rest.get(i).ok_or(usage)?;
+            (name, *value)
+        };
+        let change = ValueChange::parse(value, usage)?;
+        match name.as_str() {
+            "mix" if is_reverb => out.reverb_mix = Some(change),
+            "decay" | "room" | "feedback" if is_reverb => out.reverb_decay = Some(change),
+            "time" | "t" | "secs" | "seconds" if is_delay => out.delay_time_secs = Some(change),
+            "feedback" | "fb" if is_delay => out.delay_feedback = Some(change),
+            "mix" if is_delay => out.delay_mix = Some(change),
+            _ => return Err(format!("unknown fx parameter '{name}'")),
+        }
+        i += 1;
+    }
+    Ok(out)
+}
+
+pub fn apply_fx_change(current: FxSettings, change: FxChange) -> Result<FxSettings, String> {
+    let mut next = current;
+    if let Some(enabled) = change.reverb_enabled {
+        next.reverb_enabled = enabled;
+    }
+    if let Some(enabled) = change.delay_enabled {
+        next.delay_enabled = enabled;
+    }
+    apply_fx_value(
+        &mut next.reverb_mix,
+        &mut next.reverb_mix_step_per_tick,
+        change.reverb_mix,
+    )?;
+    apply_fx_value(
+        &mut next.reverb_decay,
+        &mut next.reverb_decay_step_per_tick,
+        change.reverb_decay,
+    )?;
+    apply_fx_value(
+        &mut next.delay_time_secs,
+        &mut next.delay_time_step_per_tick,
+        change.delay_time_secs,
+    )?;
+    apply_fx_value(
+        &mut next.delay_feedback,
+        &mut next.delay_feedback_step_per_tick,
+        change.delay_feedback,
+    )?;
+    apply_fx_value(
+        &mut next.delay_mix,
+        &mut next.delay_mix_step_per_tick,
+        change.delay_mix,
+    )?;
+    validate_fx(next)
+}
+
+fn apply_fx_value(
+    value: &mut f32,
+    step: &mut f32,
+    change: Option<ValueChange>,
+) -> Result<(), String> {
+    match change {
+        Some(ValueChange::Tick(n)) => *step = n as f32,
+        Some(ValueChange::Add(0.0)) => *step = 0.0,
+        Some(change) => *value = change.apply(*value as f64)? as f32,
+        None => {}
+    }
+    Ok(())
+}
+
+fn validate_fx(next: FxSettings) -> Result<FxSettings, String> {
+    if !(0.0..=1.0).contains(&next.reverb_mix) {
+        return Err(format!("reverb mix {} out of range 0..1", next.reverb_mix));
+    }
+    if !(0.0..=0.98).contains(&next.reverb_decay) {
+        return Err(format!(
+            "reverb decay {} out of range 0..0.98",
+            next.reverb_decay
+        ));
+    }
+    if !(0.01..=2.0).contains(&next.delay_time_secs) {
+        return Err(format!(
+            "delay time {}s out of range 0.01..2",
+            next.delay_time_secs
+        ));
+    }
+    if !(0.0..=0.95).contains(&next.delay_feedback) {
+        return Err(format!(
+            "delay feedback {} out of range 0..0.95",
+            next.delay_feedback
+        ));
+    }
+    if !(0.0..=1.0).contains(&next.delay_mix) {
+        return Err(format!("delay mix {} out of range 0..1", next.delay_mix));
+    }
+    Ok(next)
 }

@@ -3,9 +3,11 @@
 // Comma-separated ajnas form ONE combined scale (stacked, not sequential).
 // The melody walks through all frequencies of all ajnas together.
 
+use crate::command::{FxChange, VcfChange};
+use crate::fx::FxSettings;
 use crate::synth::{expand_degrees, zigzag_walk};
 use crate::tuning::{snap_to_oud_lattice, Maqam, Pitch};
-use crate::vcf::VcfSettings;
+use crate::vcf::VcfBank;
 
 // ── Bar event ─────────────────────────────────────────────────────────────────
 
@@ -67,7 +69,8 @@ pub struct JumpSpec {
 pub enum ControlSpec {
     SetBpm(f64),
     SetSustain(f64),
-    SetVcf(VcfSettings),
+    SetVcf(VcfChange),
+    SetFx(FxChange),
 }
 
 #[derive(Debug, Clone)]
@@ -374,7 +377,10 @@ pub enum AudioCmd {
     Rotate,
     SetBpm(f64),
     SetSustain(f64),
-    SetVcf(VcfSettings),
+    SetVcf(VcfChange),
+    SetVcfBank(VcfBank),
+    SetFx(FxChange),
+    SetFxSettings(FxSettings),
     Clear,
     SetVol(f32),
     SetPaused(bool),

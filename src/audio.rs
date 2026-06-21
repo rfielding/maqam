@@ -8,11 +8,13 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::Receiver;
 
+use crate::command::VcfChange;
+use crate::fx::{FxProcessor, FxSettings};
 use crate::sequencer::{AudioCmd, ControlSpec, Phrase, SubdivEvent};
 use crate::synth::{
     evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Milestone, Voice, VoiceKind,
 };
-use crate::vcf::{MoogLadder, VcfSettings, VcfTarget};
+use crate::vcf::{MoogLadder, VcfBank, VcfSettings, VcfTarget};
 
 // ── Playback state ────────────────────────────────────────────────────────────
 
@@ -56,7 +58,89 @@ impl PlayingPhrase {
 enum PendingControl {
     SetBpm(f64),
     SetSustain(f64),
-    SetVcf(VcfSettings),
+    SetVcf(VcfChange),
+    SetFx(crate::command::FxChange),
+}
+
+struct StereoFilter {
+    left: MoogLadder,
+    right: MoogLadder,
+}
+
+impl StereoFilter {
+    fn new(sr: f32) -> Self {
+        Self {
+            left: MoogLadder::new(sr),
+            right: MoogLadder::new(sr),
+        }
+    }
+
+    fn set_settings(&mut self, settings: VcfSettings) {
+        self.left.set_settings(settings);
+        self.right.set_settings(settings);
+    }
+
+    fn update_settings(&mut self, settings: VcfSettings) {
+        self.left.update_settings(settings);
+        self.right.update_settings(settings);
+    }
+
+    fn reset(&mut self) {
+        self.left.reset();
+        self.right.reset();
+    }
+
+    fn process(&mut self, left: f32, right: f32) -> (f32, f32) {
+        (self.left.process(left), self.right.process(right))
+    }
+}
+
+struct FilterBank {
+    all: StereoFilter,
+    bass: StereoFilter,
+    kanun: StereoFilter,
+    kick: StereoFilter,
+}
+
+impl FilterBank {
+    fn new(sr: f32) -> Self {
+        Self {
+            all: StereoFilter::new(sr),
+            bass: StereoFilter::new(sr),
+            kanun: StereoFilter::new(sr),
+            kick: StereoFilter::new(sr),
+        }
+    }
+
+    fn set_bank(&mut self, bank: VcfBank) {
+        self.all.set_settings(bank.all);
+        self.bass.set_settings(bank.bass);
+        self.kanun.set_settings(bank.kanun);
+        self.kick.set_settings(bank.kick);
+    }
+
+    fn update_bank(&mut self, bank: VcfBank) {
+        self.all.update_settings(bank.all);
+        self.bass.update_settings(bank.bass);
+        self.kanun.update_settings(bank.kanun);
+        self.kick.update_settings(bank.kick);
+    }
+
+    fn apply(&mut self, settings: VcfSettings) {
+        match settings.target {
+            VcfTarget::All => self.all.set_settings(settings),
+            VcfTarget::Bass => self.bass.set_settings(settings),
+            VcfTarget::Kanun => self.kanun.set_settings(settings),
+            VcfTarget::Kick => self.kick.set_settings(settings),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.all.reset();
+        self.bass.reset();
+        self.kanun.reset();
+        self.kick.reset();
+    }
 }
 
 fn make_bar_states(phrase: &Phrase, sr: f64, bpm: f64) -> Vec<BarState> {
@@ -90,9 +174,10 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
     let mut bpm = 120.0f64;
     let mut sustain = 1.25f64;
     let mut vol = 1.0f32;
-    let mut vcf = VcfSettings::default();
-    let mut vcf_l = MoogLadder::new(sr as f32);
-    let mut vcf_r = MoogLadder::new(sr as f32);
+    let mut vcf = VcfBank::default();
+    let mut vcf_filters = FilterBank::new(sr as f32);
+    let mut fx = FxSettings::default();
+    let mut fx_processor = FxProcessor::new(sr as f32);
     let mut paused = false;
     let mut jump_counters: std::collections::HashMap<usize, usize> =
         std::collections::HashMap::new();
@@ -125,10 +210,25 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                     AudioCmd::SetSustain(s) => {
                         sustain = s;
                     }
-                    AudioCmd::SetVcf(v) => {
+                    AudioCmd::SetVcfBank(v) => {
                         vcf = v;
-                        vcf_l.set_settings(v);
-                        vcf_r.set_settings(v);
+                        vcf_filters.set_bank(v);
+                    }
+                    AudioCmd::SetVcf(change) => {
+                        if let Ok(setting) = crate::command::apply_vcf_change(vcf, change) {
+                            vcf.apply(setting);
+                            vcf_filters.apply(setting);
+                        }
+                    }
+                    AudioCmd::SetFxSettings(v) => {
+                        fx = v;
+                        fx_processor.set_settings(v);
+                    }
+                    AudioCmd::SetFx(change) => {
+                        if let Ok(setting) = crate::command::apply_fx_change(fx, change) {
+                            fx = setting;
+                            fx_processor.set_settings(setting);
+                        }
                     }
                     AudioCmd::SetVol(v) => {
                         vol = v;
@@ -217,10 +317,17 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                         PendingControl::SetSustain(v) => {
                             sustain = v;
                         }
-                        PendingControl::SetVcf(v) => {
-                            vcf = v;
-                            vcf_l.set_settings(v);
-                            vcf_r.set_settings(v);
+                        PendingControl::SetVcf(change) => {
+                            if let Ok(setting) = crate::command::apply_vcf_change(vcf, change) {
+                                vcf.apply(setting);
+                                vcf_filters.apply(setting);
+                            }
+                        }
+                        PendingControl::SetFx(change) => {
+                            if let Ok(setting) = crate::command::apply_fx_change(fx, change) {
+                                fx = setting;
+                                fx_processor.set_settings(setting);
+                            }
                         }
                     }
                 }
@@ -258,13 +365,16 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                             root_hz,
                             subdiv_secs,
                         );
+                        vcf.advance_tick();
+                        vcf_filters.update_bank(vcf);
+                        fx.advance_tick();
+                        fx_processor.set_settings(fx);
                     }
                 }
 
                 voices.retain(|v| !v.done);
-                if voices.is_empty() {
-                    vcf_l.reset();
-                    vcf_r.reset();
+                if voices.is_empty() && !fx.reverb_enabled && !fx.delay_enabled {
+                    vcf_filters.reset();
                     for sample in frame.iter_mut() {
                         *sample = 0.0;
                     }
@@ -272,33 +382,71 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                 }
 
                 let (mut dry_left, mut dry_right) = (0f32, 0f32);
-                let (mut vcf_left, mut vcf_right) = (0f32, 0f32);
+                let (mut all_left, mut all_right) = (0f32, 0f32);
+                let (mut bass_left, mut bass_right) = (0f32, 0f32);
+                let (mut kanun_left, mut kanun_right) = (0f32, 0f32);
+                let (mut kick_left, mut kick_right) = (0f32, 0f32);
                 for v in voices.iter_mut() {
-                    let routed_to_vcf = vcf.enabled && vcf_matches(vcf.target, v.kind);
-                    let s = v.sample_with_wave(sr, routed_to_vcf.then_some(vcf.wave));
+                    let setting = if vcf.all.enabled {
+                        Some(vcf.all)
+                    } else {
+                        vcf_target_for_kind(v.kind).and_then(|target| {
+                            let setting = vcf.get(target);
+                            setting.enabled.then_some(setting)
+                        })
+                    };
+                    let s = v.sample_with_wave(sr, setting.map(|setting| setting.wave));
                     let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
                     let left = s * angle.cos();
                     let right = s * angle.sin();
-                    if routed_to_vcf {
-                        vcf_left += left;
-                        vcf_right += right;
-                    } else {
-                        dry_left += left;
-                        dry_right += right;
+                    match setting.map(|setting| setting.target) {
+                        Some(VcfTarget::All) => {
+                            all_left += left;
+                            all_right += right;
+                        }
+                        Some(VcfTarget::Bass) => {
+                            bass_left += left;
+                            bass_right += right;
+                        }
+                        Some(VcfTarget::Kanun) => {
+                            kanun_left += left;
+                            kanun_right += right;
+                        }
+                        Some(VcfTarget::Kick) => {
+                            kick_left += left;
+                            kick_right += right;
+                        }
+                        None => {
+                            dry_left += left;
+                            dry_right += right;
+                        }
                     }
                 }
-                let mut left = if vcf.enabled {
-                    dry_left + vcf_l.process(vcf_left)
+                let (mut left, mut right) = (dry_left, dry_right);
+                if vcf.all.enabled {
+                    let filtered = vcf_filters.all.process(all_left, all_right);
+                    left += filtered.0;
+                    right += filtered.1;
                 } else {
-                    dry_left
-                };
-                let mut right = if vcf.enabled {
-                    dry_right + vcf_r.process(vcf_right)
-                } else {
-                    dry_right
-                };
-                left = (left * vol).clamp(-1.0, 1.0);
-                right = (right * vol).clamp(-1.0, 1.0);
+                    if vcf.bass.enabled {
+                        let filtered = vcf_filters.bass.process(bass_left, bass_right);
+                        left += filtered.0;
+                        right += filtered.1;
+                    }
+                    if vcf.kanun.enabled {
+                        let filtered = vcf_filters.kanun.process(kanun_left, kanun_right);
+                        left += filtered.0;
+                        right += filtered.1;
+                    }
+                    if vcf.kick.enabled {
+                        let filtered = vcf_filters.kick.process(kick_left, kick_right);
+                        left += filtered.0;
+                        right += filtered.1;
+                    }
+                }
+                let (fx_left, fx_right) = fx_processor.process(left, right);
+                left = (fx_left * vol).clamp(-1.0, 1.0);
+                right = (fx_right * vol).clamp(-1.0, 1.0);
 
                 if frame.len() >= 2 {
                     frame[0] = left;
@@ -383,6 +531,7 @@ fn tick_sequencer(
                 ControlSpec::SetBpm(v) => PendingControl::SetBpm(v),
                 ControlSpec::SetSustain(v) => PendingControl::SetSustain(v),
                 ControlSpec::SetVcf(v) => PendingControl::SetVcf(v),
+                ControlSpec::SetFx(v) => PendingControl::SetFx(v),
             };
             *cur_phrase += 1;
             if *cur_phrase >= phrases.len() {
@@ -487,11 +636,11 @@ fn tick_sequencer(
     (ev, milestone, None)
 }
 
-fn vcf_matches(target: VcfTarget, kind: VoiceKind) -> bool {
-    match target {
-        VcfTarget::All => true,
-        VcfTarget::Bass => matches!(kind, VoiceKind::SubBass),
-        VcfTarget::Kanun => matches!(kind, VoiceKind::MelodyFm),
-        VcfTarget::Kick => matches!(kind, VoiceKind::FloorTom),
+fn vcf_target_for_kind(kind: VoiceKind) -> Option<VcfTarget> {
+    match kind {
+        VoiceKind::SubBass => Some(VcfTarget::Bass),
+        VoiceKind::MelodyFm => Some(VcfTarget::Kanun),
+        VoiceKind::FloorTom => Some(VcfTarget::Kick),
+        _ => None,
     }
 }

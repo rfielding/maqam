@@ -1,9 +1,10 @@
 // app.rs — application state, phrases as top-level units
 
 use crate::command::{self, Cmd, JinsSpec, ValueChange};
+use crate::fx::FxSettings;
 use crate::record;
 use crate::sequencer::{build_control_entry, build_phrase, AudioCmd, BarSpec, ControlSpec, Phrase};
-use crate::vcf::{VcfSettings, VcfTarget, VcoWave};
+use crate::vcf::{VcfBank, VcfSettings, VcfTarget, VcoWave};
 use crossbeam_channel::Sender;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,7 +19,8 @@ pub struct App {
     pub jins_scroll: u16,
     pub bpm: f64,
     pub sustain: f64,
-    pub vcf: VcfSettings,
+    pub vcf: VcfBank,
+    pub fx: FxSettings,
     pub vol: f32,
     pub paused: bool,
     pub should_quit: bool,
@@ -49,7 +51,8 @@ impl App {
             jins_scroll: 0,
             bpm: 120.0,
             sustain: 1.25,
-            vcf: VcfSettings::default(),
+            vcf: VcfBank::default(),
+            fx: FxSettings::default(),
             vol: 1.0,
             paused: false,
             should_quit: false,
@@ -255,11 +258,12 @@ impl App {
         let target_pos = focus_id
             .and_then(|id| self.phrases.iter().position(|p| p.id == id))
             .unwrap_or(0);
-        let (start_bpm, start_sustain, start_vcf) = self.sequence_start_settings();
+        let (start_bpm, start_sustain, start_vcf, start_fx) = self.sequence_start_settings();
         let _ = self.audio_tx.send(AudioCmd::Clear);
         let _ = self.audio_tx.send(AudioCmd::SetBpm(start_bpm));
         let _ = self.audio_tx.send(AudioCmd::SetSustain(start_sustain));
-        let _ = self.audio_tx.send(AudioCmd::SetVcf(start_vcf));
+        let _ = self.audio_tx.send(AudioCmd::SetVcfBank(start_vcf));
+        let _ = self.audio_tx.send(AudioCmd::SetFxSettings(start_fx));
         let _ = self.audio_tx.send(AudioCmd::SetVol(self.vol));
         let _ = self.audio_tx.send(AudioCmd::SetPaused(self.paused));
         for p in self.phrases.iter().cloned() {
@@ -285,16 +289,26 @@ impl App {
         self.phrases.get(cur_pos).map(|p| p.id) == Some(id)
     }
 
-    fn sequence_start_settings(&self) -> (f64, f64, VcfSettings) {
+    fn sequence_start_settings(&self) -> (f64, f64, VcfBank, FxSettings) {
         let mut bpm = 120.0f64;
         let mut sustain = 1.25f64;
-        let mut vcf = VcfSettings::default();
+        let mut vcf = VcfBank::default();
+        let mut fx = FxSettings::default();
         for phrase in &self.phrases {
             if let Some(ctrl) = phrase.control {
                 match ctrl {
                     ControlSpec::SetBpm(v) => bpm = v,
                     ControlSpec::SetSustain(v) => sustain = v,
-                    ControlSpec::SetVcf(v) => vcf = v,
+                    ControlSpec::SetVcf(v) => {
+                        if let Ok(setting) = command::apply_vcf_change(vcf, v) {
+                            vcf.apply(setting);
+                        }
+                    }
+                    ControlSpec::SetFx(v) => {
+                        if let Ok(setting) = command::apply_fx_change(fx, v) {
+                            fx = setting;
+                        }
+                    }
                 }
                 continue;
             }
@@ -302,7 +316,7 @@ impl App {
                 break;
             }
         }
-        (bpm, sustain, vcf)
+        (bpm, sustain, vcf, fx)
     }
 
     fn audition_jins(&mut self, specs: Vec<JinsSpec>) -> Result<(), String> {
@@ -335,7 +349,8 @@ impl App {
         let _ = self.audio_tx.send(AudioCmd::Clear);
         let _ = self.audio_tx.send(AudioCmd::SetBpm(self.bpm));
         let _ = self.audio_tx.send(AudioCmd::SetSustain(self.sustain));
-        let _ = self.audio_tx.send(AudioCmd::SetVcf(self.vcf));
+        let _ = self.audio_tx.send(AudioCmd::SetVcfBank(self.vcf));
+        let _ = self.audio_tx.send(AudioCmd::SetFxSettings(self.fx));
         let _ = self.audio_tx.send(AudioCmd::SetVol(self.vol));
         let _ = self.audio_tx.send(AudioCmd::SetPaused(false));
         let _ = self.audio_tx.send(AudioCmd::AddPhrase(phrase));
@@ -547,7 +562,7 @@ impl App {
             }
 
             Cmd::InsertVcf { before, change } => {
-                let vcf = match apply_vcf_change(self.vcf, change) {
+                let _vcf = match command::apply_vcf_change(self.vcf, change) {
                     Ok(v) => v,
                     Err(e) => {
                         self.message = Some(format!("✗ {e}"));
@@ -567,13 +582,45 @@ impl App {
                 };
                 let id = self.next_phrase_id;
                 self.next_phrase_id += 1;
-                let entry = build_control_entry(id, vcf_src(vcf), ControlSpec::SetVcf(vcf));
+                let entry =
+                    build_control_entry(id, vcf_change_src(change), ControlSpec::SetVcf(change));
                 self.phrases.insert(insert_pos, entry.clone());
                 let _ = self.audio_tx.send(AudioCmd::InsertPhrase {
                     pos: insert_pos,
                     phrase: entry,
                 });
                 self.message = Some(format!("inserted vcf at {insert_pos}"));
+            }
+
+            Cmd::InsertFx { before, change } => {
+                let fx = match command::apply_fx_change(self.fx, change) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.message = Some(format!("✗ {e}"));
+                        return;
+                    }
+                };
+                let insert_pos = match self.resolve_id_ref(before) {
+                    Some(before_id) => self
+                        .phrases
+                        .iter()
+                        .position(|p| p.id == before_id)
+                        .unwrap_or(self.phrases.len()),
+                    None => {
+                        self.message = Some(format!("✗ no phrase id {before}"));
+                        return;
+                    }
+                };
+                let id = self.next_phrase_id;
+                self.next_phrase_id += 1;
+                let entry =
+                    build_control_entry(id, fx_change_src(change), ControlSpec::SetFx(change));
+                self.phrases.insert(insert_pos, entry.clone());
+                let _ = self.audio_tx.send(AudioCmd::InsertPhrase {
+                    pos: insert_pos,
+                    phrase: entry,
+                });
+                self.message = Some(format!("inserted {}", describe_fx(fx)));
             }
 
             Cmd::TogglePause { start_id } => {
@@ -619,12 +666,12 @@ impl App {
                     return;
                 }
                 let phrases = self.phrases.clone();
-                let (bpm, sustain, vcf) = self.sequence_start_settings();
+                let (bpm, sustain, vcf, fx) = self.sequence_start_settings();
                 let (tx, rx) = crossbeam_channel::bounded(1);
                 self.rec_rx = Some(rx);
                 self.message = Some(format!("◉ rendering {}×…", reps));
                 std::thread::spawn(move || {
-                    let result = record::record_cycle(phrases, bpm, sustain, vcf, reps)
+                    let result = record::record_cycle(phrases, bpm, sustain, vcf, fx, reps)
                         .map_err(|e| e.to_string());
                     let _ = tx.send(result);
                 });
@@ -786,7 +833,7 @@ impl App {
                 self.message = Some(format!("s line → {secs:.2}s"));
             }
             Cmd::SetVcf(change) => {
-                let vcf = match apply_vcf_change(self.vcf, change) {
+                let vcf = match command::apply_vcf_change(self.vcf, change) {
                     Ok(v) => v,
                     Err(e) => {
                         self.message = Some(format!("✗ {e}"));
@@ -795,12 +842,31 @@ impl App {
                 };
                 let id = self.next_phrase_id;
                 self.next_phrase_id += 1;
-                let entry = build_control_entry(id, vcf_src(vcf), ControlSpec::SetVcf(vcf));
+                let entry =
+                    build_control_entry(id, vcf_change_src(change), ControlSpec::SetVcf(change));
                 self.phrases.push(entry.clone());
-                self.vcf = vcf;
+                self.vcf.apply(vcf);
                 let _ = self.audio_tx.send(AudioCmd::AddPhrase(entry));
-                let _ = self.audio_tx.send(AudioCmd::SetVcf(vcf));
+                let _ = self.audio_tx.send(AudioCmd::SetVcf(change));
                 self.message = Some(format!("VCF line → {}", describe_vcf(vcf)));
+            }
+            Cmd::SetFx(change) => {
+                let fx = match command::apply_fx_change(self.fx, change) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.message = Some(format!("✗ {e}"));
+                        return;
+                    }
+                };
+                let id = self.next_phrase_id;
+                self.next_phrase_id += 1;
+                let entry =
+                    build_control_entry(id, fx_change_src(change), ControlSpec::SetFx(change));
+                self.phrases.push(entry.clone());
+                self.fx = fx;
+                let _ = self.audio_tx.send(AudioCmd::AddPhrase(entry));
+                let _ = self.audio_tx.send(AudioCmd::SetFx(change));
+                self.message = Some(format!("FX line → {}", describe_fx(fx)));
             }
 
             Cmd::EditJump { id, to, times } => {
@@ -947,17 +1013,48 @@ impl App {
                         return;
                     }
                 };
-                let vcf = match apply_vcf_change(self.vcf, change) {
+                let vcf = match command::apply_vcf_change(self.vcf, change) {
                     Ok(v) => v,
                     Err(e) => {
                         self.message = Some(format!("✗ {e}"));
                         return;
                     }
                 };
-                let entry = build_control_entry(id, vcf_src(vcf), ControlSpec::SetVcf(vcf));
+                let entry =
+                    build_control_entry(id, vcf_change_src(change), ControlSpec::SetVcf(change));
                 self.phrases[pos] = entry.clone();
                 let _ = self.audio_tx.send(AudioCmd::ReplacePhrase(entry));
                 self.message = Some(format!("edited {id} → {}", describe_vcf(vcf)));
+            }
+
+            Cmd::EditFx { id, change } => {
+                let Some(id) = self.resolve_id_ref(id) else {
+                    self.message = Some(format!("✗ no phrase id {id}"));
+                    return;
+                };
+                if self.is_playing_phrase_id(id) {
+                    self.message = Some(format!("✗ phrase {id} is playing — cannot edit"));
+                    return;
+                }
+                let pos = match self.phrases.iter().position(|p| p.id == id) {
+                    Some(p) => p,
+                    None => {
+                        self.message = Some(format!("✗ no phrase id {id}"));
+                        return;
+                    }
+                };
+                let fx = match command::apply_fx_change(self.fx, change) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.message = Some(format!("✗ {e}"));
+                        return;
+                    }
+                };
+                let entry =
+                    build_control_entry(id, fx_change_src(change), ControlSpec::SetFx(change));
+                self.phrases[pos] = entry.clone();
+                let _ = self.audio_tx.send(AudioCmd::ReplacePhrase(entry));
+                self.message = Some(format!("edited {id} → {}", describe_fx(fx)));
             }
 
             Cmd::DeleteBars(ids) => {
@@ -1057,7 +1154,8 @@ impl App {
         crate::tuning::Maqam::reset_to_defaults();
         let mut new_bpm = 120.0f64;
         let mut new_sustain = 1.25f64;
-        let mut new_vcf = VcfSettings::default();
+        let mut new_vcf = VcfBank::default();
+        let mut new_fx = FxSettings::default();
         let mut new_vol = 1.0f32;
         let mut loaded: Vec<Phrase> = Vec::new();
         let mut ids = std::collections::HashSet::new();
@@ -1120,12 +1218,22 @@ impl App {
                         ));
                     }
                     Cmd::SetVcf(change) => {
-                        new_vcf = apply_vcf_change(new_vcf, change)
+                        let setting = command::apply_vcf_change(new_vcf, change)
+                            .map_err(|e| format!("line {line_no}: {e}"))?;
+                        new_vcf.apply(setting);
+                        loaded.push(build_control_entry(
+                            id,
+                            vcf_change_src(change),
+                            ControlSpec::SetVcf(change),
+                        ));
+                    }
+                    Cmd::SetFx(change) => {
+                        new_fx = command::apply_fx_change(new_fx, change)
                             .map_err(|e| format!("line {line_no}: {e}"))?;
                         loaded.push(build_control_entry(
                             id,
-                            vcf_src(new_vcf),
-                            ControlSpec::SetVcf(new_vcf),
+                            fx_change_src(change),
+                            ControlSpec::SetFx(change),
                         ));
                     }
                     _ => return Err(format!("line {line_no}: expected control line")),
@@ -1174,13 +1282,42 @@ impl App {
                         ControlSpec::SetSustain(new_sustain),
                     ));
                 }
+                Some("V") if fields.len() == 3 => {
+                    let parsed =
+                        command::parse(&fields[2]).map_err(|e| format!("line {line_no}: {e}"))?;
+                    let Cmd::SetVcf(change) = parsed else {
+                        return Err(format!("line {line_no}: expected vcf line"));
+                    };
+                    let setting = command::apply_vcf_change(new_vcf, change)
+                        .map_err(|e| format!("line {line_no}: {e}"))?;
+                    new_vcf.apply(setting);
+                    loaded.push(build_control_entry(
+                        id,
+                        vcf_change_src(change),
+                        ControlSpec::SetVcf(change),
+                    ));
+                }
+                Some("F") if fields.len() == 3 => {
+                    let parsed =
+                        command::parse(&fields[2]).map_err(|e| format!("line {line_no}: {e}"))?;
+                    let Cmd::SetFx(change) = parsed else {
+                        return Err(format!("line {line_no}: expected fx line"));
+                    };
+                    new_fx = command::apply_fx_change(new_fx, change)
+                        .map_err(|e| format!("line {line_no}: {e}"))?;
+                    loaded.push(build_control_entry(
+                        id,
+                        fx_change_src(change),
+                        ControlSpec::SetFx(change),
+                    ));
+                }
                 Some("V") if (5..=8).contains(&fields.len()) => {
                     let (target, offset) = if fields.len() >= 6 {
                         let target = VcfTarget::parse(&fields[2])
                             .ok_or_else(|| format!("line {line_no}: bad vcf target"))?;
                         (target, 3)
                     } else {
-                        (new_vcf.target, 2)
+                        (new_vcf.focus, 2)
                     };
                     let cutoff_hz = fields[offset]
                         .trim()
@@ -1207,24 +1344,23 @@ impl App {
                         VcoWave::parse(&fields[7])
                             .ok_or_else(|| format!("line {line_no}: bad vcf wave"))?
                     } else {
-                        new_vcf.wave
+                        new_vcf.get(target).wave
                     };
-                    new_vcf = apply_vcf_change(
-                        new_vcf,
-                        command::VcfChange {
-                            enabled: Some(enabled),
-                            target: Some(target),
-                            cutoff_hz: Some(ValueChange::Set(cutoff_hz as f64)),
-                            resonance: Some(ValueChange::Set(resonance as f64)),
-                            drive: Some(ValueChange::Set(drive as f64)),
-                            wave: Some(wave),
-                        },
-                    )
-                    .map_err(|e| format!("line {line_no}: {e}"))?;
+                    let change = command::VcfChange {
+                        enabled: Some(enabled),
+                        target: Some(target),
+                        cutoff_hz: Some(ValueChange::Set(cutoff_hz as f64)),
+                        resonance: Some(ValueChange::Set(resonance as f64)),
+                        drive: Some(ValueChange::Set(drive as f64)),
+                        wave: Some(wave),
+                    };
+                    let setting = command::apply_vcf_change(new_vcf, change)
+                        .map_err(|e| format!("line {line_no}: {e}"))?;
+                    new_vcf.apply(setting);
                     loaded.push(build_control_entry(
                         id,
-                        vcf_src(new_vcf),
-                        ControlSpec::SetVcf(new_vcf),
+                        vcf_change_src(change),
+                        ControlSpec::SetVcf(change),
                     ));
                 }
                 Some("J") if fields.len() == 4 => {
@@ -1266,14 +1402,16 @@ impl App {
         self.bpm = new_bpm;
         self.sustain = new_sustain;
         self.vcf = new_vcf;
+        self.fx = new_fx;
         self.vol = new_vol;
         self.paused = false;
-        let (start_bpm, start_sustain, start_vcf) = self.sequence_start_settings();
+        let (start_bpm, start_sustain, start_vcf, start_fx) = self.sequence_start_settings();
 
         let _ = self.audio_tx.send(AudioCmd::Clear);
         let _ = self.audio_tx.send(AudioCmd::SetBpm(start_bpm));
         let _ = self.audio_tx.send(AudioCmd::SetSustain(start_sustain));
-        let _ = self.audio_tx.send(AudioCmd::SetVcf(start_vcf));
+        let _ = self.audio_tx.send(AudioCmd::SetVcfBank(start_vcf));
+        let _ = self.audio_tx.send(AudioCmd::SetFxSettings(start_fx));
         let _ = self.audio_tx.send(AudioCmd::SetVol(self.vol));
         let _ = self.audio_tx.send(AudioCmd::SetPaused(false));
         for phrase in loaded {
@@ -1291,6 +1429,7 @@ impl App {
         let mut new_bpm = self.bpm;
         let mut new_sustain = self.sustain;
         let mut new_vcf = self.vcf;
+        let mut new_fx = self.fx;
         let mut new_vol = self.vol;
         let mut loaded: Vec<Phrase> = Vec::new();
         let mut max_id = 0usize;
@@ -1350,10 +1489,27 @@ impl App {
                 let Cmd::SetVcf(change) = parsed else {
                     return Err(format!("line {line_no}: expected vcf line"));
                 };
-                new_vcf = apply_vcf_change(new_vcf, change)
+                let setting = command::apply_vcf_change(new_vcf, change)
+                    .map_err(|e| format!("line {line_no}: {e}"))?;
+                new_vcf.apply(setting);
+                let entry = build_control_entry(
+                    max_id,
+                    vcf_change_src(change),
+                    ControlSpec::SetVcf(change),
+                );
+                loaded.push(entry);
+                max_id += 1;
+                continue;
+            }
+            if is_plain_fx_control_line(line) {
+                let parsed = command::parse(line).map_err(|e| format!("line {line_no}: {e}"))?;
+                let Cmd::SetFx(change) = parsed else {
+                    return Err(format!("line {line_no}: expected fx line"));
+                };
+                new_fx = command::apply_fx_change(new_fx, change)
                     .map_err(|e| format!("line {line_no}: {e}"))?;
                 let entry =
-                    build_control_entry(max_id, vcf_src(new_vcf), ControlSpec::SetVcf(new_vcf));
+                    build_control_entry(max_id, fx_change_src(change), ControlSpec::SetFx(change));
                 loaded.push(entry);
                 max_id += 1;
                 continue;
@@ -1437,14 +1593,16 @@ impl App {
         self.bpm = new_bpm;
         self.sustain = new_sustain;
         self.vcf = new_vcf;
+        self.fx = new_fx;
         self.vol = new_vol;
         self.paused = false;
-        let (start_bpm, start_sustain, start_vcf) = self.sequence_start_settings();
+        let (start_bpm, start_sustain, start_vcf, start_fx) = self.sequence_start_settings();
 
         let _ = self.audio_tx.send(AudioCmd::Clear);
         let _ = self.audio_tx.send(AudioCmd::SetBpm(start_bpm));
         let _ = self.audio_tx.send(AudioCmd::SetSustain(start_sustain));
-        let _ = self.audio_tx.send(AudioCmd::SetVcf(start_vcf));
+        let _ = self.audio_tx.send(AudioCmd::SetVcfBank(start_vcf));
+        let _ = self.audio_tx.send(AudioCmd::SetFxSettings(start_fx));
         let _ = self.audio_tx.send(AudioCmd::SetVol(self.vol));
         let _ = self.audio_tx.send(AudioCmd::SetPaused(false));
         for p in loaded {
@@ -1461,7 +1619,8 @@ impl App {
         crate::tuning::Maqam::reset_to_defaults();
         let mut new_bpm = 120.0f64;
         let mut new_sustain = 1.25f64;
-        let mut new_vcf = VcfSettings::default();
+        let mut new_vcf = VcfBank::default();
+        let mut new_fx = FxSettings::default();
         let mut new_vol = 1.0f32;
         let mut loaded: Vec<Phrase> = Vec::new();
         let mut next_id = 0usize;
@@ -1498,12 +1657,24 @@ impl App {
                     loaded.push(entry);
                 }
                 Cmd::SetVcf(change) => {
-                    new_vcf = apply_vcf_change(new_vcf, change)
+                    let setting = command::apply_vcf_change(new_vcf, change)
+                        .map_err(|e| format!("line {line_no}: {e}"))?;
+                    new_vcf.apply(setting);
+                    let entry = build_control_entry(
+                        next_id,
+                        vcf_change_src(change),
+                        ControlSpec::SetVcf(change),
+                    );
+                    next_id += 1;
+                    loaded.push(entry);
+                }
+                Cmd::SetFx(change) => {
+                    new_fx = command::apply_fx_change(new_fx, change)
                         .map_err(|e| format!("line {line_no}: {e}"))?;
                     let entry = build_control_entry(
                         next_id,
-                        vcf_src(new_vcf),
-                        ControlSpec::SetVcf(new_vcf),
+                        fx_change_src(change),
+                        ControlSpec::SetFx(change),
                     );
                     next_id += 1;
                     loaded.push(entry);
@@ -1559,14 +1730,16 @@ impl App {
         self.bpm = new_bpm;
         self.sustain = new_sustain;
         self.vcf = new_vcf;
+        self.fx = new_fx;
         self.vol = new_vol;
         self.paused = false;
-        let (start_bpm, start_sustain, start_vcf) = self.sequence_start_settings();
+        let (start_bpm, start_sustain, start_vcf, start_fx) = self.sequence_start_settings();
 
         let _ = self.audio_tx.send(AudioCmd::Clear);
         let _ = self.audio_tx.send(AudioCmd::SetBpm(start_bpm));
         let _ = self.audio_tx.send(AudioCmd::SetSustain(start_sustain));
-        let _ = self.audio_tx.send(AudioCmd::SetVcf(start_vcf));
+        let _ = self.audio_tx.send(AudioCmd::SetVcfBank(start_vcf));
+        let _ = self.audio_tx.send(AudioCmd::SetFxSettings(start_fx));
         let _ = self.audio_tx.send(AudioCmd::SetVol(self.vol));
         let _ = self.audio_tx.send(AudioCmd::SetPaused(false));
         for p in loaded {
@@ -1693,59 +1866,107 @@ fn apply_sustain_change(current: f64, change: ValueChange) -> Result<f64, String
     Ok(next)
 }
 
-fn apply_vcf_change(
-    current: VcfSettings,
-    change: command::VcfChange,
-) -> Result<VcfSettings, String> {
-    let cutoff_hz = match change.cutoff_hz {
-        Some(change) => change.apply(current.cutoff_hz as f64)? as f32,
-        None => current.cutoff_hz,
-    };
-    if !(10.0..=22_000.0).contains(&cutoff_hz) {
-        return Err(format!("vcf cutoff {cutoff_hz} Hz out of range 10..22000"));
+fn vcf_change_src(change: command::VcfChange) -> String {
+    let mut parts = vec!["vcf".to_string()];
+    if let Some(target) = change.target {
+        parts.push(target.as_str().to_string());
     }
-
-    let resonance = match change.resonance {
-        Some(change) => change.apply(current.resonance as f64)? as f32,
-        None => current.resonance,
-    };
-    if !(0.0..=0.98).contains(&resonance) {
-        return Err(format!("vcf resonance {resonance} out of range 0..0.98"));
-    }
-
-    let drive = match change.drive {
-        Some(change) => change.apply(current.drive as f64)? as f32,
-        None => current.drive,
-    };
-    if !(0.1..=12.0).contains(&drive) {
-        return Err(format!("vcf drive {drive} out of range 0.1..12"));
-    }
-
-    Ok(VcfSettings {
-        enabled: change.enabled.unwrap_or(current.enabled),
-        target: change.target.unwrap_or(current.target),
-        cutoff_hz,
-        resonance,
-        drive,
-        wave: change.wave.unwrap_or(current.wave),
-    })
-}
-
-fn vcf_src(v: VcfSettings) -> String {
-    if !v.enabled {
-        if v.target == VcfTarget::All {
+    if change.enabled == Some(false) {
+        if change.target == Some(VcfTarget::All) || change.target.is_none() {
             return "vcf off".to_string();
         }
-        return format!("vcf {} off", v.target.as_str());
+        return format!("vcf {} off", change.target.unwrap().as_str());
     }
-    format!(
-        "vcf {} cut={} res={} drive={} {}",
-        v.target.as_str(),
-        v.cutoff_hz,
-        v.resonance,
-        v.drive,
-        v.wave.as_str()
-    )
+    if let Some(cutoff) = change.cutoff_hz {
+        parts.push("cut".to_string());
+        parts.push(value_change_src(cutoff));
+    }
+    if let Some(resonance) = change.resonance {
+        parts.push("res".to_string());
+        parts.push(value_change_src(resonance));
+    }
+    if let Some(drive) = change.drive {
+        parts.push("drive".to_string());
+        parts.push(value_change_src(drive));
+    }
+    if let Some(wave) = change.wave {
+        parts.push("wave".to_string());
+        parts.push(wave.as_str().to_string());
+    }
+    parts.join(" ")
+}
+
+fn value_change_src(change: ValueChange) -> String {
+    match change {
+        ValueChange::Set(n) => format!("{n}"),
+        ValueChange::Add(n) if n < 0.0 => format!("{n}"),
+        ValueChange::Add(n) => format!("+{n}"),
+        ValueChange::Mul(n) => format!("*{n}"),
+        ValueChange::Div(n) => format!("/{n}"),
+        ValueChange::Tick(n) if n < 0.0 => format!("{n}t"),
+        ValueChange::Tick(n) => format!("+{n}t"),
+    }
+}
+
+fn fx_change_src(change: command::FxChange) -> String {
+    if change.reverb_enabled == Some(false) && change.delay_enabled == Some(false) {
+        return "fx off".to_string();
+    }
+    let mut parts = Vec::new();
+    if change.reverb_enabled.is_some()
+        || change.reverb_mix.is_some()
+        || change.reverb_decay.is_some()
+    {
+        parts.push("reverb".to_string());
+        if change.reverb_enabled == Some(false) {
+            parts.push("off".to_string());
+            return parts.join(" ");
+        }
+        if let Some(mix) = change.reverb_mix {
+            parts.push("mix".to_string());
+            parts.push(value_change_src(mix));
+        }
+        if let Some(decay) = change.reverb_decay {
+            parts.push("decay".to_string());
+            parts.push(value_change_src(decay));
+        }
+    } else {
+        parts.push("delay".to_string());
+        if change.delay_enabled == Some(false) {
+            parts.push("off".to_string());
+            return parts.join(" ");
+        }
+        if let Some(time) = change.delay_time_secs {
+            parts.push("time".to_string());
+            parts.push(value_change_src(time));
+        }
+        if let Some(feedback) = change.delay_feedback {
+            parts.push("feedback".to_string());
+            parts.push(value_change_src(feedback));
+        }
+        if let Some(mix) = change.delay_mix {
+            parts.push("mix".to_string());
+            parts.push(value_change_src(mix));
+        }
+    }
+    parts.join(" ")
+}
+
+fn describe_fx(fx: FxSettings) -> String {
+    let rev = if fx.reverb_enabled {
+        format!("rev {:.2}/{:.2}", fx.reverb_mix, fx.reverb_decay)
+    } else {
+        "rev off".to_string()
+    };
+    let delay = if fx.delay_enabled {
+        format!(
+            "delay {:.2}s/{:.2}/{:.2}",
+            fx.delay_time_secs, fx.delay_feedback, fx.delay_mix
+        )
+    } else {
+        "delay off".to_string()
+    };
+    format!("{rev} {delay}")
 }
 
 fn describe_vcf(v: VcfSettings) -> String {
@@ -1770,6 +1991,7 @@ fn is_plain_control_line(line: &str) -> bool {
         || line.starts_with("s ")
         || line.starts_with("sus ")
         || is_plain_vcf_control_line(line)
+        || is_plain_fx_control_line(line)
 }
 
 fn is_plain_vcf_control_line(line: &str) -> bool {
@@ -1777,6 +1999,14 @@ fn is_plain_vcf_control_line(line: &str) -> bool {
     matches!(
         first.to_ascii_lowercase().as_str(),
         "vcf" | "filter" | "filt" | "cut" | "cutoff" | "res" | "q" | "drive" | "drv"
+    )
+}
+
+fn is_plain_fx_control_line(line: &str) -> bool {
+    let first = line.split_whitespace().next().unwrap_or("");
+    matches!(
+        first.to_ascii_lowercase().as_str(),
+        "fx" | "reverb" | "rev" | "delay" | "pingpong"
     )
 }
 
@@ -1891,10 +2121,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0, 1, 5, 6]
         );
-        assert_eq!(app.vcf.cutoff_hz, 1200.0);
-        assert_eq!(app.vcf.resonance, 0.4);
-        assert_eq!(app.vcf.drive, 2.25);
-        assert_eq!(app.vcf.target, VcfTarget::Kanun);
+        assert_eq!(app.vcf.kanun.cutoff_hz, 1200.0);
+        assert_eq!(app.vcf.kanun.resonance, 0.4);
+        assert_eq!(app.vcf.kanun.drive, 2.25);
+        assert_eq!(app.vcf.kanun.target, VcfTarget::Kanun);
     }
 
     #[test]
@@ -1904,39 +2134,111 @@ mod tests {
         let mut app = App::new(tx);
 
         app.handle_command("vcf off");
-        assert!(!app.vcf.enabled);
-        assert_eq!(app.vcf.target, VcfTarget::All);
+        assert!(!app.vcf.any_enabled());
+        assert_eq!(app.vcf.focus, VcfTarget::All);
 
         app.handle_command("vcf bass off");
-        assert!(!app.vcf.enabled);
-        assert_eq!(app.vcf.target, VcfTarget::Bass);
+        assert!(!app.vcf.any_enabled());
+        assert_eq!(app.vcf.focus, VcfTarget::Bass);
 
         app.handle_command("vcf bass 900 0.65 3.5");
-        assert!(app.vcf.enabled);
-        assert_eq!(app.vcf.target, VcfTarget::Bass);
+        assert!(app.vcf.bass.enabled);
+        assert_eq!(app.vcf.bass.target, VcfTarget::Bass);
     }
 
     #[test]
-    fn vcf_wave_is_last_arg() {
+    fn vcf_wave_is_named() {
         let _guard = session_test_lock();
         let (tx, _rx) = bounded(16);
         let mut app = App::new(tx);
 
-        app.handle_command("vcf bass 900 0.65 3.5 saw");
-        assert!(app.vcf.enabled);
-        assert_eq!(app.vcf.target, VcfTarget::Bass);
-        assert_eq!(app.vcf.cutoff_hz, 900.0);
-        assert_eq!(app.vcf.resonance, 0.65);
-        assert_eq!(app.vcf.drive, 3.5);
-        assert_eq!(app.vcf.wave, VcoWave::Saw);
+        app.handle_command("vcf bass 900 0.65 3.5 wave=saw");
+        assert!(app.vcf.bass.enabled);
+        assert_eq!(app.vcf.bass.target, VcfTarget::Bass);
+        assert_eq!(app.vcf.bass.cutoff_hz, 900.0);
+        assert_eq!(app.vcf.bass.resonance, 0.65);
+        assert_eq!(app.vcf.bass.drive, 3.5);
+        assert_eq!(app.vcf.bass.wave, VcoWave::Saw);
 
-        app.handle_command("vcf kanun cut=2400 res=0.35 drive=2.0 tri");
-        assert_eq!(app.vcf.target, VcfTarget::Kanun);
-        assert_eq!(app.vcf.wave, VcoWave::Tri);
+        app.handle_command("vcf kanun cut=2400 res=0.35 drive=2.0 wave=tri");
+        assert!(app.vcf.bass.enabled);
+        assert!(app.vcf.kanun.enabled);
+        assert!(!app.vcf.all.enabled);
+        assert_eq!(app.vcf.kanun.target, VcfTarget::Kanun);
+        assert_eq!(app.vcf.kanun.wave, VcoWave::Tri);
 
         app.handle_command("vcf kick cut=700 res=0.25 drive=2.5 wave=squ");
-        assert_eq!(app.vcf.target, VcfTarget::Kick);
-        assert_eq!(app.vcf.wave, VcoWave::Squ);
+        assert!(app.vcf.bass.enabled);
+        assert!(app.vcf.kanun.enabled);
+        assert!(app.vcf.kick.enabled);
+        assert_eq!(app.vcf.kick.target, VcfTarget::Kick);
+        assert_eq!(app.vcf.kick.wave, VcoWave::Squ);
+
+        app.handle_command("vcf bass off");
+        assert!(!app.vcf.bass.enabled);
+        assert!(app.vcf.kanun.enabled);
+        assert!(app.vcf.kick.enabled);
+        assert_eq!(app.vcf.focus, VcfTarget::Bass);
+
+        app.handle_command("vcf all 1200 0.35 1.5 wave=sin");
+        assert!(app.vcf.all.enabled);
+        assert!(!app.vcf.bass.enabled);
+        assert!(!app.vcf.kanun.enabled);
+        assert!(!app.vcf.kick.enabled);
+
+        app.handle_command("vcf all off");
+        assert!(!app.vcf.any_enabled());
+        assert_eq!(app.vcf.focus, VcfTarget::All);
+    }
+
+    #[test]
+    fn vcf_relative_and_tick_changes_are_preserved() {
+        let _guard = session_test_lock();
+        let (tx, _rx) = bounded(16);
+        let mut app = App::new(tx);
+
+        app.handle_command("vcf bass 900 0.65 3.5 wave=saw");
+        app.handle_command("vcf bass cut -100");
+        assert_eq!(app.vcf.bass.cutoff_hz, 800.0);
+        assert_eq!(app.phrases.last().unwrap().src, "vcf bass cut -100");
+
+        app.handle_command("vcf bass cut=+2t");
+        assert_eq!(app.vcf.bass.cutoff_step_per_tick, 2.0);
+        assert_eq!(app.phrases.last().unwrap().src, "vcf bass cut +2t");
+
+        app.handle_command("vcf bass cut=+0");
+        assert_eq!(app.vcf.bass.cutoff_step_per_tick, 0.0);
+        assert_eq!(app.vcf.bass.cutoff_hz, 800.0);
+    }
+
+    #[test]
+    fn fx_commands_use_vcf_style_parameter_rules() {
+        let _guard = session_test_lock();
+        let (tx, _rx) = bounded(16);
+        let mut app = App::new(tx);
+
+        app.handle_command("reverb mix=0.25 decay=0.7");
+        assert!(app.fx.reverb_enabled);
+        assert_eq!(app.fx.reverb_mix, 0.25);
+        assert_eq!(app.fx.reverb_decay, 0.7);
+
+        app.handle_command("pingpong time=0.33 feedback=0.45 mix=0.2");
+        assert!(app.fx.delay_enabled);
+        assert_eq!(app.fx.delay_time_secs, 0.33);
+        assert_eq!(app.fx.delay_feedback, 0.45);
+        assert_eq!(app.fx.delay_mix, 0.2);
+
+        app.handle_command("delay mix=+0.1");
+        assert_eq!(app.fx.delay_mix, 0.3);
+        assert_eq!(app.phrases.last().unwrap().src, "delay mix +0.1");
+
+        app.handle_command("delay feedback=+0.01t");
+        assert_eq!(app.fx.delay_feedback_step_per_tick, 0.01);
+        assert_eq!(app.phrases.last().unwrap().src, "delay feedback +0.01t");
+
+        app.handle_command("fx off");
+        assert!(!app.fx.reverb_enabled);
+        assert!(!app.fx.delay_enabled);
     }
 
     #[test]
@@ -2015,9 +2317,9 @@ mod tests {
         let (tx, _rx) = bounded(32);
         let mut app = App::new(tx);
         app.load_session(path.to_str().unwrap()).unwrap();
-        let (bpm, sustain, vcf) = app.sequence_start_settings();
+        let (bpm, sustain, vcf, fx) = app.sequence_start_settings();
         let output =
-            crate::record::record_cycle(app.phrases.clone(), bpm, sustain, vcf, 1).unwrap();
+            crate::record::record_cycle(app.phrases.clone(), bpm, sustain, vcf, fx, 1).unwrap();
         assert!(Path::new(&output).exists());
         let _ = fs::remove_file(output);
     }

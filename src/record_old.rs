@@ -6,11 +6,12 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+use crate::fx::{FxProcessor, FxSettings};
 use crate::sequencer::{ControlSpec, Phrase};
 use crate::synth::{
     evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Milestone, Voice, VoiceKind,
 };
-use crate::vcf::{MoogLadder, VcfSettings, VcfTarget};
+use crate::vcf::{MoogLadder, VcfBank, VcfSettings, VcfTarget};
 
 const SR: f64 = 44100.0;
 
@@ -72,7 +73,8 @@ struct RenderOccurrence {
     snap_idx: usize,
     bpm: f64,
     sustain: f64,
-    vcf: VcfSettings,
+    vcf: VcfBank,
+    fx: FxSettings,
     arrived_via_jump: Option<usize>,
 }
 #[derive(Clone, Copy)]
@@ -82,8 +84,81 @@ struct RenderEntry {
     snap_idx: usize,
     bpm: f64,
     sustain: f64,
-    vcf: VcfSettings,
+    vcf: VcfBank,
+    fx: FxSettings,
     arrived_via_jump: Option<usize>,
+}
+
+struct StereoFilter {
+    left: MoogLadder,
+    right: MoogLadder,
+}
+
+impl StereoFilter {
+    fn new(sr: f32) -> Self {
+        Self {
+            left: MoogLadder::new(sr),
+            right: MoogLadder::new(sr),
+        }
+    }
+
+    fn set_settings(&mut self, settings: VcfSettings) {
+        self.left.set_settings(settings);
+        self.right.set_settings(settings);
+    }
+
+    fn update_settings(&mut self, settings: VcfSettings) {
+        self.left.update_settings(settings);
+        self.right.update_settings(settings);
+    }
+
+    fn reset(&mut self) {
+        self.left.reset();
+        self.right.reset();
+    }
+
+    fn process(&mut self, left: f32, right: f32) -> (f32, f32) {
+        (self.left.process(left), self.right.process(right))
+    }
+}
+
+struct FilterBank {
+    all: StereoFilter,
+    bass: StereoFilter,
+    kanun: StereoFilter,
+    kick: StereoFilter,
+}
+
+impl FilterBank {
+    fn new(sr: f32) -> Self {
+        Self {
+            all: StereoFilter::new(sr),
+            bass: StereoFilter::new(sr),
+            kanun: StereoFilter::new(sr),
+            kick: StereoFilter::new(sr),
+        }
+    }
+
+    fn set_bank(&mut self, bank: VcfBank) {
+        self.all.set_settings(bank.all);
+        self.bass.set_settings(bank.bass);
+        self.kanun.set_settings(bank.kanun);
+        self.kick.set_settings(bank.kick);
+    }
+
+    fn update_bank(&mut self, bank: VcfBank) {
+        self.all.update_settings(bank.all);
+        self.bass.update_settings(bank.bass);
+        self.kanun.update_settings(bank.kanun);
+        self.kick.update_settings(bank.kick);
+    }
+
+    fn reset(&mut self) {
+        self.all.reset();
+        self.bass.reset();
+        self.kanun.reset();
+        self.kick.reset();
+    }
 }
 
 fn build_carpet_tick_highlights(
@@ -151,7 +226,8 @@ fn expand_one_cycle(
     phrases: &[Phrase],
     start_bpm: f64,
     start_sustain: f64,
-    start_vcf: VcfSettings,
+    start_vcf: VcfBank,
+    start_fx: FxSettings,
 ) -> (Vec<RenderOccurrence>, Vec<HashMap<usize, (usize, usize)>>) {
     let mut out = Vec::new();
     let mut snapshots = Vec::new();
@@ -160,6 +236,7 @@ fn expand_one_cycle(
     let mut bpm = start_bpm;
     let mut sustain = start_sustain;
     let mut vcf = start_vcf;
+    let mut fx = start_fx;
     let mut arrived_via_jump = None;
     let max_items = phrases.len() * 512 + 1;
     while out.len() < max_items {
@@ -200,7 +277,16 @@ fn expand_one_cycle(
             match ctrl {
                 ControlSpec::SetBpm(v) => bpm = v,
                 ControlSpec::SetSustain(v) => sustain = v,
-                ControlSpec::SetVcf(v) => vcf = v,
+                ControlSpec::SetVcf(v) => {
+                    if let Ok(setting) = crate::command::apply_vcf_change(vcf, v) {
+                        vcf.apply(setting);
+                    }
+                }
+                ControlSpec::SetFx(v) => {
+                    if let Ok(setting) = crate::command::apply_fx_change(fx, v) {
+                        fx = setting;
+                    }
+                }
             }
             cur += 1;
             continue;
@@ -221,6 +307,7 @@ fn expand_one_cycle(
             bpm,
             sustain,
             vcf,
+            fx,
             arrived_via_jump,
         });
         arrived_via_jump = None;
@@ -235,7 +322,8 @@ pub fn record_cycle(
     phrases: Vec<Phrase>,
     bpm: f64,
     sustain: f64,
-    vcf: VcfSettings,
+    vcf: VcfBank,
+    fx: FxSettings,
     cycle_repeat: usize,
 ) -> anyhow::Result<String> {
     if phrases.is_empty() {
@@ -246,7 +334,7 @@ pub fn record_cycle(
         let subdiv_samples = SR * subdiv_secs;
         ((subdiv_samples * phrases[idx].bar.total_subdivs as f64).round() as usize).max(1)
     };
-    let (one_cycle_seq, one_cycle_snaps) = expand_one_cycle(&phrases, bpm, sustain, vcf);
+    let (one_cycle_seq, one_cycle_snaps) = expand_one_cycle(&phrases, bpm, sustain, vcf, fx);
     if one_cycle_seq.is_empty() {
         return Err(anyhow::anyhow!("no musical phrases to render"));
     }
@@ -265,6 +353,7 @@ pub fn record_cycle(
                     bpm: occ.bpm,
                     sustain: occ.sustain,
                     vcf: occ.vcf,
+                    fx: occ.fx,
                     arrived_via_jump: if play == 0 {
                         occ.arrived_via_jump
                     } else {
@@ -285,11 +374,11 @@ pub fn record_cycle(
     crate::REC_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
     let mut phrases_v = phrases.to_vec();
     let mut voices: Vec<Voice> = Vec::new();
-    let mut left_vcf = MoogLadder::new(SR as f32);
-    let mut right_vcf = MoogLadder::new(SR as f32);
+    let mut filters = FilterBank::new(SR as f32);
+    let mut fx_processor = FxProcessor::new(SR as f32);
     let mut left_buf: Vec<f32> = Vec::new();
     let mut right_buf: Vec<f32> = Vec::new();
-    for (seq_pos, entry) in full_seq.iter().enumerate() {
+    for (seq_pos, mut entry) in full_seq.iter().copied().enumerate() {
         let phrase_idx = entry.phrase_idx;
         let play_num = entry.play_num;
         let bs = bar_samples_for(phrase_idx, entry.bpm);
@@ -298,8 +387,8 @@ pub fn record_cycle(
         let subdiv_secs = 60.0 / (entry.bpm * 2.0);
         let subdiv_samples = SR * subdiv_secs;
         let sustain = entry.sustain;
-        left_vcf.set_settings(entry.vcf);
-        right_vcf.set_settings(entry.vcf);
+        filters.set_bank(entry.vcf);
+        fx_processor.set_settings(entry.fx);
         if is_first {
             let root_hz = phrases_v[phrase_idx].bar.root_hz;
             let phrase_secs =
@@ -357,38 +446,85 @@ pub fn record_cycle(
                     root_hz,
                     0.25,
                 );
+                entry.vcf.advance_tick();
+                filters.update_bank(entry.vcf);
+                entry.fx.advance_tick();
+                fx_processor.set_settings(entry.fx);
             }
             voices.retain(|v| !v.done);
             if voices.is_empty() {
-                left_vcf.reset();
-                right_vcf.reset();
-                left_buf.push(0.0);
-                right_buf.push(0.0);
+                filters.reset();
+                let (l, r) = fx_processor.process(0.0, 0.0);
+                left_buf.push(l);
+                right_buf.push(r);
                 continue;
             }
             let (mut dry_l, mut dry_r) = (0f32, 0f32);
-            let (mut filt_l, mut filt_r) = (0f32, 0f32);
+            let (mut all_l, mut all_r) = (0f32, 0f32);
+            let (mut bass_l, mut bass_r) = (0f32, 0f32);
+            let (mut kanun_l, mut kanun_r) = (0f32, 0f32);
+            let (mut kick_l, mut kick_r) = (0f32, 0f32);
             for v in voices.iter_mut() {
-                let routed_to_vcf = entry.vcf.enabled && vcf_matches(entry.vcf.target, v.kind);
-                let s = v.sample_with_wave(SR, routed_to_vcf.then_some(entry.vcf.wave));
+                let setting = if entry.vcf.all.enabled {
+                    Some(entry.vcf.all)
+                } else {
+                    vcf_target_for_kind(v.kind).and_then(|target| {
+                        let setting = entry.vcf.get(target);
+                        setting.enabled.then_some(setting)
+                    })
+                };
+                let s = v.sample_with_wave(SR, setting.map(|setting| setting.wave));
                 let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
                 let l = s * angle.cos();
                 let r = s * angle.sin();
-                if routed_to_vcf {
-                    filt_l += l;
-                    filt_r += r;
-                } else {
-                    dry_l += l;
-                    dry_r += r;
+                match setting.map(|setting| setting.target) {
+                    Some(VcfTarget::All) => {
+                        all_l += l;
+                        all_r += r;
+                    }
+                    Some(VcfTarget::Bass) => {
+                        bass_l += l;
+                        bass_r += r;
+                    }
+                    Some(VcfTarget::Kanun) => {
+                        kanun_l += l;
+                        kanun_r += r;
+                    }
+                    Some(VcfTarget::Kick) => {
+                        kick_l += l;
+                        kick_r += r;
+                    }
+                    None => {
+                        dry_l += l;
+                        dry_r += r;
+                    }
                 }
             }
-            if entry.vcf.enabled {
-                left_buf.push((dry_l + left_vcf.process(filt_l)).clamp(-1.0, 1.0));
-                right_buf.push((dry_r + right_vcf.process(filt_r)).clamp(-1.0, 1.0));
+            let (mut l, mut r) = (dry_l, dry_r);
+            if entry.vcf.all.enabled {
+                let filtered = filters.all.process(all_l, all_r);
+                l += filtered.0;
+                r += filtered.1;
             } else {
-                left_buf.push(dry_l.clamp(-1.0, 1.0));
-                right_buf.push(dry_r.clamp(-1.0, 1.0));
+                if entry.vcf.bass.enabled {
+                    let filtered = filters.bass.process(bass_l, bass_r);
+                    l += filtered.0;
+                    r += filtered.1;
+                }
+                if entry.vcf.kanun.enabled {
+                    let filtered = filters.kanun.process(kanun_l, kanun_r);
+                    l += filtered.0;
+                    r += filtered.1;
+                }
+                if entry.vcf.kick.enabled {
+                    let filtered = filters.kick.process(kick_l, kick_r);
+                    l += filtered.0;
+                    r += filtered.1;
+                }
             }
+            let (l, r) = fx_processor.process(l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0));
+            left_buf.push(l);
+            right_buf.push(r);
             voices.retain(|v| !v.done);
         }
         crate::REC_SAMPLES_DONE.store(
@@ -398,8 +534,9 @@ pub fn record_cycle(
         evolve_bar(&mut phrases_v[phrase_idx].bar, true);
     }
     let tail_vcf = full_seq.first().map(|entry| entry.vcf).unwrap_or(vcf);
-    left_vcf.set_settings(tail_vcf);
-    right_vcf.set_settings(tail_vcf);
+    let tail_fx = full_seq.first().map(|entry| entry.fx).unwrap_or(fx);
+    filters.set_bank(tail_vcf);
+    fx_processor.set_settings(tail_fx);
     if let Some(first) = full_seq.first() {
         let root_hz = phrases_v[first.phrase_idx].bar.root_hz;
         spawn_phrase_start(root_hz, first.sustain, &mut voices);
@@ -408,35 +545,78 @@ pub fn record_cycle(
     for _ in 0..tail_samples {
         voices.retain(|v| !v.done);
         if voices.is_empty() {
-            left_vcf.reset();
-            right_vcf.reset();
-            left_buf.push(0.0);
-            right_buf.push(0.0);
+            filters.reset();
+            let (l, r) = fx_processor.process(0.0, 0.0);
+            left_buf.push(l);
+            right_buf.push(r);
             continue;
         }
         let (mut dry_l, mut dry_r) = (0f32, 0f32);
-        let (mut filt_l, mut filt_r) = (0f32, 0f32);
+        let (mut all_l, mut all_r) = (0f32, 0f32);
+        let (mut bass_l, mut bass_r) = (0f32, 0f32);
+        let (mut kanun_l, mut kanun_r) = (0f32, 0f32);
+        let (mut kick_l, mut kick_r) = (0f32, 0f32);
         for v in voices.iter_mut() {
-            let routed_to_vcf = tail_vcf.enabled && vcf_matches(tail_vcf.target, v.kind);
-            let s = v.sample_with_wave(SR, routed_to_vcf.then_some(tail_vcf.wave));
+            let setting = if tail_vcf.all.enabled {
+                Some(tail_vcf.all)
+            } else {
+                vcf_target_for_kind(v.kind).and_then(|target| {
+                    let setting = tail_vcf.get(target);
+                    setting.enabled.then_some(setting)
+                })
+            };
+            let s = v.sample_with_wave(SR, setting.map(|setting| setting.wave));
             let angle = (v.pan + 1.0) * std::f32::consts::FRAC_PI_4;
             let l = s * angle.cos();
             let r = s * angle.sin();
-            if routed_to_vcf {
-                filt_l += l;
-                filt_r += r;
-            } else {
-                dry_l += l;
-                dry_r += r;
+            match setting.map(|setting| setting.target) {
+                Some(VcfTarget::All) => {
+                    all_l += l;
+                    all_r += r;
+                }
+                Some(VcfTarget::Bass) => {
+                    bass_l += l;
+                    bass_r += r;
+                }
+                Some(VcfTarget::Kanun) => {
+                    kanun_l += l;
+                    kanun_r += r;
+                }
+                Some(VcfTarget::Kick) => {
+                    kick_l += l;
+                    kick_r += r;
+                }
+                None => {
+                    dry_l += l;
+                    dry_r += r;
+                }
             }
         }
-        if tail_vcf.enabled {
-            left_buf.push((dry_l + left_vcf.process(filt_l)).clamp(-1.0, 1.0));
-            right_buf.push((dry_r + right_vcf.process(filt_r)).clamp(-1.0, 1.0));
+        let (mut l, mut r) = (dry_l, dry_r);
+        if tail_vcf.all.enabled {
+            let filtered = filters.all.process(all_l, all_r);
+            l += filtered.0;
+            r += filtered.1;
         } else {
-            left_buf.push(dry_l.clamp(-1.0, 1.0));
-            right_buf.push(dry_r.clamp(-1.0, 1.0));
+            if tail_vcf.bass.enabled {
+                let filtered = filters.bass.process(bass_l, bass_r);
+                l += filtered.0;
+                r += filtered.1;
+            }
+            if tail_vcf.kanun.enabled {
+                let filtered = filters.kanun.process(kanun_l, kanun_r);
+                l += filtered.0;
+                r += filtered.1;
+            }
+            if tail_vcf.kick.enabled {
+                let filtered = filters.kick.process(kick_l, kick_r);
+                l += filtered.0;
+                r += filtered.1;
+            }
         }
+        let (l, r) = fx_processor.process(l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0));
+        left_buf.push(l);
+        right_buf.push(r);
         voices.retain(|v| !v.done);
     }
     let peak = left_buf
@@ -712,11 +892,11 @@ pub fn record_cycle(
     result
 }
 
-fn vcf_matches(target: VcfTarget, kind: VoiceKind) -> bool {
-    match target {
-        VcfTarget::All => true,
-        VcfTarget::Bass => matches!(kind, VoiceKind::SubBass),
-        VcfTarget::Kanun => matches!(kind, VoiceKind::MelodyFm),
-        VcfTarget::Kick => matches!(kind, VoiceKind::FloorTom),
+fn vcf_target_for_kind(kind: VoiceKind) -> Option<VcfTarget> {
+    match kind {
+        VoiceKind::SubBass => Some(VcfTarget::Bass),
+        VoiceKind::MelodyFm => Some(VcfTarget::Kanun),
+        VoiceKind::FloorTom => Some(VcfTarget::Kick),
+        _ => None,
     }
 }

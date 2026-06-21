@@ -134,7 +134,7 @@ i 2 f hijaz 332                 ← insert hijaz before phrase 2
 i 1 j 0 3                       ← insert "loop back to 0, 3 times" before phrase 1
 i 1 bpm 180                     ← insert a tempo change before phrase 1
 i 1 sus 1.5                     ← insert a sustain change before phrase 1
-i 1 vcf bass 900 0.65 3.5 saw   ← insert a bass filter change before phrase 1
+i 1 vcf bass 900 0.65 3.5 wave=saw ← insert a bass filter change before phrase 1
 ```
 
 #### Edit
@@ -152,7 +152,7 @@ edit 2 d kurd 44                ← change phrase 2 to D Kurd with rhythm 44
 edit 1 j 0 6                    ← change phrase 1 to loop 6 times
 edit 1 bpm 180                  ← change entry 1 to a tempo change
 edit 1 sus 1.5                  ← change entry 1 to a sustain change
-edit 1 vcf kanun cut=900 res=0.65 drive=3.5 tri
+edit 1 vcf kanun cut=900 res=0.65 drive=3.5 wave=tri
 ```
 
 Editing the currently-playing phrase is blocked.
@@ -196,12 +196,18 @@ s <n>           sustain in seconds (0.05–10), default 1.25
 s <+n|-n|*k|/k>     relative sustain change from current value
 vcf <target> <cut> [res] [drive] [wave] Moog-ish VCO into low-pass VCF, default off
 vcf off         bypass VCF entirely
+vcf all off     bypass VCF entirely and clear per-instrument filters
 vcf <target> off disable VCF for one target
 vcf targets: all, bass, kanun, kick
-vcf waves: sin, tri, squ, saw
+vcf wave must be named: wave=sin, wave=tri, wave=squ, wave=saw
 cut <n>         update VCF cutoff in Hz (10–22000)
+cut=+2t         move VCF cutoff by +2 every sequencer tick
+cut=+0          stop cutoff movement for that target
 res <n>         update VCF resonance (0–0.98)
 drive <n>       update VCF drive (0.1–12)
+reverb mix=<n> decay=<n>  reverb, default mix 0.18 decay 0.65
+delay time=<s> feedback=<n> mix=<n>  ping-pong delay, alias: pingpong
+fx off          disable reverb and delay
 vol <n>         volume multiplier (0–2), default 1.0
 ```
 
@@ -210,10 +216,17 @@ bpm 180
 bpm *2
 s 2
 s *0.8
-vcf bass 900 0.65 3.5 saw
-vcf kanun cut=2400 res=0.35 drive=2.0 tri
-vcf kick cut=700 res=0.25 drive=2.5 squ
-vcf off
+vcf bass 900 0.65 3.5 wave=saw
+vcf bass cut=+2t
+vcf bass cut=+0
+vcf kanun cut=2400 res=0.35 drive=2.0 wave=tri
+vcf kick cut=700 res=0.25 drive=2.5 wave=squ
+vcf all off
+reverb mix=0.25 decay=0.7
+pingpong time=0.33 feedback=0.45 mix=0.2
+delay feedback=+0.01t
+delay feedback=+0
+fx off
 cut +100
 vol 0.8
 ```

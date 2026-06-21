@@ -4,6 +4,7 @@ mod app;
 mod audio;
 mod carpet;
 mod command;
+mod fx;
 mod midi_clock;
 mod midi_clockout;
 mod record;

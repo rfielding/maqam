@@ -7,7 +7,19 @@ pub struct VcfSettings {
     pub cutoff_hz: f32,
     pub resonance: f32,
     pub drive: f32,
+    pub cutoff_step_per_tick: f32,
+    pub resonance_step_per_tick: f32,
+    pub drive_step_per_tick: f32,
     pub wave: VcoWave,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct VcfBank {
+    pub focus: VcfTarget,
+    pub all: VcfSettings,
+    pub bass: VcfSettings,
+    pub kanun: VcfSettings,
+    pub kick: VcfSettings,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,7 +105,107 @@ impl Default for VcfSettings {
             cutoff_hz: 1200.0,
             resonance: 0.35,
             drive: 1.5,
+            cutoff_step_per_tick: 0.0,
+            resonance_step_per_tick: 0.0,
+            drive_step_per_tick: 0.0,
             wave: VcoWave::Sin,
+        }
+    }
+}
+
+impl VcfSettings {
+    pub fn for_target(target: VcfTarget) -> Self {
+        Self {
+            target,
+            ..Self::default()
+        }
+    }
+}
+
+impl Default for VcfBank {
+    fn default() -> Self {
+        Self {
+            focus: VcfTarget::All,
+            all: VcfSettings::for_target(VcfTarget::All),
+            bass: VcfSettings::for_target(VcfTarget::Bass),
+            kanun: VcfSettings::for_target(VcfTarget::Kanun),
+            kick: VcfSettings::for_target(VcfTarget::Kick),
+        }
+    }
+}
+
+impl VcfBank {
+    pub fn get(self, target: VcfTarget) -> VcfSettings {
+        match target {
+            VcfTarget::All => self.all,
+            VcfTarget::Bass => self.bass,
+            VcfTarget::Kanun => self.kanun,
+            VcfTarget::Kick => self.kick,
+        }
+    }
+
+    pub fn apply(&mut self, mut setting: VcfSettings) {
+        self.focus = setting.target;
+        match setting.target {
+            VcfTarget::All => {
+                self.all = setting;
+                if setting.enabled {
+                    self.bass.enabled = false;
+                    self.kanun.enabled = false;
+                    self.kick.enabled = false;
+                } else {
+                    self.bass.enabled = false;
+                    self.kanun.enabled = false;
+                    self.kick.enabled = false;
+                }
+            }
+            VcfTarget::Bass => {
+                self.all.enabled = false;
+                setting.target = VcfTarget::Bass;
+                self.bass = setting;
+            }
+            VcfTarget::Kanun => {
+                self.all.enabled = false;
+                setting.target = VcfTarget::Kanun;
+                self.kanun = setting;
+            }
+            VcfTarget::Kick => {
+                self.all.enabled = false;
+                setting.target = VcfTarget::Kick;
+                self.kick = setting;
+            }
+        }
+    }
+
+    pub fn any_enabled(self) -> bool {
+        self.all.enabled || self.bass.enabled || self.kanun.enabled || self.kick.enabled
+    }
+
+    pub fn advance_tick(&mut self) {
+        for target in [
+            VcfTarget::All,
+            VcfTarget::Bass,
+            VcfTarget::Kanun,
+            VcfTarget::Kick,
+        ] {
+            let mut setting = self.get(target);
+            if setting.enabled {
+                setting.cutoff_hz =
+                    (setting.cutoff_hz + setting.cutoff_step_per_tick).clamp(10.0, 22_000.0);
+                setting.resonance =
+                    (setting.resonance + setting.resonance_step_per_tick).clamp(0.0, 0.98);
+                setting.drive = (setting.drive + setting.drive_step_per_tick).clamp(0.1, 12.0);
+                self.apply_to_slot(setting);
+            }
+        }
+    }
+
+    fn apply_to_slot(&mut self, setting: VcfSettings) {
+        match setting.target {
+            VcfTarget::All => self.all = setting,
+            VcfTarget::Bass => self.bass = setting,
+            VcfTarget::Kanun => self.kanun = setting,
+            VcfTarget::Kick => self.kick = setting,
         }
     }
 }
@@ -138,10 +250,14 @@ impl MoogLadder {
     }
 
     pub fn set_settings(&mut self, s: VcfSettings) {
+        self.update_settings(s);
+        self.reset();
+    }
+
+    pub fn update_settings(&mut self, s: VcfSettings) {
         self.set_cutoff_hz(s.cutoff_hz);
         self.set_resonance(s.resonance);
         self.set_drive(s.drive);
-        self.reset();
     }
 
     pub fn set_cutoff_hz(&mut self, hz: f32) {
@@ -213,6 +329,9 @@ mod tests {
             cutoff_hz: 900.0,
             resonance: 0.65,
             drive: 3.5,
+            cutoff_step_per_tick: 0.0,
+            resonance_step_per_tick: 0.0,
+            drive_step_per_tick: 0.0,
             wave: VcoWave::Sin,
         });
 

@@ -37,16 +37,12 @@ pub fn serialize_session_v3(phrases: &[Phrase], vol: f32) -> String {
             match ctrl {
                 ControlSpec::SetBpm(v) => out.push_str(&format!("B|{}|{}\n", p.id, v)),
                 ControlSpec::SetSustain(v) => out.push_str(&format!("S|{}|{}\n", p.id, v)),
-                ControlSpec::SetVcf(v) => out.push_str(&format!(
-                    "V|{}|{}|{}|{}|{}|{}|{}\n",
-                    p.id,
-                    v.target.as_str(),
-                    v.cutoff_hz,
-                    v.resonance,
-                    v.drive,
-                    if v.enabled { "on" } else { "off" },
-                    v.wave.as_str()
-                )),
+                ControlSpec::SetVcf(_) => {
+                    out.push_str(&format!("V|{}|{}\n", p.id, escape_field(&p.src)))
+                }
+                ControlSpec::SetFx(_) => {
+                    out.push_str(&format!("F|{}|{}\n", p.id, escape_field(&p.src)))
+                }
             }
         } else {
             out.push_str(&format!(

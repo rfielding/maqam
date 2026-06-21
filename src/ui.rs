@@ -413,25 +413,30 @@ fn draw_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Style::default().fg(col).bg(BG),
         )])
     } else {
-        let vcf_status = if app.vcf.enabled {
-            format!(
-                "{}:{:.0}/{:.2}/{:.1}/{}",
-                app.vcf.target.as_str(),
-                app.vcf.cutoff_hz,
-                app.vcf.resonance,
-                app.vcf.drive,
-                app.vcf.wave.as_str()
-            )
+        let vcf_status = if app.vcf.all.enabled {
+            format_vcf_status(app.vcf.all)
         } else {
-            "off".to_string()
+            let mut parts = Vec::new();
+            for setting in [app.vcf.bass, app.vcf.kanun, app.vcf.kick] {
+                if setting.enabled {
+                    parts.push(format_vcf_status(setting));
+                }
+            }
+            if parts.is_empty() {
+                "off".to_string()
+            } else {
+                parts.join(" ")
+            }
         };
+        let fx_status = format_fx_status(app.fx);
         Line::from(vec![Span::styled(
             format!(
-                "  {}BPM:{} sus:{:.1}s vcf:{} vol:{:.2} phrases:{}  [?] help  [z] pause",
+                "  {}BPM:{} sus:{:.1}s vcf:{} fx:{} vol:{:.2} phrases:{}  [?] help  [z] pause",
                 if app.paused { "⏸ PAUSED  " } else { "" },
                 app.bpm,
                 app.sustain,
                 vcf_status,
+                fx_status,
                 app.vol,
                 app.phrases.len()
             ),
@@ -439,6 +444,32 @@ fn draw_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         )])
     };
     f.render_widget(Paragraph::new(text).style(Style::default().bg(BG)), area);
+}
+
+fn format_vcf_status(vcf: crate::vcf::VcfSettings) -> String {
+    format!(
+        "{}:{:.0}/{:.2}/{:.1}/{}",
+        vcf.target.as_str(),
+        vcf.cutoff_hz,
+        vcf.resonance,
+        vcf.drive,
+        vcf.wave.as_str()
+    )
+}
+
+fn format_fx_status(fx: crate::fx::FxSettings) -> String {
+    match (fx.reverb_enabled, fx.delay_enabled) {
+        (false, false) => "off".to_string(),
+        (true, false) => format!("rev:{:.2}/{:.2}", fx.reverb_mix, fx.reverb_decay),
+        (false, true) => format!(
+            "delay:{:.2}/{:.2}/{:.2}",
+            fx.delay_time_secs, fx.delay_feedback, fx.delay_mix
+        ),
+        (true, true) => format!(
+            "rev:{:.2}/{:.2} delay:{:.2}/{:.2}/{:.2}",
+            fx.reverb_mix, fx.reverb_decay, fx.delay_time_secs, fx.delay_feedback, fx.delay_mix
+        ),
+    }
 }
 
 fn draw_recording(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
