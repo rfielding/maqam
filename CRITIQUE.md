@@ -110,6 +110,49 @@ This is understandable during fast development, but the name now sends the
 wrong signal. If `record_old.rs` is the current implementation, it should be
 renamed back to something current or split into smaller modules.
 
+### Musical Style Is Under-Parameterized
+
+The strongest musical critique is that the system has flexible tuning and
+timeline control, but the rendering algorithms make different sketches sound
+too similar. The current rhythm model resembles an additive tala-like skeleton:
+digits define groups and group starts, then the renderer maps that to generic
+kick/snare behavior. That is useful, but it is not yet Arabic drumming.
+
+The next model should separate rhythm geometry from idiomatic skinning:
+
+```rust
+struct RhythmSkeleton {
+    groups: Vec<u8>,
+    accents: Vec<AccentKind>,
+}
+
+struct IqaSkin {
+    name: String,
+    native_len: usize,
+    strokes: Vec<StrokeKind>,
+    rules: StrokeRules,
+}
+```
+
+Then `33221 iqa=maqsum` would mean: keep the asymmetric cycle geometry, but
+render it with Maqsum-like darbuka decisions. If the skeleton is not the native
+Maqsum length, the skin should adapt by accent role rather than by naive index
+stretching. Group starts, cadences, weak ticks, and pickups should choose from
+`doum`, `tek`, `ka`, slap, ghost, and rest strokes according to style rules.
+
+The same issue exists for the melodic voice. The current "kanun" voice is more
+of a general additive/oscillator melody voice than a parameterized kanun
+algorithm. It should eventually have its own rendering layer with parameters
+such as pluck position, plectrum brightness, string course detune, damping,
+sympathetic resonance, tremolo/ornament probability, and register behavior.
+That would do more to reduce sameyness than adding more post-filter controls.
+
+The broader architectural fix is to extract "score sketch" generation from
+"sound rendering." A sketch should describe intent: maqam, contour, cadence,
+iqa skin, density, ornamentation, voice algorithm, and accompaniment role. Then
+renderers can interpret that sketch differently: practice drone, darbuka-heavy
+practice loop, kanun-focused voice, current synth, or MP4 visualization.
+
 ## Correctness Concerns To Watch
 
 - Control entries at the beginning of the sequence define start settings, but
@@ -129,6 +172,9 @@ renamed back to something current or split into smaller modules.
 3. Move completion out of `app.rs`.
 4. Give VCF/FX changes canonical parser-side formatters.
 5. Extract a shared sequencer core for live and offline rendering.
-6. Do a focused real-time allocation pass in `audio.rs`.
+6. Add a rhythm-skeleton plus `iqa` skin layer before adding more drum sounds.
+7. Split voice rendering algorithms, starting with a real kanun voice model.
+8. Extract score-sketch intent from concrete audio/visual rendering.
+9. Do a focused real-time allocation pass in `audio.rs`.
 
 That order keeps behavior stable while peeling off the highest-risk complexity.
