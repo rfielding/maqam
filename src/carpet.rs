@@ -65,8 +65,8 @@ pub struct BorderTickLayout {
     pub x: f32,
     pub y: f32,
     pub is_kick: bool,
-    start_t: f32,
-    end_t: f32,
+    pub start_t: f32,
+    pub end_t: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -498,14 +498,14 @@ fn fit_points_to_circle(pts: &[Pt], cx: f32, cy: f32, r: f32, margin: f32) -> Ve
         .map(|p| Pt::new(ox + p.x * scale, oy + p.y * scale))
         .collect()
 }
-fn draw_center_gosper(buf: &mut [u8], w: usize, score: &WeaveScore) {
+fn draw_center_gosper_background(buf: &mut [u8], w: usize, score: &WeaveScore) {
     let thread = score
         .phrases
         .first()
-        .map(|p| dark(phrase_color(p.phrase_id), 0.55))
-        .unwrap_or([74, 54, 24]);
-    let pts = fit_points_to_circle(&gosper_points(4, 1.0), CX, CY, INNER_R - 30.0, 10.0);
-    let clip = INNER_R - 20.0;
+        .map(|p| light(dark(phrase_color(p.phrase_id), 0.36), 0.18))
+        .unwrap_or([122, 84, 42]);
+    let pts = fit_points_to_circle(&gosper_points(4, 1.0), CX, CY, INNER_R - 30.0, 8.0);
+    let clip = INNER_R - 22.0;
     let clip2 = clip * clip;
     for seg in pts.windows(2) {
         let a = seg[0];
@@ -524,9 +524,9 @@ fn draw_center_gosper(buf: &mut [u8], w: usize, score: &WeaveScore) {
             a.y.round() as i32,
             b.x.round() as i32,
             b.y.round() as i32,
-            dark(thread, 0.68),
-            0.48,
-            4,
+            [0, 0, 0],
+            0.74,
+            9,
         );
         thick_line(
             buf,
@@ -536,10 +536,48 @@ fn draw_center_gosper(buf: &mut [u8], w: usize, score: &WeaveScore) {
             b.x.round() as i32,
             b.y.round() as i32,
             thread,
-            0.64,
-            2,
+            0.82,
+            5,
         );
     }
+}
+
+pub fn write_center_gosper_overlay(
+    path: impl AsRef<std::path::Path>,
+    phrases: &[Phrase],
+) -> anyhow::Result<CarpetRenderInfo> {
+    let score = WeaveScore::from_phrases(phrases);
+    let mut buf = vec![0u8; W * CARPET_H * 3];
+    draw_center_gosper_background(&mut buf, W, &score);
+    let path = path.as_ref();
+    let mut f = std::fs::File::create(path)?;
+    write!(f, "P6\n{} {}\n255\n", W, CARPET_H)?;
+    f.write_all(&buf)?;
+    f.flush()?;
+    Ok(CarpetRenderInfo {
+        path: path.to_string_lossy().replace('\\', "/"),
+        width: W,
+        content_end_x: W,
+    })
+}
+
+pub fn write_jump_arrows_overlay(
+    path: impl AsRef<std::path::Path>,
+    phrases: &[Phrase],
+) -> anyhow::Result<CarpetRenderInfo> {
+    let score = WeaveScore::from_phrases(phrases);
+    let mut buf = vec![0u8; W * CARPET_H * 3];
+    draw_jump_arrows(&mut buf, W, phrases, &score);
+    let path = path.as_ref();
+    let mut f = std::fs::File::create(path)?;
+    write!(f, "P6\n{} {}\n255\n", W, CARPET_H)?;
+    f.write_all(&buf)?;
+    f.flush()?;
+    Ok(CarpetRenderInfo {
+        path: path.to_string_lossy().replace('\\', "/"),
+        width: W,
+        content_end_x: W,
+    })
 }
 
 fn draw_chevron(
@@ -981,8 +1019,8 @@ fn draw_jump_arrows(buf: &mut [u8], w: usize, phrases: &[Phrase], score: &WeaveS
         } else {
             [150, 104, 60]
         };
-        draw_arc_ccw(buf, w, r, route.source_t, target_t, [5, 4, 3], 0.92, 9);
-        draw_arc_ccw(buf, w, r, route.source_t, target_t, color, 0.84, 5);
+        draw_arc_ccw(buf, w, r, route.source_t, target_t, [5, 4, 3], 0.76, 8);
+        draw_arc_ccw(buf, w, r, route.source_t, target_t, color, 0.66, 4);
         draw_chevrons(
             buf,
             w,
@@ -990,7 +1028,7 @@ fn draw_jump_arrows(buf: &mut [u8], w: usize, phrases: &[Phrase], score: &WeaveS
             route.source_t,
             target_t,
             light(color, 0.24),
-            0.76,
+            0.58,
             7.5,
             true,
         );
@@ -1150,9 +1188,6 @@ pub fn write_carpet_background(
     let mut buf = vec![0u8; W * CARPET_H * 3];
     draw_base_weave(&mut buf, W);
     draw_outer_hilbert(&mut buf, W, &score);
-    draw_ring_score(&mut buf, W, &score);
-    draw_jump_arrows(&mut buf, W, phrases, &score);
-    draw_center_gosper(&mut buf, W, &score);
     draw_ring_score(&mut buf, W, &score);
     draw_phrase_labels(&mut buf, W, phrases, &score);
     draw_frame(&mut buf, W);

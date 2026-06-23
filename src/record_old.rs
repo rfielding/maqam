@@ -242,6 +242,44 @@ fn build_carpet_tick_highlights(
     parts
 }
 
+fn build_center_gosper_rotation_expr(
+    full_seq: &[RenderEntry],
+    phrases: &[Phrase],
+    bar_samples_for: &dyn Fn(usize, f64) -> usize,
+) -> String {
+    let score = crate::carpet::WeaveScore::from_phrases(phrases);
+    let layout = crate::carpet::score_border_layout(&score);
+    let positions: HashMap<(usize, usize), crate::carpet::BorderTickLayout> = layout
+        .into_iter()
+        .map(|tick| ((tick.phrase_id, tick.score_tick), tick))
+        .collect();
+    let tick_counts: HashMap<usize, usize> = score
+        .phrases
+        .iter()
+        .map(|phrase| (phrase.phrase_id, phrase.tick_count))
+        .collect();
+    let mut expr = String::from("0");
+    let mut sample = 0usize;
+    for entry in full_seq {
+        let phrase = &phrases[entry.phrase_idx];
+        let subdiv_secs = 60.0 / (entry.bpm * 2.0);
+        let bar_samples = bar_samples_for(entry.phrase_idx, entry.bpm);
+        let score_ticks = tick_counts.get(&phrase.id).copied().unwrap_or(1).max(1);
+        for subdivision in 0..phrase.bar.events.len() {
+            let score_tick = subdivision % score_ticks;
+            let Some(layout) = positions.get(&(phrase.id, score_tick)) else {
+                continue;
+            };
+            let start = sample as f64 / SR + subdivision as f64 * subdiv_secs;
+            let end = start + subdiv_secs - 0.0001;
+            let angle = (((layout.start_t + layout.end_t) * 0.5) as f64) * std::f64::consts::TAU;
+            expr.push_str(&format!("+{angle:.6}*between(t,{start:.6},{end:.6})"));
+        }
+        sample += bar_samples;
+    }
+    expr
+}
+
 fn expand_one_cycle(
     phrases: &[Phrase],
     start_bpm: f64,
@@ -827,14 +865,23 @@ pub fn record_cycle(
     let result = (|| -> anyhow::Result<String> {
         let carpet_path = temp_path("maqam-carpet.ppm");
         crate::carpet::write_carpet_background(&carpet_path, &[], &phrases)?;
+        let gosper_path = temp_path("maqam-gosper.ppm");
+        crate::carpet::write_center_gosper_overlay(&gosper_path, &phrases)?;
+        let jumps_path = temp_path("maqam-jumps.ppm");
+        crate::carpet::write_jump_arrows_overlay(&jumps_path, &phrases)?;
         let tick_highlights = build_carpet_tick_highlights(&full_seq, &phrases, &bar_samples_for);
         let highlight_chain = if tick_highlights.is_empty() {
             "null".to_string()
         } else {
             tick_highlights.join(",")
         };
-        let filter_with_subs=format!("[1:v]{highlight_chain}[carpet];[0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x20140C,pad=1280:720:0:360:color=black,colorkey=0x000000:0.04:0.25,format=rgba,colorchannelmixer=aa=0.16[wv];[carpet][wv]overlay=format=auto[base];[base]subtitles={ass_path}[v]");
-        let filter_plain=format!("[1:v]{highlight_chain}[carpet];[0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x20140C,pad=1280:720:0:360:color=black,colorkey=0x000000:0.04:0.25,format=rgba,colorchannelmixer=aa=0.16[wv];[carpet][wv]overlay=format=auto[v]");
+        let gosper_rotation =
+            build_center_gosper_rotation_expr(&full_seq, &phrases, &bar_samples_for);
+        let gosper_chain = format!(
+            "[2:v]format=rgba,colorkey=0x000000:0.02:0.05,rotate='{gosper_rotation}':ow=iw:oh=ih:c=black@0[gosper];[3:v]format=rgba,colorkey=0x000000:0.003:0.02[jumps];[1:v][gosper]overlay=format=auto[carpet0];[carpet0][jumps]overlay=format=auto[carpet1];[carpet1]{highlight_chain}[carpet]"
+        );
+        let filter_with_subs=format!("{gosper_chain};[0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x20140C,pad=1280:720:0:360:color=black,colorkey=0x000000:0.04:0.25,format=rgba,colorchannelmixer=aa=0.16[wv];[carpet][wv]overlay=format=auto[base];[base]subtitles={ass_path}[v]");
+        let filter_plain=format!("{gosper_chain};[0:a]showwaves=s=1280x360:mode=cline:rate=30:colors=0x20140C,pad=1280:720:0:360:color=black,colorkey=0x000000:0.04:0.25,format=rgba,colorchannelmixer=aa=0.16[wv];[carpet][wv]overlay=format=auto[v]");
         let fscript_path = temp_path("maqam-filter.txt");
         std::fs::write(&fscript_path, &filter_with_subs)?;
         let ts = std::time::SystemTime::now()
@@ -855,6 +902,18 @@ pub fn record_cycle(
                     "30",
                     "-i",
                     &carpet_path,
+                    "-loop",
+                    "1",
+                    "-framerate",
+                    "30",
+                    "-i",
+                    &gosper_path,
+                    "-loop",
+                    "1",
+                    "-framerate",
+                    "30",
+                    "-i",
+                    &jumps_path,
                     "-filter_complex_script",
                     &fscript_path,
                     "-map",
@@ -902,6 +961,18 @@ pub fn record_cycle(
                         "30",
                         "-i",
                         &carpet_path,
+                        "-loop",
+                        "1",
+                        "-framerate",
+                        "30",
+                        "-i",
+                        &gosper_path,
+                        "-loop",
+                        "1",
+                        "-framerate",
+                        "30",
+                        "-i",
+                        &jumps_path,
                         "-filter_complex",
                         &filter_plain,
                         "-map",
