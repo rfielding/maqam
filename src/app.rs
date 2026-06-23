@@ -188,16 +188,17 @@ impl App {
         let Some((cmd, arg_start, partial)) = completion_target(&self.input) else {
             return;
         };
-        let matches = mq_matches(&partial);
+        let matches = mq_matches(cmd, &partial);
         if matches.is_empty() {
             self.message = Some("✗ no .mq matches".into());
             return;
         }
 
-        let common = longest_common_prefix(&matches);
+        let common = completion_common_prefix(cmd, &partial, &matches);
         let replacement = if matches.len() == 1 {
             matches[0].clone()
         } else if common.len() > partial.len() {
+            self.message = Some(format!("{}: {}", cmd, matches.join("  ")));
             common
         } else {
             self.message = Some(format!("{}: {}", cmd, matches.join("  ")));
@@ -207,7 +208,9 @@ impl App {
         self.input
             .replace_range(arg_start..self.input.len(), &replacement);
         self.cursor_pos = self.input.chars().count();
-        self.message = None;
+        if matches.len() == 1 {
+            self.message = None;
+        }
     }
 
     pub fn overlay_scroll_up(&mut self) {
@@ -1765,7 +1768,7 @@ fn completion_target(input: &str) -> Option<(&str, usize, String)> {
     Some((cmd, arg_start.max(rest_start), arg.to_string()))
 }
 
-fn mq_matches(partial: &str) -> Vec<String> {
+fn mq_matches(cmd: &str, partial: &str) -> Vec<String> {
     let partial_path = Path::new(partial);
     let (dir, prefix) = match partial_path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => (
@@ -1778,7 +1781,19 @@ fn mq_matches(partial: &str) -> Vec<String> {
         _ => (PathBuf::from("."), partial),
     };
 
-    let mut matches: Vec<String> = fs::read_dir(&dir)
+    let recursive = cmd == "load" && !partial.contains('/');
+    let mut matches = if recursive {
+        recursive_mq_matches(Path::new("."), prefix, Path::new("."))
+    } else {
+        direct_mq_matches(&dir, prefix)
+    };
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+fn direct_mq_matches(dir: &Path, prefix: &str) -> Vec<String> {
+    fs::read_dir(dir)
         .ok()
         .into_iter()
         .flat_map(|it| it.filter_map(Result::ok))
@@ -1800,9 +1815,53 @@ fn mq_matches(partial: &str) -> Vec<String> {
                 Some(dir.join(name).to_string_lossy().replace('\\', "/"))
             }
         })
+        .collect()
+}
+
+fn recursive_mq_matches(dir: &Path, prefix: &str, base: &Path) -> Vec<String> {
+    let mut out: Vec<String> = fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flat_map(|it| it.filter_map(Result::ok))
+        .filter_map(|entry| {
+            let path = entry.path();
+            if entry.file_type().ok()?.is_dir() {
+                return None;
+            }
+            if path.extension().and_then(|s| s.to_str()) != Some("mq") {
+                return None;
+            }
+            let name = path.file_name()?.to_str()?;
+            if !name.starts_with(prefix) {
+                return None;
+            }
+            Some(
+                path.strip_prefix(base)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            )
+        })
         .collect();
-    matches.sort();
-    matches
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if name.starts_with('.') || name == "target" {
+                continue;
+            }
+            out.extend(recursive_mq_matches(&entry.path(), prefix, base));
+        }
+    }
+    out
 }
 
 fn longest_common_prefix(items: &[String]) -> String {
@@ -1824,6 +1883,22 @@ fn longest_common_prefix(items: &[String]) -> String {
         }
     }
     prefix
+}
+
+fn completion_common_prefix(cmd: &str, partial: &str, matches: &[String]) -> String {
+    if cmd == "load" && !partial.contains('/') {
+        let basenames: Vec<String> = matches
+            .iter()
+            .filter_map(|path| {
+                Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_string)
+            })
+            .collect();
+        return longest_common_prefix(&basenames);
+    }
+    longest_common_prefix(matches)
 }
 
 fn resolve_rhythms(specs: Vec<JinsSpec>, default: &[u8]) -> Result<Vec<BarSpec>, String> {
@@ -2248,6 +2323,54 @@ mod tests {
         app.handle_command("fx off");
         assert!(!app.fx.reverb_enabled);
         assert!(!app.fx.delay_enabled);
+    }
+
+    #[test]
+    fn load_tab_completion_lists_and_completes_mq_files() {
+        let _guard = session_test_lock();
+        let (tx, _rx) = bounded(16);
+        let mut app = App::new(tx);
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("maqam-complete-{suffix}"));
+        fs::create_dir(&root).unwrap();
+        let old_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&root).unwrap();
+        struct CwdGuard(PathBuf);
+        impl Drop for CwdGuard {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+        let _cwd_guard = CwdGuard(old_cwd);
+        fs::write("alpha.mq", "MAQAM_SESSION_V3\n").unwrap();
+        fs::write("alpine.mq", "MAQAM_SESSION_V3\n").unwrap();
+        fs::create_dir("sets").unwrap();
+        fs::write("sets/alphaDeep.mq", "MAQAM_SESSION_V3\n").unwrap();
+
+        app.input = "load al".to_string();
+        app.cursor_pos = app.input.chars().count();
+        app.complete_input();
+        assert_eq!(app.input, "load alp");
+        assert_eq!(
+            app.message.as_deref(),
+            Some("load: alpha.mq  alpine.mq  sets/alphaDeep.mq")
+        );
+
+        app.complete_input();
+        assert_eq!(app.input, "load alp");
+        assert_eq!(
+            app.message.as_deref(),
+            Some("load: alpha.mq  alpine.mq  sets/alphaDeep.mq")
+        );
+
+        app.input = "load alphaD".to_string();
+        app.cursor_pos = app.input.chars().count();
+        app.complete_input();
+        assert_eq!(app.input, "load sets/alphaDeep.mq");
+        assert!(app.message.is_none());
     }
 
     #[test]
