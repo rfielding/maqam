@@ -373,7 +373,7 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                 }
 
                 voices.retain(|v| !v.done);
-                if voices.is_empty() && !fx.reverb_enabled && !fx.delay_enabled {
+                if voices.is_empty() && !fx.active() {
                     vcf_filters.reset();
                     for sample in frame.iter_mut() {
                         *sample = 0.0;
@@ -444,9 +444,13 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<cpal::Stream> {
                         right += filtered.1;
                     }
                 }
-                let (fx_left, fx_right) = fx_processor.process(left, right);
-                left = (fx_left * vol).clamp(-1.0, 1.0);
-                right = (fx_right * vol).clamp(-1.0, 1.0);
+                if fx.active() {
+                    let processed = fx_processor.process(left, right);
+                    left = processed.0;
+                    right = processed.1;
+                }
+                left = (left * vol).clamp(-1.0, 1.0);
+                right = (right * vol).clamp(-1.0, 1.0);
 
                 if frame.len() >= 2 {
                     frame[0] = left;

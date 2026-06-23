@@ -34,6 +34,10 @@ impl Default for FxSettings {
 }
 
 impl FxSettings {
+    pub fn active(self) -> bool {
+        self.reverb_enabled || self.delay_enabled
+    }
+
     pub fn advance_tick(&mut self) {
         if self.reverb_enabled {
             self.reverb_mix = (self.reverb_mix + self.reverb_mix_step_per_tick).clamp(0.0, 1.0);
@@ -56,9 +60,11 @@ pub struct FxProcessor {
     delay_l: Vec<f32>,
     delay_r: Vec<f32>,
     delay_pos: usize,
+    delay_samples: usize,
     rev_l: Vec<f32>,
     rev_r: Vec<f32>,
     rev_pos: [usize; 4],
+    rev_len: [usize; 4],
 }
 
 impl FxProcessor {
@@ -66,35 +72,51 @@ impl FxProcessor {
         let sample_rate = sample_rate.max(1.0);
         let max_delay = (sample_rate * 2.0).ceil() as usize + 1;
         let reverb_len = (sample_rate * 0.19).ceil() as usize + 1;
-        Self {
+        let mut fx = Self {
             settings: FxSettings::default(),
             sample_rate,
             delay_l: vec![0.0; max_delay],
             delay_r: vec![0.0; max_delay],
             delay_pos: 0,
+            delay_samples: 1,
             rev_l: vec![0.0; reverb_len],
             rev_r: vec![0.0; reverb_len],
             rev_pos: [0; 4],
-        }
+            rev_len: [1; 4],
+        };
+        fx.recompute_cached_lengths();
+        fx
     }
 
     pub fn set_settings(&mut self, settings: FxSettings) {
         self.settings = settings;
+        self.recompute_cached_lengths();
     }
 
     pub fn process(&mut self, left: f32, right: f32) -> (f32, f32) {
+        if !self.settings.active() {
+            return (left, right);
+        }
         let (left, right) = self.process_pingpong(left, right);
         self.process_reverb(left, right)
+    }
+
+    fn recompute_cached_lengths(&mut self) {
+        self.delay_samples = (self.settings.delay_time_secs * self.sample_rate)
+            .round()
+            .clamp(1.0, (self.delay_l.len() - 1) as f32) as usize;
+        for (i, tap) in [0.029, 0.041, 0.053, 0.071].iter().enumerate() {
+            self.rev_len[i] = ((self.sample_rate * tap).round() as usize)
+                .clamp(1, self.rev_l.len().saturating_sub(1).max(1));
+            self.rev_pos[i] %= self.rev_len[i];
+        }
     }
 
     fn process_pingpong(&mut self, left: f32, right: f32) -> (f32, f32) {
         if !self.settings.delay_enabled {
             return (left, right);
         }
-        let delay_samples = (self.settings.delay_time_secs * self.sample_rate)
-            .round()
-            .clamp(1.0, (self.delay_l.len() - 1) as f32) as usize;
-        let read = (self.delay_pos + self.delay_l.len() - delay_samples) % self.delay_l.len();
+        let read = (self.delay_pos + self.delay_l.len() - self.delay_samples) % self.delay_l.len();
         let dl = self.delay_l[read];
         let dr = self.delay_r[read];
         self.delay_l[self.delay_pos] = (left + dr * self.settings.delay_feedback).clamp(-1.0, 1.0);
@@ -110,22 +132,21 @@ impl FxProcessor {
         if !self.settings.reverb_enabled {
             return (left, right);
         }
-        let taps = [0.029, 0.041, 0.053, 0.071];
         let mut wet_l = 0.0;
         let mut wet_r = 0.0;
-        for (i, tap) in taps.iter().enumerate() {
-            let len = ((self.sample_rate * tap).round() as usize).min(self.rev_l.len() - 1);
-            let pos = self.rev_pos[i] % len.max(1);
+        for i in 0..2 {
+            let len = self.rev_len[i];
+            let pos = self.rev_pos[i];
             let fb_l = self.rev_l[pos];
             let fb_r = self.rev_r[pos];
             wet_l += fb_l;
             wet_r += fb_r;
             self.rev_l[pos] = (left + fb_r * self.settings.reverb_decay).clamp(-1.0, 1.0);
             self.rev_r[pos] = (right + fb_l * self.settings.reverb_decay).clamp(-1.0, 1.0);
-            self.rev_pos[i] = (pos + 1) % len.max(1);
+            self.rev_pos[i] = if pos + 1 >= len { 0 } else { pos + 1 };
         }
-        wet_l *= 0.25;
-        wet_r *= 0.25;
+        wet_l *= 0.5;
+        wet_r *= 0.5;
         let dry = 1.0 - self.settings.reverb_mix;
         (
             (left * dry + wet_l * self.settings.reverb_mix).clamp(-1.0, 1.0),

@@ -454,9 +454,14 @@ pub fn record_cycle(
             voices.retain(|v| !v.done);
             if voices.is_empty() {
                 filters.reset();
-                let (l, r) = fx_processor.process(0.0, 0.0);
-                left_buf.push(l);
-                right_buf.push(r);
+                if entry.fx.active() {
+                    let (l, r) = fx_processor.process(0.0, 0.0);
+                    left_buf.push(l);
+                    right_buf.push(r);
+                } else {
+                    left_buf.push(0.0);
+                    right_buf.push(0.0);
+                }
                 continue;
             }
             let (mut dry_l, mut dry_r) = (0f32, 0f32);
@@ -522,7 +527,11 @@ pub fn record_cycle(
                     r += filtered.1;
                 }
             }
-            let (l, r) = fx_processor.process(l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0));
+            let (l, r) = if entry.fx.active() {
+                fx_processor.process(l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
+            } else {
+                (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
+            };
             left_buf.push(l);
             right_buf.push(r);
             voices.retain(|v| !v.done);
@@ -546,9 +555,14 @@ pub fn record_cycle(
         voices.retain(|v| !v.done);
         if voices.is_empty() {
             filters.reset();
-            let (l, r) = fx_processor.process(0.0, 0.0);
-            left_buf.push(l);
-            right_buf.push(r);
+            if tail_fx.active() {
+                let (l, r) = fx_processor.process(0.0, 0.0);
+                left_buf.push(l);
+                right_buf.push(r);
+            } else {
+                left_buf.push(0.0);
+                right_buf.push(0.0);
+            }
             continue;
         }
         let (mut dry_l, mut dry_r) = (0f32, 0f32);
@@ -614,7 +628,11 @@ pub fn record_cycle(
                 r += filtered.1;
             }
         }
-        let (l, r) = fx_processor.process(l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0));
+        let (l, r) = if tail_fx.active() {
+            fx_processor.process(l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
+        } else {
+            (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
+        };
         left_buf.push(l);
         right_buf.push(r);
         voices.retain(|v| !v.done);
