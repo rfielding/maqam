@@ -2134,11 +2134,17 @@ mod tests {
         let mut app = App::new(tx);
 
         app.handle_command("vcf off");
-        assert!(!app.vcf.any_enabled());
+        assert!(!app.vcf.all.enabled);
+        assert!(!app.vcf.bass.enabled);
+        assert!(!app.vcf.kanun.enabled);
+        assert!(!app.vcf.kick.enabled);
         assert_eq!(app.vcf.focus, VcfTarget::All);
 
         app.handle_command("vcf bass off");
-        assert!(!app.vcf.any_enabled());
+        assert!(!app.vcf.all.enabled);
+        assert!(!app.vcf.bass.enabled);
+        assert!(!app.vcf.kanun.enabled);
+        assert!(!app.vcf.kick.enabled);
         assert_eq!(app.vcf.focus, VcfTarget::Bass);
 
         app.handle_command("vcf bass 900 0.65 3.5");
@@ -2187,7 +2193,10 @@ mod tests {
         assert!(!app.vcf.kick.enabled);
 
         app.handle_command("vcf all off");
-        assert!(!app.vcf.any_enabled());
+        assert!(!app.vcf.all.enabled);
+        assert!(!app.vcf.bass.enabled);
+        assert!(!app.vcf.kanun.enabled);
+        assert!(!app.vcf.kick.enabled);
         assert_eq!(app.vcf.focus, VcfTarget::All);
     }
 
