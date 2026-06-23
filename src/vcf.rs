@@ -177,10 +177,6 @@ impl VcfBank {
         }
     }
 
-    pub fn any_enabled(self) -> bool {
-        self.all.enabled || self.bass.enabled || self.kanun.enabled || self.kick.enabled
-    }
-
     pub fn advance_tick(&mut self) {
         for target in [
             VcfTarget::All,
