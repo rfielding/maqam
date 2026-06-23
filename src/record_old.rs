@@ -14,11 +14,25 @@ use crate::synth::{
 use crate::vcf::{MoogLadder, VcfBank, VcfSettings, VcfTarget};
 
 const SR: f64 = 44100.0;
+const RENDER_COOP_INTERVAL_SAMPLES: usize = 4096;
 
 fn temp_path(name: &str) -> String {
     let mut p = std::env::temp_dir();
     p.push(name);
     p.to_string_lossy().replace('\\', "/")
+}
+
+fn ffmpeg_command() -> Command {
+    #[cfg(unix)]
+    {
+        let mut cmd = Command::new("nice");
+        cmd.args(["-n", "10", "ffmpeg"]);
+        cmd
+    }
+    #[cfg(not(unix))]
+    {
+        Command::new("ffmpeg")
+    }
 }
 
 fn ffmpeg_status(cmd: &mut Command) -> anyhow::Result<bool> {
@@ -30,6 +44,12 @@ fn ffmpeg_status(cmd: &mut Command) -> anyhow::Result<bool> {
             )
         }
         Err(err) => Err(err.into()),
+    }
+}
+
+fn yield_to_audio_thread(rendered_samples: usize) {
+    if rendered_samples != 0 && rendered_samples % RENDER_COOP_INTERVAL_SAMPLES == 0 {
+        std::thread::sleep(std::time::Duration::from_micros(250));
     }
 }
 
@@ -401,6 +421,7 @@ pub fn record_cycle(
         let mut bar_pos = 0usize;
         let mut last_subdiv = None;
         for _ in 0..bs {
+            yield_to_audio_thread(left_buf.len());
             let ev = if total_subdivs > 0 {
                 let curr = ((bar_pos as f64 / subdiv_samples) as usize).min(total_subdivs - 1);
                 let ev = if last_subdiv != Some(curr) {
@@ -552,6 +573,7 @@ pub fn record_cycle(
         spawn_sub_bass(root_hz, first.sustain.min(2.0), &mut voices);
     }
     for _ in 0..tail_samples {
+        yield_to_audio_thread(left_buf.len());
         voices.retain(|v| !v.done);
         if voices.is_empty() {
             filters.reset();
@@ -822,7 +844,7 @@ pub fn record_cycle(
         let out = format!("./maqam-{ts}.mp4");
         let log_path = temp_path("maqam-ffmpeg.log");
         let ok1 = ffmpeg_status(
-            Command::new("ffmpeg")
+            ffmpeg_command()
                 .args([
                     "-y",
                     "-i",
@@ -841,6 +863,10 @@ pub fn record_cycle(
                     "0:a",
                     "-c:v",
                     "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-threads",
+                    "1",
                     "-crf",
                     "18",
                     "-pix_fmt",
@@ -865,7 +891,7 @@ pub fn record_cycle(
         )?;
         if !ok1 {
             ffmpeg_status(
-                Command::new("ffmpeg")
+                ffmpeg_command()
                     .args([
                         "-y",
                         "-i",
@@ -884,6 +910,10 @@ pub fn record_cycle(
                         "0:a",
                         "-c:v",
                         "libx264",
+                        "-preset",
+                        "veryfast",
+                        "-threads",
+                        "1",
                         "-crf",
                         "18",
                         "-pix_fmt",

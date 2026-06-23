@@ -1,594 +1,329 @@
-# Code Guide — maqam-live
+# Code Guide - maqam-live
 
-This document explains what every file does, why it exists, and how the
-pieces fit together. It is written for someone who does not know Rust.
+This guide describes the current code structure and runtime data flow. It is
+intended as a map for changing the code, not as a Rust tutorial.
 
----
+## Runtime Model
 
-## The big picture
+maqam-live has three main runtime paths:
 
-maqam-live is a program that does three things simultaneously:
+1. The TUI/main thread reads keys, edits app state, and sends audio commands.
+2. The CPAL audio callback renders real-time stereo audio.
+3. The recording worker renders the same sequence offline and invokes ffmpeg.
 
-1. **Listens** to what you type in the terminal
-2. **Plays audio** in real time
-3. **Draws** the TUI (text interface) on screen
+The TUI talks to audio through a bounded `crossbeam-channel` of `AudioCmd`
+values. Audio exposes live playback position through atomics:
 
-These three activities run in separate "threads" — think of them as three
-workers running at the same time, passing notes to each other.
-
-```
-┌──────────────┐  commands  ┌──────────────┐
-│  TUI thread  │ ─────────► │ Audio thread │
-│  (main.rs /  │            │  (audio.rs)  │
-│   ui.rs /    │            │              │
-│   app.rs)    │ ◄───────── │              │
-└──────────────┘  atomics   └──────────────┘
-                 (CUR_PHRASE etc.)
+```text
+CUR_PHRASE
+CUR_SUBDIV
+CUR_PLAYS
+CUR_JUMP_REM
+REC_SAMPLES_DONE
+REC_SAMPLES_TOTAL
+REC_ACTIVE
 ```
 
-The TUI thread sends commands ("add this phrase", "change BPM") through a
-**channel** — a one-way pipe. The audio thread publishes its current position
-back via **atomics** — shared numbers that can be read and written safely
-without locking.
+Jump counters are shared through a `OnceLock<Mutex<HashMap<usize, usize>>>`.
+The audio callback only uses `try_lock()` when publishing jump-counter state.
 
----
+## Timeline Model
 
-## File by file
+The app keeps one authoritative `Vec<Phrase>`. Despite the name, `Phrase` is a
+timeline entry. It can be:
 
-### `main.rs` — The entry point (44 lines)
+- a musical phrase, with a `Bar`
+- a jump entry, with `JumpSpec`
+- a settings/control entry, with `ControlSpec`
 
-This is where the program starts. It does three things and nothing else:
+Every entry has a stable `id`. Commands such as `j`, `i`, `edit`, `x`, `up`,
+and `down` resolve IDs through `App::resolve_id_ref`. IDs do not change when
+the timeline is reordered.
 
-1. Creates the **channel** that carries commands from TUI to audio
-2. Starts the audio thread (`audio::start_audio`)
-3. Starts the TUI (`ui::run`)
-
-It also declares four **global atomics** — numbers visible to every part of
-the program without passing them around explicitly:
-
-```
-CUR_PHRASE  — which phrase is currently playing (list index)
-CUR_SUBDIV  — which subdivision within that phrase
-CUR_PLAYS   — how many times the current phrase has looped
-CUR_JUMP_REM — remaining jump count (legacy; superseded by JUMP_COUNTERS)
-```
-
-And `JUMP_COUNTERS` — a global map from phrase id to remaining jump count,
-written by the audio thread and read by the TUI and video renderer so they
-can display `[2/4]` counters.
-
-**Why globals?** The audio thread runs inside a callback that the audio
-hardware calls thousands of times per second. You cannot pass arguments into
-that callback, and you cannot afford to lock a mutex in it (locking can
-stall). Atomics are the only safe, zero-cost option.
-
----
-
-### `tuning.rs` — Just intonation pitch system (255 lines)
-
-This is the mathematical foundation of the whole instrument.
-
-#### The problem it solves
-
-Equal temperament (ET) — the tuning used by pianos and guitars — divides the
-octave into 12 equal semitones. Each interval is slightly off from a pure
-ratio. For example, a fifth in 12-ET is 2^(7/12) = 1.4983…, not exactly 3/2
-= 1.5. The difference is small but audible, especially when multiple notes
-ring together. Arabic maqam music uses **just intonation** (JI) — every
-interval is an exact ratio, so beating between strings is eliminated.
-
-#### The oud lattice
-
-All pitches are expressed as rational multiples of D:
-
-```
-D = 293.6648 Hz  (matches an electronic tuner's D note)
-G = D × 4/3      (perfect fourth — open G string)
-A = D × 3/2      (perfect fifth — open A string)
-C = D × 16/9     (= (4/3)² — two fourths up — open C string)
-```
-
-Every note is a ratio from D — no equal temperament anywhere in the system.
-
-The table `PITCH_TABLE` lists 18 named ratios. `snap_to_oud_lattice()` takes
-any frequency and finds the closest table entry. This is the **only** entry
-point — any Hz value that enters the system gets snapped to the lattice
-first.
-
-#### Maqam scales
-
-Seven maqamat are defined, each as eight (numerator, denominator) pairs for
-scale degrees 0–7. These are the intervals from the root, not cumulative:
+`ControlSpec` currently supports:
 
 ```rust
-Maqam::Bayati => [(1,1),(12,11),(27,22),(4,3),(3,2),(18,11),(16,9),(2,1)]
+SetBpm(f64)
+SetSustain(f64)
+SetVcf(VcfChange)
+SetFx(FxChange)
 ```
 
-So Bayati on D gives: D, D×12/11, D×27/22, D×4/3 (=G), D×3/2 (=A), …
+VCF and FX control entries store the original relative command as a parsed
+change, not as a frozen absolute setting. That is what makes commands like
+`vcf bass cut=+2t` meaningful when replayed in a loop.
 
-The neutral second (12/11 ≈ 151 cents) is the characteristic colour of
-Bayati and Rast. The semitone in Kurd (256/243 ≈ 90 cents) is narrower than
-ET's 100-cent semitone. These are not approximations — they are the exact
-ratios.
+## File Guide
 
-#### Pitch parsing
+### `src/main.rs`
 
-`Pitch::parse("d+")` returns a Pitch struct with letter='d', accidental=+1.
-`pitch.to_hz()` converts it to an exact Hz via the pitch table.
+Declares modules, global atomics, and the jump-counter map. It has two entry
+modes:
 
----
+- no CLI args: start audio and run the TUI
+- CLI args present: run each command group through an `App`, wait for any
+  recording job, then print the result
 
-### `sequencer.rs` — Data structures (292 lines)
+`cli_commands` splits argument groups on literal `--`.
 
-This file defines the core data types and the phrase-building logic. It
-contains no audio output and no UI — just data.
+### `src/app.rs`
 
-#### `SubdivEvent`
+Owns interactive state:
 
-Every subdivision (eighth note) produces one of two events:
-- `Kick(hz)` — a strong beat (group start), with floor tom + melody note
-- `Snare(hz)` — a weak beat (off-beat), with snare + melody note
+- timeline entries
+- command input, cursor, history, help/jins overlays
+- current BPM, sustain, volume, VCF bank, and FX settings
+- session path
+- recording result receiver
+- MIDI clockout sender
 
-The `hz` payload is the melody note's frequency for that subdivision.
+`App::handle_command` splits semicolon-separated commands. It handles
+`clockin` and `clockout` directly, then sends the rest through
+`command::parse`.
 
-#### `Bar`
+`App::execute` mutates the authoritative timeline and sends the matching
+`AudioCmd` updates. Reordering uses `resync_audio_sequence`, which clears the
+audio thread and rebuilds its phrase list from app state while preserving a
+reasonable playback focus.
 
-A `Bar` is one complete rhythmic cycle — everything needed to play one loop
-of a phrase. It holds:
+Session loading is also here. V3, V2, and V1 loaders all rebuild app state and
+then resync audio.
 
-- `frequencies` — the combined JI scale, sorted ascending (all the notes
-  available)
-- `groups` — the rhythm pattern as additive eighth notes (e.g. [3,3,2] for
-  a 3+3+2 pattern)
-- `group_degrees` — n_groups+1 waypoints, each an index into `frequencies`
-  (these control the melodic arc)
-- `degrees` — one index per subdivision, interpolated between waypoints
-- `events` — one `SubdivEvent` per subdivision, with its Hz value
+Path completion is implemented in this file. `save` and `load` complete `.mq`
+paths; `load` recursively finds `.mq` files when the partial path has no slash
+and lists ambiguous matches in `App::message`.
 
-#### `Phrase`
+### `src/command.rs`
 
-A `Phrase` wraps a `Bar` with metadata:
+Pure parser and value-change logic. It parses:
 
-- `id` — a permanent integer assigned at creation, never reused, never
-  changed by insert/delete
-- `src` — the original command string typed by the user (e.g. "d bay 332")
-- `repeat` — how many times to play before advancing
-- `jump` — `None` for musical phrases, `Some(JumpSpec)` for jump entries
+- musical phrases
+- jumps, inserts, edits, deletes, moves, rotate
+- `bpm`, `s`/`sus`, `vol`
+- VCF/VCO commands
+- reverb, delay, pingpong, and `fx off`
+- session commands
+- jins registry commands
+- recording and playback commands
 
-**Why stable IDs?** If phrases were identified by list position, deleting
-phrase 2 would renumber everything after it, breaking all `j` and `i`
-commands. Stable IDs mean `j 5 4` will always target whatever phrase was
-born as id 5, even after rotations, inserts, and deletes.
+`ValueChange` represents absolute, additive, multiplicative, divisive, and
+per-tick movement:
 
-#### `JumpSpec`
-
-A jump entry stores:
-- `target_id` — the stable id of the phrase to jump back to
-- `times` — how many total passes before falling through
-
-The audio thread resolves `target_id` to a list position at runtime:
-`phrases.iter().position(|p| p.phrase.id == js.target_id)`. This means
-the target can move in the list and the jump still works.
-
-#### Tetrachord stacking (`build_phrase`)
-
-When you type `d bay, a nah`, the comma means "stack these two ajnas into
-one scale." The algorithm:
-
-1. Compute the root Hz for each jins by snapping to the oud lattice
-2. For each non-last jins: take only its first 4 scale degrees
-   (the traditional tetrachord)
-3. For the last jins: take all degrees up to the octave
-4. Drop any note within 70 cents of the next jins's root (prevents
-   micro-interval clashes at boundaries)
-5. Deduplicate within 50 cents (earlier jins wins)
-
-Result: `d bay, a nah` gives D, E¾, F¾, G, A, B, C, D' — natural minor
-with Bayati colour in the lower tetrachord.
-
-#### `AudioCmd`
-
-The enum of messages the TUI sends to the audio thread:
-`AddPhrase`, `RemovePhrase`, `InsertPhrase`, `ReplacePhrase`, `Rotate`,
-`SetBpm`, `SetSustain`, `Clear`, `SetVol`, `SetPaused`, `SetCurPhrase`.
-
----
-
-### `command.rs` — Command parser (233 lines)
-
-Parses a line of text into a `Cmd` value. No audio, no UI — pure parsing.
-
-The grammar is:
-
-```
-<root> <maqam> [groups] [, <root> <maqam>]…  [r<N>]
-j <id> [<times>]
-i <id> <command>
-up <id> / down <id>
-x <id> [<id>…]
-bpm <n> / s <n> / vol <n> / rot / z / clear / m [N] / ?
+```rust
+Set(f64)
+Add(f64)
+Mul(f64)
+Div(f64)
+Tick(f64)
 ```
 
-Semicolons separate multiple commands on one line.
+`apply_vcf_change` applies a `VcfChange` against a `VcfBank` and returns a
+single `VcfSettings` for the target slot. `apply_fx_change` applies `FxChange`
+against `FxSettings`.
 
-**Prefix matching for maqam names:** You only have to type enough letters to
-be unambiguous — `bay`, `nah`, `kur`, `sab`, `ras`, `hij`, `aja` all work.
-The code iterates the candidates list and returns the first name that starts
-with what you typed.
+### `src/sequencer.rs`
 
-**Strip-repeat:** `r4` at the end of a phrase spec is detected and stripped
-before the rest is parsed. The result is a `(phrase_text, repeat_count)`
-pair.
+Defines the core timeline and bar data structures:
 
----
+- `SubdivEvent`
+- `Bar`
+- `JumpSpec`
+- `ControlSpec`
+- `Phrase`
+- `AudioCmd`
 
-### `app.rs` — Application state and command dispatch (366 lines)
+`build_phrase` turns one or more parsed jins specs into a playable `Bar`.
+Comma-separated ajnas are stacked into one combined scale. For stacked ajnas,
+each non-final jins contributes its lower fragment while the final jins fills
+out the remaining scale up to the octave. Nearby duplicate or boundary notes
+are filtered by cents thresholds.
 
-`App` is the main state machine. It holds:
+The resulting bar stores rhythm groups, available frequencies, melodic
+waypoints, expanded per-subdivision degrees, and per-subdivision events.
 
-- `phrases` — the ordered list of `Phrase` objects
-- `next_phrase_id` — a counter that only ever goes up
-- `audio_tx` — the channel sender (to send commands to the audio thread)
-- `history` — the command history buffer (up/down arrows)
-- `cursor` — position within the command line being edited
-- `message` — optional status message to show in the TUI
+### `src/audio.rs`
 
-When you press Enter, `App::dispatch()` is called. It:
+The real-time audio engine. `start_audio` opens the default CPAL output device
+and builds a callback.
 
-1. Parses the command
-2. Modifies `self.phrases` (the authoritative phrase list)
-3. Sends the appropriate `AudioCmd` messages to the audio thread
+Each callback drains pending `AudioCmd` messages with `try_recv`, then processes
+each output frame:
 
-**Why resend everything on reorder?** When an entry is moved with `up` or
-`down`, the app rebuilds the audio thread's list from the authoritative
-sequence in app state. This keeps reordering logic simple and ensures
-phrases, jumps, and settings entries all move the same way.
+1. advance the sequencer
+2. apply any pending control entry
+3. spawn phrase-start, sub-bass, melody, and percussion voices
+4. advance VCF/FX tick automation on sequencer ticks
+5. mix active voices into dry/per-target buses
+6. process enabled VCF slots
+7. process FX
+8. clamp, apply volume, and write output samples
 
-**`rot`** (rotate) moves the last phrase to the front. Internally: pop the
-last element, insert it at position 0, then resend all phrases. The audio
-thread picks up at the same phrase id it was playing (by searching for the
-id in the new list order).
+The audio callback avoids blocking operations. It does allocate in a few places
+that are worth watching, most notably cloning the scale when spawning voices.
 
----
+### `src/synth.rs`
 
-### `audio.rs` — Real-time audio callback (281 lines)
+Defines `Voice`, `VoiceKind`, melodic evolution, and voice spawning.
 
-This is the most performance-critical file. The hardware calls the audio
-callback thousands of times per second; each call must return in microseconds
-or you get a glitch.
+Voices are sample-by-sample oscillators/envelopes. Melody voices are additive by
+default, but `sample_with_wave` lets VCF-targeted voices use `sin`, `tri`,
+`squ`, or `saw` oscillator shapes. Sub-bass, drums, phrase-start accents, and
+turnaround markers are also generated here.
 
-#### Structure
+`evolve_bar` mutates melodic waypoints after each phrase play so repeated
+phrases drift instead of repeating exactly.
 
-The callback runs a tight inner loop:
+### `src/vcf.rs`
 
-```
-For each sample:
-  1. Process any pending AudioCmd messages (non-blocking check)
-  2. Tick the sequencer (advance position, fire events)
-  3. Mix all active voices
-  4. Write the sample to the output buffer
-```
+Defines VCF/VCO data and the filter implementation:
 
-#### `tick_sequencer`
+- `VcfSettings`
+- `VcfBank`
+- `VcfTarget`
+- `VcoWave`
+- `MoogLadder`
 
-The sequencer operates at the **subdivision level** — it does not think in
-"bars" or "beats" in the traditional sense, but in subdivisions (eighth
-notes by default).
+`VcfBank` has four slots: `all`, `bass`, `kanun`, and `kick`. `all` is a master
+filter. Per-instrument slots filter only matching `VoiceKind` groups. `all` and
+per-instrument modes are mutually exclusive by design.
 
-For each sample:
-1. Compute which subdivision we are in: `bar_pos / subdiv_samples`
-2. If the subdivision changed: fire the corresponding `SubdivEvent`
-3. If the bar is complete: advance to the next play (or next phrase)
+`advance_tick` applies per-tick automation to enabled slots.
 
-When advancing to the next phrase, the sequencer checks if the next entry is
-a **jump entry**. If so, it executes the jump logic:
-- Look up the `target_id` in the current phrase list to find the position
-- Check the jump counter (stored in `jump_counters` HashMap)
-- If counter > 0: decrement and jump back to target
-- If counter = 0: remove the counter, fall through to next phrase
+### `src/fx.rs`
 
-**Milestone events** are set during tick_sequencer and passed to
-`spawn_voices`:
-- `PhraseStart` — first subdivision of first play
-- `PhraseChange` — first subdivision of any subsequent play
-- `Turnaround` — last subdivision of last play
+Defines `FxSettings` and `FxProcessor`.
 
-These trigger different drum sounds.
+FX are global post-mix processors:
 
-#### Thread safety
+- ping-pong delay
+- compact feedback reverb
 
-The audio callback can never lock a mutex (mutex operations can block
-indefinitely if another thread holds the lock). All communication uses:
-- `AtomicUsize` for simple counters (CUR_PHRASE etc.)
-- `try_lock()` (not `lock()`) for the jump counters map — if the lock is
-  busy, the update is silently skipped; the TUI will catch up on the next
-  frame
+Both are off by default. `advance_tick` applies per-tick automation. The
+processor has a fast bypass path when neither effect is enabled.
 
----
+### `src/ui.rs`
 
-### `synth.rs` — Voice synthesis (416 lines)
+Renders the ratatui interface and handles keyboard input. It reads app state
+plus playback atomics each frame. It handles:
 
-Every sound that comes out of the speaker is a `Voice`. This file defines
-what voices sound like and how they evolve.
+- command input and cursor movement
+- history navigation
+- Tab completion
+- help and jins overlays
+- status line formatting for BPM, sustain, VCF, FX, volume, phrase count, and
+  recording progress
 
-#### `Voice`
+### `src/session_v3.rs`
 
-A voice is one sustained sound. It has:
-- `kind` — what type of voice (melody, sub-bass, floor tom, snare, etc.)
-- `hz` — its pitch
-- `pan` — stereo position (-1 = full left, +1 = full right)
-- `phase` — current oscillator position (0.0 to 1.0)
-- `t` — elapsed time in samples
-- `sustain_secs` — how long before it fades out
-- `release_frames` — if set, force a fast fade regardless of sustain
-- `done` — once true, the voice is removed from the list
+Serialization helpers for `MAQAM_SESSION_V3`.
 
-`Voice::sample(sr)` computes one sample of audio. No buffering, no
-lookahead — pure sample-by-sample synthesis.
+V3 writes explicit stable IDs:
 
-#### Voice kinds
-
-**Melody:** An additive tone: sine fundamental plus fixed 2nd and 3rd
-harmonics. Gain envelope: instant attack, exponential decay.
-
-**SubBass:** Pure sine, very low frequency, long sustain. Multiple octave
-layers of the root are spawned simultaneously at different gains (see
-`spawn_sub_bass` in the file). The interference between these layers can
-sound square-ish or triangle-ish even though each oscillator is sinusoidal.
-
-**FloorTom, Rimshot, Crash, PhraseChange:** Short percussive bursts using
-filtered noise + sine blend, modeled loosely after drum physics.
-
-**Snare:** Short noise burst with fast decay.
-
-#### Stereo panning
-
-Each voice gets a random pan position at spawn time, fixed for that voice's
-lifetime. The pan is applied using constant-power panning:
-```
-left  += sample * cos((pan + 1) * π/4)
-right += sample * sin((pan + 1) * π/4)
+```text
+P|id|repeat|phrase
+J|id|target|times
+B|id|bpm
+S|id|sustain
+V|id|vcf command
+F|id|fx command
 ```
 
-Kick and sub-bass are always centred (pan = 0).
+Fields are escaped for `|`, backslash, and newline. Custom jins are written as
+plain `create` lines before the timeline, and volume is written as `vol <n>`.
 
-#### Chord tones
+### `src/record.rs` And `src/record_old.rs`
 
-When a melody note fires, two additional voices are spawned: one at 1.5×
-frequency (a perfect fifth above) and one at 2.0× (an octave). Both are
-snapped to the nearest note in the current scale (`snap_to_scale`), so
-nothing outside the maqam ever sounds. The chord tones are quieter than the
-melody (gains 0.14 and 0.08 vs 0.22).
+`record.rs` is a thin wrapper over `record_old.rs`.
 
-#### `evolve_bar`
+The recorder expands the current timeline, renders audio offline, applies VCF
+and FX, generates the visual score/background, writes temporary media files,
+and invokes ffmpeg to produce an MP4. While live playback is still running, the
+offline synth loop periodically yields, and ffmpeg is launched at lower priority
+on Unix with x264 capped to one thread.
 
-Called after every complete phrase play. Randomly adjusts the melodic arc
-(group_degrees waypoints) within the current scale:
-- **70% of the time:** Gentle drift — nudge one peak ±1 scale degree
-- **20%:** Fill — push peaks slightly higher (more energy)
-- **8%:** Reset — new random zigzag arc
-- Always: force first and last waypoints to 0 (tonic)
+Recording is intentionally outside the real-time audio callback. It can spend
+more CPU and allocate freely without causing live audio skips.
 
-Then forces the penultimate group to aim at the dominant (≈ scale degree 5)
-50% of the time — the classical maqam cadential motion.
+### `src/tuning.rs`
 
-#### PRNG
+Defines the oud-lattice pitch system, pitch parsing, built-in jins/maqam ratios,
+custom jins registry, and frequency snapping.
 
-Uses a simple linear congruential generator stored in a global atomic. This
-means evolution is deterministic given a starting state, and thread-safe
-without locking.
+Every parsed pitch is converted to Hz and snapped to the oud lattice before it
+is used to build phrase frequencies.
 
----
+### `src/midi_clock.rs` And `src/midi_clockout.rs`
 
-### `ui.rs` — Terminal interface (264 lines)
+MIDI clock integration. `clockin <device>` starts a receiver that updates audio
+BPM from external MIDI clock. `clockout <device>` starts a sender and receives
+later BPM updates from the app.
 
-Draws the TUI using the **ratatui** library. Called 25 times per second from
-a loop in `run()`.
+### `src/carpet.rs`, `src/renderer.rs`, `src/source_background.rs`
 
-#### Layout
+Visual rendering support for MP4 output. These files generate score/background
+imagery used by offline recording.
 
+### `src/osc.rs` And `src/midi.rs`
+
+Support modules for OSC/MIDI-adjacent work. They are currently not central to
+the main app loop.
+
+## Session Loading Flow
+
+`App::load_session` reads the first line:
+
+- `MAQAM_SESSION_V3` -> explicit-ID loader
+- `MAQAM_SESSION_V2` -> legacy V2 loader
+- `MAQAM_SESSION_V1` -> legacy V1 loader
+
+V3 loading resets custom jins to defaults, applies any `create` lines, loads
+volume, then rebuilds timeline entries. Plain control lines under a V3 header
+are accepted for convenience. Older numeric VCF records are still accepted.
+
+After loading, the app computes the sequence-start settings by walking leading
+control entries before the first musical phrase, then sends `Clear`,
+`SetBpm`, `SetSustain`, `SetVcfBank`, `SetFxSettings`, `SetVol`, and every
+loaded entry to audio.
+
+## Real-Time Audio Notes
+
+The audio callback must stay non-blocking. The current code mostly follows that
+rule:
+
+- command channel is drained with `try_recv`
+- jump-counter mutex uses `try_lock`
+- FX has a fast bypass when inactive
+- VCF processing is per-bus and only active for enabled slots
+
+Known pressure points:
+
+- active FX is more expensive than VCF
+- `fx_processor.set_settings(fx)` currently runs on sequencer ticks when FX
+  automation advances
+- scale data is cloned while spawning voices
+- recorder and live engine share behavior but not one unified sequencer engine
+
+## Tests
+
+The test suite lives mostly in module-local `#[cfg(test)]` blocks, especially
+in `app.rs`. Current tests cover session loading/saving, VCF command behavior,
+FX parameter rules, load completion, bundled session loading, and an ignored
+recording smoke test.
+
+Run:
+
+```bash
+cargo test
 ```
-┌ maqam-live ─────────────────────────────────────────────────────────┐
-│ phrase list (fills available space)                                 │
-├─ cmd ───────────────────────────────────────────────────────────────┤
-│ command input + history                                             │
-├─────────────────────────────────────────────────────────────────────┤
-│ BPM / sustain / vol / phrase count                                  │
-│ status / recording message                                          │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-#### Colors
-
-All colors are pure green on pure black (`rgb(0,255,0)` on `rgb(0,0,0)`).
-Every `Span` (a colored text segment) carries an explicit background color
-to prevent the terminal's own background from bleeding through.
-
-Active phrase (currently playing) uses full-brightness green. Inactive
-phrases use dimmer green. Borders and decorations also use green so the
-whole interface has the same character.
-
-#### Key handling
-
-`crossterm` delivers key events. The main handling is:
-- **Enter:** `app.dispatch(input)` — process the command
-- **Up/Down:** navigate history
-- **Left/Right/Home/End:** move cursor within command line
-- **Delete/Backspace:** edit at cursor
-- **Ctrl-C / q:** quit
-
-#### Reading shared state
-
-The TUI reads `CUR_PHRASE` and `CUR_SUBDIV` atomics every frame to know
-which phrase is playing and which subdivision to highlight. It reads
-`JUMP_COUNTERS` to show live `[2/4]` counters on jump entries.
-
----
-
-### `record.rs` — Offline rendering to MP4 (360 lines)
-
-When you type `m` or `m4`, this file runs the entire sequence offline (not
-in real time) to produce a video file. The result should be indistinguishable
-from what you hear live.
-
-#### Why offline?
-
-Real-time audio happens in tiny chunks determined by the hardware. Offline
-rendering happens all at once, as fast as the CPU allows, into a buffer.
-This makes it possible to produce a file without gaps or glitches.
-
-#### Matching live behavior
-
-The key design constraint: the render must produce exactly the same audio as
-the live audio thread. This means:
-
-- Same `Voice` struct and `Voice::sample()` function
-- Same `spawn_voices`, `spawn_phrase_start`, `spawn_sub_bass`
-- Same `evolve_bar` called after each play
-- Same jump counter logic (via `expand_one_cycle`)
-- **No** voice cutting at phrase boundaries (the live thread never cuts
-  voices either — they decay naturally)
-
-#### `expand_one_cycle`
-
-Simulates the jump logic to produce an ordered list of phrase indices —
-exactly the sequence that will play in one complete cycle. This is the same
-logic as `tick_sequencer` in audio.rs, but run forward in time all at once
-rather than sample by sample.
-
-Given the phrase list and `j` entries, this returns e.g. `[0, 0, 0, 2]` for
-"phrase 0 three times, then phrase 2 once" — following all jump counters.
-
-#### Normalization
-
-The raw synth output has peaks around 0.1–0.4 full scale. The render finds
-the peak amplitude and scales everything to 90% of full scale. This is what
-makes the waveform visible in the video — without normalization, it would be
-a nearly flat line.
-
-#### WAV format
-
-16-bit signed PCM stereo, 44100 Hz. This is the format that `ffmpeg`'s
-`showwaves` filter handles most reliably across versions and platforms.
-
-#### Video generation
-
-ffmpeg is called directly (no shell script, no intermediate steps):
-
-```
-ffmpeg -i maqam-live.wav
-  -filter_complex "showwaves + subtitles"
-  -c:v libx264 -crf 18
-  -c:a aac -b:a 256k
-  output.mp4
-```
-
-The subtitle overlay uses **ASS format** — a plain text file describing timed
-text events with styles. One `Dialogue` event per phrase line per bar play,
-each with its own `MarginV` offset to stack them vertically. All text uses a
-single `Line` style (green, Courier New 20pt, 2px black outline) so every
-line has identical font metrics and columns stay aligned.
-
-The repo URL `https://github.com/rfielding/maqam` appears in the bottom-left
-corner (ASS alignment=1, MarginV=100) throughout the entire video.
-
-#### Cross-platform paths
-
-- Temp files: `std::env::temp_dir()` → `/tmp/` on Linux/macOS,
-  `%TEMP%` on Windows. Backslashes are converted to forward slashes because
-  ffmpeg requires forward slashes even on Windows.
-- Output directory: `$HOME` on Linux/macOS, `$USERPROFILE` on Windows.
-
----
-
-## Data flow: from keypress to sound
-
-Here is what happens when you type `d nah 332` and press Enter:
-
-```
-1. ui.rs: captures Enter keypress
-2. app.rs dispatch():
-   - command.rs parses "d nah 332" into Cmd::Phrase{ specs=[{root=D,maqam=Nahawand,groups=[3,3,2]}], repeat=1 }
-   - tuning.rs: snap D to oud lattice → 293.6648 Hz
-   - tuning.rs: Nahawand.ratios() → 8 JI intervals
-   - sequencer.rs build_phrase(): computes combined scale, zigzag walk, event list
-   - app.phrases.push(new Phrase { id=N, src="d nah 332", bar=..., repeat=1 })
-   - audio_tx.send(AudioCmd::AddPhrase(phrase.clone()))
-
-3. audio.rs (next time the audio callback checks for commands):
-   - receives AddPhrase
-   - phrases.push(PlayingPhrase::new(phrase, sr, bpm))
-
-4. audio.rs (sample by sample, ~44100× per second):
-   - tick_sequencer() advances bar_pos
-   - when subdivision changes: lookup events[subdiv] → SubdivEvent::Kick(293.66)
-   - synth.rs spawn_voices(): spawns FloorTom + melody voice at 293.66 Hz
-   - Voice::sample() computes sine/additive partials for each active voice
-   - all voice samples mixed together → written to audio output buffer
-
-5. ui.rs (25× per second):
-   - reads CUR_PHRASE atomic → knows which phrase is playing
-   - reads CUR_SUBDIV atomic → highlights the current beat
-   - redraws the phrase list with the active phrase in bright green
-```
-
----
-
-## Threading model
-
-```
-Main thread (TUI):
-  - Runs the terminal event loop
-  - Reads key events, updates App state
-  - Sends AudioCmd to audio thread via channel
-  - Reads CUR_PHRASE/CUR_SUBDIV atomics to update display
-  - Reads JUMP_COUNTERS mutex (non-blocking) for jump displays
-
-Audio thread (cpal callback):
-  - Runs at ~44100 Hz (called by audio hardware)
-  - CANNOT lock mutexes (would cause audio glitches)
-  - Reads channel (try_recv, non-blocking) for new commands
-  - Writes CUR_PHRASE/CUR_SUBDIV atomics after advancing
-  - Writes JUMP_COUNTERS with try_lock (skips if busy)
-```
-
-**Why the channel is one-way:** Commands go TUI → Audio. The audio thread
-never needs to request information from the TUI — it has everything it needs
-in its local state. The atomics provide the reverse flow: status information
-Audio → TUI, at zero cost and zero blocking.
-
----
 
 ## Dependencies
 
 | Crate | Purpose |
 |---|---|
-| `cpal` | Cross-platform audio output (ALSA/CoreAudio/WASAPI) |
-| `ratatui` | Terminal UI widgets and layout |
-| `crossterm` | Terminal key events, raw mode, cursor control |
-| `crossbeam-channel` | Fast bounded MPSC channel for AudioCmd |
-| `anyhow` | Error handling with descriptive messages |
+| `cpal` | real-time audio output |
+| `ratatui` | terminal UI rendering |
+| `crossterm` | terminal input/raw mode |
+| `crossbeam-channel` | app-to-audio command channel |
+| `anyhow` | top-level error handling |
 
-No unsafe code. No C FFI. All platform differences (Linux ALSA vs macOS
-CoreAudio vs Windows WASAPI) are handled by cpal.
-
----
-
-## Building
-
-Requires Rust 1.85.0 (pinned in `rust-toolchain.toml`). `rustup` downloads
-it automatically.
-
-```bash
-# Linux
-sudo apt install libasound2-dev pkg-config ffmpeg
-cargo build --release
-
-# macOS
-brew install ffmpeg
-cargo build --release
-
-# Windows
-winget install ffmpeg    # or download from ffmpeg.org, add to PATH
-cargo build --release
-```
+Rust edition is 2021. The toolchain is pinned by `rust-toolchain.toml`.
