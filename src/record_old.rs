@@ -95,6 +95,8 @@ struct RenderOccurrence {
     sustain: f64,
     vcf: VcfBank,
     fx: FxSettings,
+    vcf_generation: usize,
+    fx_generation: usize,
     arrived_via_jump: Option<usize>,
 }
 #[derive(Clone, Copy)]
@@ -106,6 +108,8 @@ struct RenderEntry {
     sustain: f64,
     vcf: VcfBank,
     fx: FxSettings,
+    vcf_generation: usize,
+    fx_generation: usize,
     arrived_via_jump: Option<usize>,
 }
 
@@ -295,6 +299,8 @@ fn expand_one_cycle(
     let mut sustain = start_sustain;
     let mut vcf = start_vcf;
     let mut fx = start_fx;
+    let mut vcf_generation = 0usize;
+    let mut fx_generation = 0usize;
     let mut arrived_via_jump = None;
     let max_items = phrases.len() * 512 + 1;
     while out.len() < max_items {
@@ -338,11 +344,13 @@ fn expand_one_cycle(
                 ControlSpec::SetVcf(v) => {
                     if let Ok(setting) = crate::command::apply_vcf_change(vcf, v) {
                         vcf.apply(setting);
+                        vcf_generation += 1;
                     }
                 }
                 ControlSpec::SetFx(v) => {
                     if let Ok(setting) = crate::command::apply_fx_change(fx, v) {
                         fx = setting;
+                        fx_generation += 1;
                     }
                 }
             }
@@ -366,6 +374,8 @@ fn expand_one_cycle(
             sustain,
             vcf,
             fx,
+            vcf_generation,
+            fx_generation,
             arrived_via_jump,
         });
         arrived_via_jump = None;
@@ -412,6 +422,8 @@ pub fn record_cycle(
                     sustain: occ.sustain,
                     vcf: occ.vcf,
                     fx: occ.fx,
+                    vcf_generation: occ.vcf_generation,
+                    fx_generation: occ.fx_generation,
                     arrived_via_jump: if play == 0 {
                         occ.arrived_via_jump
                     } else {
@@ -436,7 +448,19 @@ pub fn record_cycle(
     let mut fx_processor = FxProcessor::new(SR as f32);
     let mut left_buf: Vec<f32> = Vec::new();
     let mut right_buf: Vec<f32> = Vec::new();
-    for (seq_pos, mut entry) in full_seq.iter().copied().enumerate() {
+    let mut render_vcf = full_seq.first().map(|entry| entry.vcf).unwrap_or(vcf);
+    let mut render_fx = full_seq.first().map(|entry| entry.fx).unwrap_or(fx);
+    let mut render_vcf_generation = full_seq
+        .first()
+        .map(|entry| entry.vcf_generation)
+        .unwrap_or(0);
+    let mut render_fx_generation = full_seq
+        .first()
+        .map(|entry| entry.fx_generation)
+        .unwrap_or(0);
+    filters.set_bank(render_vcf);
+    fx_processor.set_settings(render_fx);
+    for (seq_pos, entry) in full_seq.iter().copied().enumerate() {
         let phrase_idx = entry.phrase_idx;
         let play_num = entry.play_num;
         let bs = bar_samples_for(phrase_idx, entry.bpm);
@@ -445,8 +469,16 @@ pub fn record_cycle(
         let subdiv_secs = 60.0 / (entry.bpm * 2.0);
         let subdiv_samples = SR * subdiv_secs;
         let sustain = entry.sustain;
-        filters.set_bank(entry.vcf);
-        fx_processor.set_settings(entry.fx);
+        if entry.vcf_generation != render_vcf_generation {
+            render_vcf = entry.vcf;
+            render_vcf_generation = entry.vcf_generation;
+            filters.set_bank(render_vcf);
+        }
+        if entry.fx_generation != render_fx_generation {
+            render_fx = entry.fx;
+            render_fx_generation = entry.fx_generation;
+            fx_processor.set_settings(render_fx);
+        }
         if is_first {
             let root_hz = phrases_v[phrase_idx].bar.root_hz;
             let phrase_secs =
@@ -505,15 +537,15 @@ pub fn record_cycle(
                     root_hz,
                     0.25,
                 );
-                entry.vcf.advance_tick();
-                filters.update_bank(entry.vcf);
-                entry.fx.advance_tick();
-                fx_processor.set_settings(entry.fx);
+                render_vcf.advance_tick();
+                filters.update_bank(render_vcf);
+                render_fx.advance_tick();
+                fx_processor.set_settings(render_fx);
             }
             voices.retain(|v| !v.done);
             if voices.is_empty() {
                 filters.reset();
-                if entry.fx.active() {
+                if render_fx.active() {
                     let (l, r) = fx_processor.process(0.0, 0.0);
                     left_buf.push(l);
                     right_buf.push(r);
@@ -529,11 +561,11 @@ pub fn record_cycle(
             let (mut kanun_l, mut kanun_r) = (0f32, 0f32);
             let (mut kick_l, mut kick_r) = (0f32, 0f32);
             for v in voices.iter_mut() {
-                let setting = if entry.vcf.all.enabled {
-                    Some(entry.vcf.all)
+                let setting = if render_vcf.all.enabled {
+                    Some(render_vcf.all)
                 } else {
                     vcf_target_for_kind(v.kind).and_then(|target| {
-                        let setting = entry.vcf.get(target);
+                        let setting = render_vcf.get(target);
                         setting.enabled.then_some(setting)
                     })
                 };
@@ -565,28 +597,28 @@ pub fn record_cycle(
                 }
             }
             let (mut l, mut r) = (dry_l, dry_r);
-            if entry.vcf.all.enabled {
+            if render_vcf.all.enabled {
                 let filtered = filters.all.process(all_l, all_r);
                 l += filtered.0;
                 r += filtered.1;
             } else {
-                if entry.vcf.bass.enabled {
+                if render_vcf.bass.enabled {
                     let filtered = filters.bass.process(bass_l, bass_r);
                     l += filtered.0;
                     r += filtered.1;
                 }
-                if entry.vcf.kanun.enabled {
+                if render_vcf.kanun.enabled {
                     let filtered = filters.kanun.process(kanun_l, kanun_r);
                     l += filtered.0;
                     r += filtered.1;
                 }
-                if entry.vcf.kick.enabled {
+                if render_vcf.kick.enabled {
                     let filtered = filters.kick.process(kick_l, kick_r);
                     l += filtered.0;
                     r += filtered.1;
                 }
             }
-            let (l, r) = if entry.fx.active() {
+            let (l, r) = if render_fx.active() {
                 fx_processor.process(l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
             } else {
                 (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
@@ -601,8 +633,8 @@ pub fn record_cycle(
         );
         evolve_bar(&mut phrases_v[phrase_idx].bar, true);
     }
-    let tail_vcf = full_seq.first().map(|entry| entry.vcf).unwrap_or(vcf);
-    let tail_fx = full_seq.first().map(|entry| entry.fx).unwrap_or(fx);
+    let tail_vcf = render_vcf;
+    let tail_fx = render_fx;
     filters.set_bank(tail_vcf);
     fx_processor.set_settings(tail_fx);
     if let Some(first) = full_seq.first() {
