@@ -37,10 +37,33 @@ pub static AUDIO_LATENCY_RIGHT_US: std::sync::atomic::AtomicU64 =
 pub static INPUT_LEFT_LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 pub static INPUT_RIGHT_LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 pub static NAM_OUTPUT_LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static AUDIO_OUTPUT_SAMPLE_RATE_HZ: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+pub static AUDIO_INPUT_SAMPLE_RATE_HZ: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
 pub static NAM_MODEL_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 /// 0 none, 1 active, 2 login required/in progress, 3 downloading, 4 error, 5 bypassed.
 pub static NAM_STATUS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub static NAM_ERROR: std::sync::OnceLock<std::sync::Mutex<Option<String>>> =
+    std::sync::OnceLock::new();
+
+pub fn nam_error() -> &'static std::sync::Mutex<Option<String>> {
+    NAM_ERROR.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+pub fn set_nam_error(message: impl Into<String>) {
+    if let Ok(mut error) = nam_error().lock() {
+        *error = Some(message.into());
+    }
+    NAM_STATUS.store(4, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn clear_nam_error() {
+    if let Ok(mut error) = nam_error().lock() {
+        *error = None;
+    }
+}
 
 /// Progress atomics: written by render thread, read by TUI.
 pub static REC_SAMPLES_DONE: std::sync::atomic::AtomicUsize =
@@ -83,7 +106,8 @@ fn cli_commands(args: &[String]) -> Vec<String> {
 fn run_cli(commands: Vec<String>) -> anyhow::Result<()> {
     let (tx, rx) = bounded::<sequencer::AudioCmd>(512);
     let rx_guard = rx.clone();
-    let _stream = match audio::start_audio(rx) {
+    let preferred_sample_rate = app::preferred_nam_sample_rate_for_startup_commands(&commands);
+    let _stream = match audio::start_audio_with_preferred_sample_rate(rx, preferred_sample_rate) {
         Ok(stream) => Some(stream),
         Err(err) => {
             eprintln!(
@@ -106,6 +130,33 @@ fn run_cli(commands: Vec<String>) -> anyhow::Result<()> {
         }
     }
 
+    let mut last_nam_progress: Option<(String, u64, Option<u64>)> = None;
+    while app.nam_download_progress.is_some() {
+        app.tick();
+        if let Some(progress) = &app.nam_download_progress {
+            let snapshot = (progress.name.clone(), progress.downloaded, progress.total);
+            if last_nam_progress.as_ref() != Some(&snapshot) {
+                match progress.total.filter(|total| *total > 0) {
+                    Some(total) => eprintln!(
+                        "NAM download {}: {}% ({}/{})",
+                        progress.name,
+                        (progress.downloaded * 100 / total).min(100),
+                        cli_size(progress.downloaded),
+                        cli_size(total)
+                    ),
+                    None => eprintln!(
+                        "NAM download {}: {}",
+                        progress.name,
+                        cli_size(progress.downloaded)
+                    ),
+                }
+                last_nam_progress = Some(snapshot);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    app.tick();
+
     // `m` records on a worker thread. In CLI mode, wait for it and print the path.
     while app.rec_rx.is_some() || REC_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
         app.tick();
@@ -124,6 +175,31 @@ fn run_cli(commands: Vec<String>) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn score_file_arg(args: &[String]) -> Option<&str> {
+    let path = args.first()?;
+    if args.len() == 1 && path.ends_with(".mq") && std::path::Path::new(path).is_file() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn cli_size(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let bytes = bytes as f64;
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes / GIB)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes / MIB)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes / KIB)
+    } else {
+        format!("{} B", bytes as u64)
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     // Color is semantic UI state in maqam-live. Remove NO_COLOR before any
     // Crossterm code or worker thread can memoize it, then explicitly enable
@@ -132,17 +208,56 @@ fn main() -> anyhow::Result<()> {
     crossterm::style::force_color_output(true);
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(path) = score_file_arg(&args) {
+        let load_command = format!("load {path}");
+        let preferred_sample_rate =
+            app::preferred_nam_sample_rate_for_startup_commands(&[load_command.clone()]);
+        let (tx, rx) = bounded::<sequencer::AudioCmd>(512);
+
+        // Keep the stream alive for the lifetime of the app.
+        let _stream = audio::start_audio_with_preferred_sample_rate(rx, preferred_sample_rate)?;
+
+        let mut app = app::App::new(tx);
+        app.handle_command(&load_command);
+        app.tick();
+        ui::run(&mut app)?;
+        return Ok(());
+    }
+
     if !args.is_empty() {
         return run_cli(cli_commands(&args));
     }
 
     let (tx, rx) = bounded::<sequencer::AudioCmd>(512);
+    let preferred_sample_rate = app::preferred_nam_sample_rate_for_cached_models();
 
     // Keep the stream alive for the lifetime of the app.
-    let _stream = audio::start_audio(rx)?;
+    let _stream = audio::start_audio_with_preferred_sample_rate(rx, preferred_sample_rate)?;
 
     let mut app = app::App::new(tx);
     ui::run(&mut app)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_mq_arg_is_score_file() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("maqam-main-arg-{suffix}.mq"));
+        std::fs::write(&path, "MAQAM_SESSION_V3\n").unwrap();
+        let arg = path.to_string_lossy().into_owned();
+
+        assert_eq!(score_file_arg(&[arg.clone()]), Some(arg.as_str()));
+        assert_eq!(score_file_arg(&[arg.clone(), "extra".into()]), None);
+        assert_eq!(score_file_arg(&["missing.mq".into()]), None);
+
+        let _ = std::fs::remove_file(path);
+    }
 }

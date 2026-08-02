@@ -298,8 +298,14 @@ The input chain is selected input -> NAM -> `vcf mic` or `vcf all`. `stereo`
 mixes both hardware channels equally before the mono NAM model. Referenced
 captures are cached in `./.nam` by default, or in `MAQAM_NAM_CACHE_DIR` when
 set. The cache directory is created automatically when listing, importing, or
-downloading captures. NAM models have an expected sample rate; set your audio
-device to that rate if the model sounds wrong.
+downloading captures. Downloads show a progress meter in the TUI. Incomplete
+downloads stay as `.nam/<name>.nam.part`; run the same `nam import ...` command
+again to resume when the server supports HTTP Range requests. If the server does
+not support resume, maqam-live restarts the download from zero. NAM models have
+an expected sample rate. maqam-live uses the audio device's default output rate
+unless you set one explicitly, such as `MAQAM_SAMPLE_RATE=48000 maqam-live`.
+Slimmable NAM captures use their lightest submodel by default so the audio
+callback can keep up; set `MAQAM_NAM_SLIM=1.0` to force the full model.
 
 The TUI continuously displays CoreAudio's capture-to-predicted-playback timing
 as `lat L:<ms> R:<ms>`. Left and right are reported separately, though an

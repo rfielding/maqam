@@ -27,8 +27,15 @@ pub struct NamDownloadProgress {
 }
 
 enum NamDownloadEvent {
-    Progress { downloaded: u64, total: Option<u64> },
-    Done { name: String, load_after: bool },
+    Progress {
+        downloaded: u64,
+        total: Option<u64>,
+    },
+    Done {
+        name: String,
+        load_after: bool,
+        cached: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -475,7 +482,9 @@ impl App {
                 }
             }
             Err(err) => {
-                crate::NAM_STATUS.store(4, std::sync::atomic::Ordering::Relaxed);
+                crate::set_nam_error(format!(
+                    "TONE3000 login failed: {err}; run `nam login` and complete the browser login"
+                ));
                 self.message = Some(format!("✗ TONE3000 login failed: {err}"));
             }
         }
@@ -492,31 +501,47 @@ impl App {
                             progress.total = total;
                         }
                     }
-                    Ok(NamDownloadEvent::Done { name, load_after }) => {
+                    Ok(NamDownloadEvent::Done {
+                        name,
+                        load_after,
+                        cached,
+                    }) => {
                         finished = true;
                         self.nam_download_progress = None;
                         if load_after {
                             match nam_load_audio_cmd(&name) {
                                 Ok((audio_cmd, message)) => {
                                     let _ = self.audio_tx.send(audio_cmd);
+                                    mark_nam_loaded();
                                     replace_live_nam_command(
                                         &mut self.live_nam_commands,
                                         Some(format!("nam {name}")),
                                     );
-                                    self.message = Some(message);
+                                    self.message = Some(if cached {
+                                        format!("NAM capture already cached; {message}")
+                                    } else {
+                                        message
+                                    });
                                 }
                                 Err(err) => {
+                                    crate::set_nam_error(err.clone());
                                     self.message = Some(format!("✗ {err}"));
                                 }
                             }
                         } else {
-                            self.message = Some(format!("NAM capture downloaded: {name}"));
+                            crate::clear_nam_error();
+                            crate::NAM_STATUS.store(0, std::sync::atomic::Ordering::Relaxed);
+                            self.message = Some(if cached {
+                                format!("NAM capture already cached: {name}")
+                            } else {
+                                format!("NAM capture downloaded: {name}")
+                            });
                         }
                     }
                     Err(err) => {
                         finished = true;
                         self.nam_download_progress = None;
-                        crate::NAM_STATUS.store(4, std::sync::atomic::Ordering::Relaxed);
+                        crate::set_nam_error(err.clone());
                         self.message = Some(format!("✗ {err}"));
                     }
                 }
@@ -1653,6 +1678,8 @@ impl App {
             }
             NamCommand::Off => {
                 let _ = self.audio_tx.send(AudioCmd::SetNamEnabled(false));
+                crate::clear_nam_error();
+                crate::NAM_STATUS.store(5, std::sync::atomic::Ordering::Relaxed);
                 replace_live_nam_command(&mut self.live_nam_commands, display_src);
                 self.message = Some("NAM input amp off".into());
             }
@@ -1789,11 +1816,13 @@ impl App {
                 let (audio_cmd, message) = match nam_load_audio_cmd(&path) {
                     Ok(value) => value,
                     Err(err) => {
+                        crate::set_nam_error(err.clone());
                         self.message = Some(format!("✗ {err}"));
                         return;
                     }
                 };
                 let _ = self.audio_tx.send(audio_cmd);
+                mark_nam_loaded();
                 replace_live_nam_command(&mut self.live_nam_commands, display_src);
                 self.message = Some(message);
             }
@@ -1828,8 +1857,15 @@ impl App {
             );
             return;
         }
+        let cached_path = cache_dir.join(format!("{cache_name}.nam"));
+        if cached_path.is_file() {
+            self.finish_cached_nam(&cache_name, load_after);
+            return;
+        }
 
         let (tx, rx) = crossbeam_channel::bounded(32);
+        crate::clear_nam_error();
+        crate::NAM_STATUS.store(3, std::sync::atomic::Ordering::Relaxed);
         self.nam_download_rx = Some(rx);
         self.nam_download_progress = Some(NamDownloadProgress {
             name: cache_name.clone(),
@@ -1849,6 +1885,11 @@ impl App {
     }
 
     fn start_tone3000_download(&mut self, tone_id: u64, name: String) {
+        let cache_dir = nam_cache_dir();
+        if cache_dir.join(format!("{name}.nam")).is_file() {
+            self.finish_cached_nam(&name, true);
+            return;
+        }
         let token = match tone3000_access_token() {
             Ok(token) => token,
             Err(_) => {
@@ -1858,8 +1899,8 @@ impl App {
                 return;
             }
         };
+        crate::clear_nam_error();
         crate::NAM_STATUS.store(3, std::sync::atomic::Ordering::Relaxed);
-        let cache_dir = nam_cache_dir();
         let (tx, rx) = crossbeam_channel::unbounded();
         self.nam_download_rx = Some(rx);
         self.nam_download_progress = Some(NamDownloadProgress {
@@ -1877,6 +1918,32 @@ impl App {
                 let _ = tx.send(Err(err));
             }
         });
+    }
+
+    fn finish_cached_nam(&mut self, name: &str, load_after: bool) {
+        self.nam_download_progress = None;
+        self.nam_download_rx = None;
+        if load_after {
+            match nam_load_audio_cmd(name) {
+                Ok((audio_cmd, message)) => {
+                    let _ = self.audio_tx.send(audio_cmd);
+                    mark_nam_loaded();
+                    replace_live_nam_command(
+                        &mut self.live_nam_commands,
+                        Some(format!("nam {name}")),
+                    );
+                    self.message = Some(format!("NAM capture already cached; {message}"));
+                }
+                Err(err) => {
+                    crate::set_nam_error(err.clone());
+                    self.message = Some(format!("✗ {err}"));
+                }
+            }
+        } else {
+            crate::clear_nam_error();
+            crate::NAM_STATUS.store(0, std::sync::atomic::Ordering::Relaxed);
+            self.message = Some(format!("NAM capture already cached: {name}"));
+        }
     }
 
     fn start_tone3000_login(&mut self) {
@@ -2172,7 +2239,15 @@ impl App {
     }
 
     fn load_session(&mut self, path: &str) -> Result<(), String> {
-        let src = fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let src = fs::read_to_string(path).map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                format!("{path} not found; run `ls` to see available .mq files, or use `load FILENAME.mq` with an existing score file")
+            } else {
+                format!(
+                    "cannot read {path}: {err}; check file permissions or choose another .mq file"
+                )
+            }
+        })?;
         let mut lines = src.lines();
         let Some(header) = lines.next() else {
             return Err("empty file".into());
@@ -4245,44 +4320,89 @@ fn download_nam_capture(
     })?;
     let dest = cache_dir.join(format!("{cache_name}.nam"));
     let partial = cache_dir.join(format!("{cache_name}.nam.part"));
-    let mut request = ureq::get(url).timeout(std::time::Duration::from_secs(120));
+    if dest.is_file() {
+        let downloaded = dest.metadata().map(|meta| meta.len()).unwrap_or(0);
+        let _ = tx.send(Ok(NamDownloadEvent::Progress {
+            downloaded,
+            total: Some(downloaded),
+        }));
+        let _ = tx.send(Ok(NamDownloadEvent::Done {
+            name: cache_name.to_string(),
+            load_after,
+            cached: true,
+        }));
+        return Ok(());
+    }
+
+    let resume_from = partial.metadata().map(|meta| meta.len()).unwrap_or(0);
+    let mut request = ureq::get(url).timeout(std::time::Duration::from_secs(60 * 60));
     if let Some(token) = bearer_token {
         request = request.set("Authorization", &format!("Bearer {token}"));
     }
-    let response = request
-        .call()
-        .map_err(|err| {
-            format!(
+    if resume_from > 0 {
+        request = request.set("Range", &format!("bytes={resume_from}-"));
+    }
+    let response = match request.call() {
+        Ok(response) => response,
+        Err(ureq::Error::Status(416, _)) if resume_from > 0 => {
+            let _ = fs::remove_file(&partial);
+            return Err(format!(
+                "NAM download resume failed because {} is stale for this URL; the partial file was removed, so run the same `nam import` command again to restart from zero",
+                partial.display()
+            ));
+        }
+        Err(err) => {
+            return Err(format!(
                 "NAM download failed from {url}: {}; check the URL, network connection, or download the .nam file manually and run `nam import FILENAME.nam as {cache_name}`",
                 describe_http_error(err)
+            ));
+        }
+    };
+    let resumed = resume_from > 0 && response.status() == 206;
+    let total = if resumed {
+        response
+            .header("Content-Range")
+            .and_then(parse_content_range_total)
+            .or_else(|| {
+                response
+                    .header("Content-Length")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .map(|len| len + resume_from)
+            })
+    } else {
+        response
+            .header("Content-Length")
+            .and_then(|value| value.parse::<u64>().ok())
+    };
+    let mut reader = response.into_reader();
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(resumed)
+        .truncate(!resumed)
+        .open(&partial)
+        .map_err(|err| {
+            format!(
+                "cannot write NAM download {}: {err}; check file permissions on ./.nam or set MAQAM_NAM_CACHE_DIR",
+                partial.display()
             )
         })?;
-    let total = response
-        .header("Content-Length")
-        .and_then(|value| value.parse::<u64>().ok());
-    let mut reader = response.into_reader();
-    let mut file = fs::File::create(&partial).map_err(|err| {
-        format!(
-            "cannot write NAM download {}: {err}; check file permissions on ./.nam or set MAQAM_NAM_CACHE_DIR",
-            partial.display()
-        )
-    })?;
-    let mut downloaded = 0_u64;
+    let mut downloaded = if resumed { resume_from } else { 0 };
+    let _ = tx.send(Ok(NamDownloadEvent::Progress { downloaded, total }));
     let mut buf = [0_u8; 64 * 1024];
     loop {
         let n = reader.read(&mut buf).map_err(|err| {
-            let _ = fs::remove_file(&partial);
             format!(
-                "NAM download read failed from {url}: {err}; check your network connection and try again"
+                "NAM download read failed from {url}: {err}; check your network connection and run the same `nam import` command again to resume from {}",
+                partial.display()
             )
         })?;
         if n == 0 {
             break;
         }
         file.write_all(&buf[..n]).map_err(|err| {
-            let _ = fs::remove_file(&partial);
             format!(
-                "cannot write NAM download {}: {err}; check file permissions on ./.nam or set MAQAM_NAM_CACHE_DIR",
+                "cannot write NAM download {}: {err}; free disk space or check file permissions, then run the same `nam import` command again to resume",
                 partial.display()
             )
         })?;
@@ -4290,24 +4410,32 @@ fn download_nam_capture(
         let _ = tx.send(Ok(NamDownloadEvent::Progress { downloaded, total }));
     }
     file.flush().map_err(|err| {
-        let _ = fs::remove_file(&partial);
         format!(
-            "cannot finish NAM download {}: {err}; check file permissions on ./.nam or set MAQAM_NAM_CACHE_DIR",
+            "cannot finish NAM download {}: {err}; free disk space or check file permissions, then run the same `nam import` command again to resume",
             partial.display()
         )
     })?;
     fs::rename(&partial, &dest).map_err(|err| {
-        let _ = fs::remove_file(&partial);
         format!(
-            "cannot move NAM download into {}: {err}; check file permissions on ./.nam or set MAQAM_NAM_CACHE_DIR",
+            "cannot move NAM download into {}: {err}; check file permissions on ./.nam, then run the same `nam import` command again",
             dest.display()
         )
     })?;
     let _ = tx.send(Ok(NamDownloadEvent::Done {
         name: cache_name.to_string(),
         load_after,
+        cached: false,
     }));
     Ok(())
+}
+
+fn parse_content_range_total(value: &str) -> Option<u64> {
+    let total = value.rsplit('/').next()?.trim();
+    if total == "*" {
+        None
+    } else {
+        total.parse().ok()
+    }
 }
 
 fn tone3000_model_url(tone_id: u64, token: &str) -> Result<String, String> {
@@ -4608,27 +4736,170 @@ fn replace_live_nam_command(commands: &mut Vec<String>, src: Option<String>) {
     commands.push(src);
 }
 
+fn mark_nam_loaded() {
+    crate::clear_nam_error();
+    crate::NAM_MODEL_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+    crate::NAM_STATUS.store(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn preferred_nam_sample_rate_for_startup_commands(commands: &[String]) -> Option<u32> {
+    commands
+        .iter()
+        .find_map(|command_src| preferred_nam_sample_rate_for_startup_command(command_src))
+}
+
+pub fn preferred_nam_sample_rate_for_cached_models() -> Option<u32> {
+    let mut rates = std::collections::BTreeSet::new();
+    collect_nam_sample_rates_from_dir(&nam_cache_dir(), &mut rates);
+    if rates.len() == 1 {
+        rates.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn collect_nam_sample_rates_from_dir(dir: &Path, rates: &mut std::collections::BTreeSet<u32>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("nam") {
+            continue;
+        }
+        if let Ok(model) = nam_rs::NamModel::from_file(&path) {
+            rates.insert(model.expected_sample_rate().round() as u32);
+        }
+    }
+}
+
+fn preferred_nam_sample_rate_for_startup_command(command_src: &str) -> Option<u32> {
+    if let Some(path) = command_src
+        .trim()
+        .strip_suffix(".mq")
+        .map(|stem| format!("{stem}.mq"))
+        .filter(|path| std::path::Path::new(path).is_file())
+    {
+        return preferred_nam_sample_rate_for_session_file(&path);
+    }
+
+    match command::parse(command_src).ok()? {
+        Cmd::Load { path } => preferred_nam_sample_rate_for_session_file(&path),
+        Cmd::SetNam(command) => preferred_nam_sample_rate_for_nam_command(&command),
+        _ => None,
+    }
+}
+
+fn preferred_nam_sample_rate_for_session_file(path: &str) -> Option<u32> {
+    let source = fs::read_to_string(path).ok()?;
+    let mut lines = source.lines();
+    let header = lines.next()?.trim();
+    if header == crate::session_v3::HEADER {
+        for line in lines {
+            let fields = crate::session_v3::split_escaped_fields(line);
+            if fields.first().map(String::as_str) == Some("N") {
+                if let Some(rate) = fields
+                    .get(2)
+                    .and_then(|src| preferred_nam_sample_rate_for_command_src(src))
+                {
+                    return Some(rate);
+                }
+            }
+        }
+    } else {
+        for line in source.lines() {
+            if let Some(rate) = preferred_nam_sample_rate_for_command_src(line) {
+                return Some(rate);
+            }
+        }
+    }
+    None
+}
+
+fn preferred_nam_sample_rate_for_command_src(src: &str) -> Option<u32> {
+    match command::parse(src).ok()? {
+        Cmd::SetNam(command) => preferred_nam_sample_rate_for_nam_command(&command),
+        _ => None,
+    }
+}
+
+fn preferred_nam_sample_rate_for_nam_command(command: &NamCommand) -> Option<u32> {
+    let value = match command {
+        NamCommand::Load { path } => path.as_str(),
+        NamCommand::Pin { name, .. } | NamCommand::Tone3000 { name, .. } => name.as_str(),
+        NamCommand::Import { path, name } => {
+            if let Some(name) = name {
+                name.as_str()
+            } else {
+                path.as_str()
+            }
+        }
+        _ => return None,
+    };
+    let path = resolve_nam_model_path(value).ok()?;
+    nam_rs::NamModel::from_file(&path)
+        .ok()
+        .map(|model| model.expected_sample_rate().round() as u32)
+}
+
 fn nam_load_audio_cmd(value: &str) -> Result<(AudioCmd, String), String> {
     let model_path = resolve_nam_model_path(value)?;
-    let loaded = nam_rs::NamModel::from_file(&model_path)
-        .and_then(|model| {
-            let expected_sr = model.expected_sample_rate();
-            nam_rs::Model::from_nam(&model).map(|runtime| (runtime, expected_sr))
-        })
-        .map_err(|err| {
-            format!(
-                "NAM could not load {}: {err}; use a supported A1/A2 .nam file",
-                model_path.display()
-            )
-        })?;
-    let (runtime, expected_sr) = loaded;
+    let model = nam_rs::NamModel::from_file(&model_path).map_err(|err| {
+        format!(
+            "NAM could not load {}: {err}; use a supported A1/A2 .nam file",
+            model_path.display()
+        )
+    })?;
+    let expected_sr = model.expected_sample_rate();
+    let output_sr = crate::AUDIO_OUTPUT_SAMPLE_RATE_HZ.load(std::sync::atomic::Ordering::Relaxed);
+    if output_sr != 0 && expected_sr.round() as u32 != output_sr {
+        return Err(format!(
+            "NAM sample-rate mismatch for {}: model expects {:.0} Hz but audio output is {output_sr} Hz; restart maqam-live with `MAQAM_SAMPLE_RATE={:.0} maqam-live` or use a .nam captured at {output_sr} Hz",
+            model_path.display(),
+            expected_sr,
+            expected_sr
+        ));
+    }
+    let mut runtime = nam_rs::Model::from_nam(&model).map_err(|err| {
+        format!(
+            "NAM could not load {}: {err}; use a supported A1/A2 .nam file",
+            model_path.display()
+        )
+    })?;
+    let slim_note = configure_nam_slim_size(&mut runtime);
     Ok((
         AudioCmd::SetNamModel(Some(runtime)),
-        format!(
-            "NAM input amp loaded ← {} ({expected_sr} Hz model; set your audio device to that rate if it sounds wrong)",
-            model_path.display()
-        ),
+        if output_sr == 0 {
+            format!(
+                "NAM input amp loaded ← {} ({:.0} Hz model; audio output unavailable{slim_note})",
+                model_path.display(),
+                expected_sr
+            )
+        } else {
+            format!(
+                "NAM input amp loaded ← {} ({:.0} Hz model; audio is running at {output_sr} Hz{slim_note})",
+                model_path.display(),
+                expected_sr
+            )
+        },
     ))
+}
+
+fn configure_nam_slim_size(runtime: &mut nam_rs::Model) -> String {
+    let Some(slimmable) = runtime.as_slimmable_mut() else {
+        return String::new();
+    };
+    let value = std::env::var("MAQAM_NAM_SLIM")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+    slimmable.set_slim_size(value);
+    format!(
+        "; slim {:.2} -> submodel {}",
+        value,
+        slimmable.active_index()
+    )
 }
 
 fn list_cached_nam_models(cache_dir: &Path) -> Result<Vec<String>, String> {
@@ -5894,6 +6165,142 @@ mod tests {
     }
 
     #[test]
+    fn nam_download_content_range_total_is_parsed() {
+        assert_eq!(
+            parse_content_range_total("bytes 100-199/123456"),
+            Some(123456)
+        );
+        assert_eq!(parse_content_range_total("bytes 100-199/*"), None);
+        assert_eq!(parse_content_range_total("not a range"), None);
+    }
+
+    #[test]
+    fn cached_nam_download_reports_cached_done() {
+        let _guard = session_test_lock();
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("maqam-cached-nam-{suffix}"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("cached.nam"), b"already here").unwrap();
+        let (tx, rx) = crossbeam_channel::unbounded();
+
+        download_nam_capture(
+            "https://example.test/cached.nam",
+            &dir,
+            "cached",
+            true,
+            None,
+            tx,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            rx.recv().unwrap().unwrap(),
+            NamDownloadEvent::Progress {
+                downloaded: 12,
+                total: Some(12)
+            }
+        ));
+        assert!(matches!(
+            rx.recv().unwrap().unwrap(),
+            NamDownloadEvent::Done {
+                name,
+                load_after: true,
+                cached: true
+            } if name == "cached"
+        ));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    fn test_nam_json(sample_rate: u32) -> String {
+        format!(
+            r#"{{
+                "version": "0.5.4",
+                "architecture": "LSTM",
+                "config": {{ "input_size": 1, "hidden_size": 1, "num_layers": 1 }},
+                "weights": [1.0,0.0, 0.0,0.0, 2.0,0.0, 0.0,0.0, 0.0,0.0,0.0,0.0, 0.0, 0.0, 3.0, 0.5],
+                "sample_rate": {sample_rate}
+            }}"#
+        )
+    }
+
+    #[test]
+    fn startup_commands_prefer_cached_nam_sample_rate() {
+        let _guard = session_test_lock();
+        let old_cache = std::env::var("MAQAM_NAM_CACHE_DIR").ok();
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("maqam-startup-nam-cache-{suffix}"));
+        let session = std::env::temp_dir().join(format!("maqam-startup-nam-{suffix}.mq"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("cached.nam"), test_nam_json(48_000)).unwrap();
+        fs::write(
+            &session,
+            "MAQAM_SESSION_V3\nN|0|nam tone3000 123 as cached\nP|1|1|d bayati 44\n",
+        )
+        .unwrap();
+        std::env::set_var("MAQAM_NAM_CACHE_DIR", &dir);
+
+        let rate = preferred_nam_sample_rate_for_startup_commands(&[format!(
+            "load {}",
+            session.display()
+        )]);
+
+        assert_eq!(rate, Some(48_000));
+        let _ = fs::remove_file(session);
+        let _ = fs::remove_dir_all(dir);
+        match old_cache {
+            Some(value) => std::env::set_var("MAQAM_NAM_CACHE_DIR", value),
+            None => std::env::remove_var("MAQAM_NAM_CACHE_DIR"),
+        }
+    }
+
+    #[test]
+    fn cached_nam_models_prefer_single_sample_rate() {
+        let _guard = session_test_lock();
+        let old_cache = std::env::var("MAQAM_NAM_CACHE_DIR").ok();
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("maqam-cache-rate-{suffix}"));
+        fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("MAQAM_NAM_CACHE_DIR", &dir);
+
+        fs::write(dir.join("one.nam"), test_nam_json(48_000)).unwrap();
+        fs::write(dir.join("two.nam"), test_nam_json(48_000)).unwrap();
+        assert_eq!(preferred_nam_sample_rate_for_cached_models(), Some(48_000));
+
+        fs::write(dir.join("other.nam"), test_nam_json(44_100)).unwrap();
+        assert_eq!(preferred_nam_sample_rate_for_cached_models(), None);
+
+        let _ = fs::remove_dir_all(dir);
+        match old_cache {
+            Some(value) => std::env::set_var("MAQAM_NAM_CACHE_DIR", value),
+            None => std::env::remove_var("MAQAM_NAM_CACHE_DIR"),
+        }
+    }
+
+    #[test]
+    fn successful_nam_load_clears_error_status() {
+        crate::NAM_MODEL_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+        crate::set_nam_error("sample-rate mismatch; restart with MAQAM_SAMPLE_RATE=48000");
+
+        mark_nam_loaded();
+
+        assert!(crate::NAM_MODEL_ACTIVE.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(
+            crate::NAM_STATUS.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert!(crate::nam_error().lock().unwrap().is_none());
+    }
+
+    #[test]
     fn listing_nam_cache_creates_missing_cache_dir() {
         let _guard = session_test_lock();
         let old_cache = std::env::var("MAQAM_NAM_CACHE_DIR").ok();
@@ -6020,6 +6427,24 @@ mod tests {
 
         let _ = fs::remove_file(input_path);
         let _ = fs::remove_file(output_path);
+    }
+
+    #[test]
+    fn missing_load_error_names_file_and_fix() {
+        let _guard = session_test_lock();
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("maqam-missing-{suffix}.mq"));
+        let (tx, _rx) = bounded(16);
+        let mut app = App::new(tx);
+
+        let err = app.load_session(path.to_str().unwrap()).unwrap_err();
+
+        assert!(err.contains(path.to_str().unwrap()));
+        assert!(err.contains("run `ls`"));
+        assert!(err.contains("load FILENAME.mq"));
     }
 
     #[test]

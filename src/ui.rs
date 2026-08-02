@@ -529,9 +529,18 @@ fn draw_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    if let Some(msg) = &app.message {
+    let nam_error = crate::nam_error()
+        .lock()
+        .ok()
+        .and_then(|error| error.clone());
+    let status_message = app
+        .message
+        .as_deref()
+        .map(str::to_string)
+        .or_else(|| nam_error.map(|error| format!("✗ NAM: {error}")));
+    if let Some(msg) = status_message {
         let col = if msg.starts_with('✗') { ERR } else { DIM };
-        let paragraph = Paragraph::new(msg.as_str())
+        let paragraph = Paragraph::new(msg)
             .style(Style::default().fg(col).bg(BG))
             .scroll((app.message_scroll, 0))
             .wrap(Wrap { trim: false })
@@ -608,12 +617,17 @@ fn latency_status() -> String {
     let input_right = crate::INPUT_RIGHT_LEVEL.load(Relaxed);
     let nam_output = crate::NAM_OUTPUT_LEVEL.load(Relaxed);
     let nam = match crate::NAM_STATUS.load(Relaxed) {
-        1 => "on",
-        2 => "login",
-        3 => "downloading",
-        4 => "error",
-        5 => "bypass",
-        _ => "none",
+        1 => "on".to_string(),
+        2 => "login".to_string(),
+        3 => "downloading".to_string(),
+        4 => crate::nam_error()
+            .lock()
+            .ok()
+            .and_then(|error| error.clone())
+            .map(|error| format!("error: {}", nam_error_kind(&error)))
+            .unwrap_or_else(|| "error".to_string()),
+        5 => "bypass".to_string(),
+        _ => "none".to_string(),
     };
     format!(
         "lat L:{} R:{}  in L:{} R:{}dB post:{}dB NAM:{}",
@@ -624,6 +638,21 @@ fn latency_status() -> String {
         level(nam_output),
         nam
     )
+}
+
+fn nam_error_kind(text: &str) -> &'static str {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("sample-rate") || lower.contains("sample rate") {
+        "sample-rate"
+    } else if lower.contains("download") {
+        "download"
+    } else if lower.contains("login") || lower.contains("tone3000") {
+        "login"
+    } else if lower.contains("invalid") || lower.contains("gain") {
+        "signal"
+    } else {
+        "see response"
+    }
 }
 
 fn format_vcf_status(vcf: crate::vcf::VcfSettings) -> String {
@@ -854,4 +883,18 @@ fn draw_jins_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .scroll((app.jins_scroll, 0));
 
     f.render_widget(para, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nam_error_status_is_compact_kind() {
+        let kind = nam_error_kind(
+            "NAM sample-rate mismatch for .nam/nama2.nam: model expects 48000 Hz but audio output is 44100 Hz; restart maqam-live with `MAQAM_SAMPLE_RATE=48000 maqam-live`",
+        );
+
+        assert_eq!(kind, "sample-rate");
+    }
 }

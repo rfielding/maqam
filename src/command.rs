@@ -1436,7 +1436,7 @@ pub fn parse(raw: &str) -> Result<Cmd, String> {
             }
             "tone3000" | "t3k" => {
                 let values = rest.split_whitespace().collect::<Vec<_>>();
-                if values.len() != 4 || values[2].to_ascii_lowercase() != "as" {
+                if values.len() != 4 || !values[2].eq_ignore_ascii_case("as") {
                     return Err("usage: nam tone3000 <tone-id> as <name>".into());
                 }
                 let tone_id = values[1]

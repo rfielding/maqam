@@ -7,6 +7,7 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::Receiver;
+use std::sync::Arc;
 
 use crate::command::{
     NamInput, SympatheticChange, SympatheticHarmony, SympatheticTarget, VcfChange,
@@ -379,6 +380,30 @@ fn make_bar_states(phrase: &Phrase, sr: f64, bpm: f64) -> Vec<BarState> {
         .collect()
 }
 
+#[derive(Clone, Copy, Debug)]
+struct DcBlocker {
+    x1: f32,
+    y1: f32,
+}
+
+impl DcBlocker {
+    fn new() -> Self {
+        Self { x1: 0.0, y1: 0.0 }
+    }
+
+    fn reset(&mut self) {
+        self.x1 = 0.0;
+        self.y1 = 0.0;
+    }
+
+    fn process(&mut self, x: f32) -> f32 {
+        let y = x - self.x1 + 0.995 * self.y1;
+        self.x1 = x;
+        self.y1 = y;
+        y
+    }
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 pub struct AudioStreams {
@@ -386,32 +411,134 @@ pub struct AudioStreams {
     _input: Option<cpal::Stream>,
 }
 
-pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<AudioStreams> {
+fn choose_output_config(
+    device: &cpal::Device,
+    preferred_sample_rate: Option<u32>,
+) -> anyhow::Result<cpal::SupportedStreamConfig> {
+    let default = device.default_output_config()?;
+    let requested =
+        std::env::var("MAQAM_SAMPLE_RATE")
+            .ok()
+            .and_then(|value| match value.parse::<u32>() {
+                Ok(rate) => Some(rate),
+                Err(_) => {
+                    eprintln!(
+                    "MAQAM_SAMPLE_RATE must be a number like 48000; using the audio device default"
+                );
+                    None
+                }
+            });
+
+    if let Some(rate) = requested {
+        if let Some(config) = supported_output_config_at_rate(device, rate) {
+            return Ok(config);
+        }
+        eprintln!(
+            "audio output device does not support {rate} Hz; use a supported MAQAM_SAMPLE_RATE or unset it"
+        );
+    }
+
+    if requested.is_none() {
+        if let Some(rate) = preferred_sample_rate.filter(|rate| *rate != default.sample_rate().0) {
+            if let Some(config) = supported_output_config_at_rate(device, rate) {
+                eprintln!("audio output: selecting {rate} Hz to match NAM model");
+                return Ok(config);
+            }
+            eprintln!(
+                "audio output device does not support NAM model rate {rate} Hz; using the audio device default"
+            );
+        }
+    }
+
+    Ok(default)
+}
+
+fn supported_output_config_at_rate(
+    device: &cpal::Device,
+    rate: u32,
+) -> Option<cpal::SupportedStreamConfig> {
+    let mut configs: Vec<_> = device.supported_output_configs().ok()?.collect();
+    configs.sort_by_key(|config| {
+        (
+            config.sample_format() != cpal::SampleFormat::F32,
+            config.channels() != 2,
+        )
+    });
+    configs
+        .into_iter()
+        .find_map(|config| config.try_with_sample_rate(cpal::SampleRate(rate)))
+}
+
+fn supported_input_config_at_rate(
+    device: &cpal::Device,
+    rate: cpal::SampleRate,
+) -> Option<cpal::SupportedStreamConfig> {
+    device
+        .supported_input_configs()
+        .ok()?
+        .find(|config| config.sample_format() == cpal::SampleFormat::F32)
+        .and_then(|config| config.try_with_sample_rate(rate))
+}
+
+pub fn start_audio_with_preferred_sample_rate(
+    rx: Receiver<AudioCmd>,
+    preferred_sample_rate: Option<u32>,
+) -> anyhow::Result<AudioStreams> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
         .ok_or_else(|| anyhow::anyhow!("no audio output device"))?;
-    let cfg = device.default_output_config()?;
+    let cfg = choose_output_config(&device, preferred_sample_rate)?;
     let sr = cfg.sample_rate().0 as f64;
     let ch = cfg.channels() as usize;
-    let (input_tx, input_rx) =
-        crossbeam_channel::bounded::<(cpal::StreamInstant, [f32; 2])>(16_384);
+    eprintln!(
+        "audio output: {} Hz, {} channels, {:?}",
+        cfg.sample_rate().0,
+        cfg.channels(),
+        cfg.sample_format()
+    );
+    crate::AUDIO_OUTPUT_SAMPLE_RATE_HZ
+        .store(cfg.sample_rate().0, std::sync::atomic::Ordering::Relaxed);
+    crate::AUDIO_INPUT_SAMPLE_RATE_HZ.store(0, std::sync::atomic::Ordering::Relaxed);
+    let latest_input = Arc::new([
+        std::sync::atomic::AtomicU32::new(0.0f32.to_bits()),
+        std::sync::atomic::AtomicU32::new(0.0f32.to_bits()),
+    ]);
+    let input_writer = Arc::clone(&latest_input);
+    let (input_time_tx, input_time_rx) = crossbeam_channel::bounded::<cpal::StreamInstant>(64);
     let input_stream = host.default_input_device().and_then(|input_device| {
-        let input_config = input_device.default_input_config().ok()?;
+        let input_config = supported_input_config_at_rate(&input_device, cfg.sample_rate())
+            .or_else(|| input_device.default_input_config().ok())?;
         if input_config.sample_format() != cpal::SampleFormat::F32 {
             return None;
         }
+        if input_config.sample_rate() != cfg.sample_rate() {
+            eprintln!(
+                "input sample rate {} Hz does not match output {} Hz; live input/NAM input disabled",
+                input_config.sample_rate().0,
+                cfg.sample_rate().0
+            );
+            return None;
+        }
         let input_channels = input_config.channels() as usize;
+        crate::AUDIO_INPUT_SAMPLE_RATE_HZ.store(
+            input_config.sample_rate().0,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let stream = input_device
             .build_input_stream(
                 &input_config.into(),
                 move |data: &[f32], info| {
                     let captured_at = info.timestamp().capture;
-                    for frame in data.chunks(input_channels.max(1)) {
+                    if let Some(frame) = data.chunks(input_channels.max(1)).last() {
                         let left = frame.first().copied().unwrap_or(0.0);
                         let right = frame.get(1).copied().unwrap_or(left);
-                        let _ = input_tx.try_send((captured_at, [left, right]));
+                        input_writer[0]
+                            .store(left.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                        input_writer[1]
+                            .store(right.to_bits(), std::sync::atomic::Ordering::Relaxed);
                     }
+                    let _ = input_time_tx.try_send(captured_at);
                 },
                 |_error| {},
                 None,
@@ -440,8 +567,11 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<AudioStreams> {
     let mut sympathetic_phrase_id = None;
     let mut nam_model: Option<nam_rs::Model> = None;
     let mut nam_enabled = true;
-    let mut nam_gain = 1.0f32;
+    let mut nam_gain = 0.05f32;
     let mut nam_input = NamInput::Stereo;
+    let mut nam_dc_blocker = DcBlocker::new();
+    let mut nam_warmup_samples = 0usize;
+    let mut nam_fault_samples = 0usize;
     let mut latency_test: Option<crossbeam_channel::Sender<Result<f64, String>>> = None;
     let mut latency_ms_ema: Option<f64> = None;
     let mut meter_peaks = [0.0f32; 3];
@@ -499,6 +629,11 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<AudioStreams> {
                     AudioCmd::SetNamModel(model) => {
                         nam_model = model;
                         nam_enabled = nam_model.is_some();
+                        nam_dc_blocker.reset();
+                        nam_warmup_samples =
+                            nam_model.as_ref().map(|model| model.receptive_field()).unwrap_or(0);
+                        nam_fault_samples = 0;
+                        crate::clear_nam_error();
                         crate::NAM_MODEL_ACTIVE
                             .store(nam_enabled, std::sync::atomic::Ordering::Relaxed);
                         crate::NAM_STATUS.store(
@@ -508,6 +643,7 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<AudioStreams> {
                     }
                     AudioCmd::SetNamEnabled(enabled) => {
                         nam_enabled = enabled;
+                        crate::clear_nam_error();
                         crate::NAM_MODEL_ACTIVE.store(
                             enabled && nam_model.is_some(),
                             std::sync::atomic::Ordering::Relaxed,
@@ -758,13 +894,13 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<AudioStreams> {
                 }
 
                 voices.retain(|v| !v.done);
-                let input_packet = input_rx.try_recv().ok();
-                let input = input_packet
-                    .map(|(_, samples)| samples)
-                    .unwrap_or([0.0, 0.0]);
+                let input = [
+                    f32::from_bits(latest_input[0].load(std::sync::atomic::Ordering::Relaxed)),
+                    f32::from_bits(latest_input[1].load(std::sync::atomic::Ordering::Relaxed)),
+                ];
                 meter_peaks[0] = meter_peaks[0].max(input[0].abs());
                 meter_peaks[1] = meter_peaks[1].max(input[1].abs());
-                if let Some((captured_at, _)) = input_packet {
+                if let Ok(captured_at) = input_time_rx.try_recv() {
                     let measured_ms = playback_at
                         .duration_since(&captured_at)
                         .map(|duration| duration.as_secs_f64() * 1000.0);
@@ -785,9 +921,32 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<AudioStreams> {
                     NamInput::Right => input[1],
                     NamInput::Stereo => (input[0] + input[1]) * 0.5,
                 };
+                if !live_input.is_finite() {
+                    live_input = 0.0;
+                }
                 if nam_enabled {
                     if let Some(model) = nam_model.as_mut() {
-                        live_input = model.process_sample(live_input * nam_gain);
+                        let nam_in = (live_input * nam_gain).clamp(-1.0, 1.0);
+                        let nam_out = model.process_sample(nam_in);
+                        if nam_warmup_samples > 0 {
+                            nam_warmup_samples -= 1;
+                            live_input = 0.0;
+                        } else if nam_out.is_finite() && nam_out.abs() <= 8.0 {
+                            nam_fault_samples = 0;
+                            let blocked = nam_dc_blocker.process(nam_out);
+                            live_input = crate::analog::soft_clip(blocked * 0.5);
+                        } else {
+                            live_input = 0.0;
+                            nam_fault_samples += 1;
+                            if nam_fault_samples >= 64 {
+                                nam_enabled = false;
+                                crate::NAM_MODEL_ACTIVE
+                                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                                crate::set_nam_error(
+                                    "NAM output became unsafe; run `nam gain 0.02`, lower your input level, use headphones, or `nam off`",
+                                );
+                            }
+                        }
                     }
                 }
                 meter_peaks[2] = meter_peaks[2].max(live_input.abs());
@@ -971,11 +1130,12 @@ pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<AudioStreams> {
                     right = saturated.1.clamp(-1.0, 1.0);
                 }
 
-                if frame.len() >= 2 {
-                    frame[0] = left;
-                    frame[1] = right;
-                } else {
+                if frame.len() == 1 {
                     frame[0] = (left + right) * 0.5;
+                } else {
+                    for (idx, sample) in frame.iter_mut().enumerate() {
+                        *sample = if idx % 2 == 0 { left } else { right };
+                    }
                 }
             }
 
