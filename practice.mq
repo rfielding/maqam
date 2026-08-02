@@ -1,6 +1,6 @@
 MAQAM_SESSION_V3
 B|4|120
-V|8|vcf bass cut 100 res 0.98 drive 2
+V|8|vcf bass cut 140 res 0.25 drive 0.8 wave sin
 V|9|vcf kanun cut 500 res 0.98 drive 1 wave saw
 Y|1|sym mic decay 0.999 drive 2 amount 1
 Y|10|sym kanun decay 0.99 drive 0.5 amount 0.25

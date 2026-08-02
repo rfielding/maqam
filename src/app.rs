@@ -558,6 +558,7 @@ impl App {
             .unwrap_or(0);
         let (start_bpm, start_sustain, start_vcf, start_fx) = self.sequence_start_settings();
         let _ = self.audio_tx.send(AudioCmd::Clear);
+        let _ = self.audio_tx.send(AudioCmd::SetNamModel(None));
         let _ = self.audio_tx.send(AudioCmd::SetBpm(start_bpm));
         let _ = self.audio_tx.send(AudioCmd::SetSustain(start_sustain));
         let _ = self.audio_tx.send(AudioCmd::SetVcfBank(start_vcf));
@@ -2690,6 +2691,7 @@ impl App {
         let (start_bpm, start_sustain, start_vcf, start_fx) = self.sequence_start_settings();
 
         let _ = self.audio_tx.send(AudioCmd::Clear);
+        let _ = self.audio_tx.send(AudioCmd::SetNamModel(None));
         let _ = self.audio_tx.send(AudioCmd::SetBpm(start_bpm));
         let _ = self.audio_tx.send(AudioCmd::SetSustain(start_sustain));
         let _ = self.audio_tx.send(AudioCmd::SetVcfBank(start_vcf));
@@ -2886,6 +2888,7 @@ impl App {
         let (start_bpm, start_sustain, start_vcf, start_fx) = self.sequence_start_settings();
 
         let _ = self.audio_tx.send(AudioCmd::Clear);
+        let _ = self.audio_tx.send(AudioCmd::SetNamModel(None));
         let _ = self.audio_tx.send(AudioCmd::SetBpm(start_bpm));
         let _ = self.audio_tx.send(AudioCmd::SetSustain(start_sustain));
         let _ = self.audio_tx.send(AudioCmd::SetVcfBank(start_vcf));
@@ -3020,6 +3023,7 @@ impl App {
         let (start_bpm, start_sustain, start_vcf, start_fx) = self.sequence_start_settings();
 
         let _ = self.audio_tx.send(AudioCmd::Clear);
+        let _ = self.audio_tx.send(AudioCmd::SetNamModel(None));
         let _ = self.audio_tx.send(AudioCmd::SetBpm(start_bpm));
         let _ = self.audio_tx.send(AudioCmd::SetSustain(start_sustain));
         let _ = self.audio_tx.send(AudioCmd::SetVcfBank(start_vcf));
@@ -6359,6 +6363,20 @@ mod tests {
         } else {
             std::env::remove_var("MAQAM_NAM_CACHE_DIR");
         }
+    }
+
+    #[test]
+    fn loading_score_without_nam_unloads_previous_nam_model() {
+        let _guard = session_test_lock();
+        let (tx, rx) = bounded(16);
+        let mut app = App::new(tx);
+        while rx.try_recv().is_ok() {}
+
+        app.load_session_v3(["P|0|1|d bayati 4444"].into_iter())
+            .unwrap();
+
+        assert!(matches!(rx.try_recv(), Ok(AudioCmd::Clear)));
+        assert!(matches!(rx.try_recv(), Ok(AudioCmd::SetNamModel(None))));
     }
 
     #[test]

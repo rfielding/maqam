@@ -117,11 +117,13 @@ pub fn evolve_bar(bar: &mut Bar, is_last_bar: bool) {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VoiceKind {
     FloorTom,
+    HiHat,
+    Kick,
     Snare,
     Crash,
     PhraseChange,
+    Bass,
     MelodyFm,
-    SubBass,
 }
 
 pub struct Voice {
@@ -188,6 +190,28 @@ impl Voice {
                 };
                 (osc, amp, t > 0.80)
             }
+            VoiceKind::HiHat => {
+                self.phase += self.freq * dt;
+                let shimmer = (self.phase * std::f64::consts::TAU).sin() as f32;
+                let osc = rand_f32() * 0.75 + shimmer * 0.25;
+                let amp = if t < 0.002 {
+                    (t / 0.002) as f32
+                } else {
+                    (-t * 55.0).exp() as f32
+                };
+                (osc, amp, t > 0.10)
+            }
+            VoiceKind::Kick => {
+                let freq = self.freq * (1.0 + 0.9 * (-t * 36.0).exp());
+                self.phase += freq * dt;
+                let osc = (self.phase * std::f64::consts::TAU).sin() as f32;
+                let amp = if t < 0.006 {
+                    smoothstep((t / 0.006) as f32)
+                } else {
+                    (-t * 18.0).exp() as f32
+                };
+                (osc, amp, t > 0.22)
+            }
             VoiceKind::PhraseChange => {
                 let freq = self.freq * 3.0 * (1.0 + 1.5 * (-t * 20.0).exp());
                 self.phase += freq * dt;
@@ -196,20 +220,20 @@ impl Voice {
                 (osc, amp, t > 0.25)
             }
             VoiceKind::Snare => (rand_f32(), (-t * 28.0).exp() as f32, t > 0.14),
-            VoiceKind::SubBass => {
+            VoiceKind::Bass => {
                 let sus = self.sustain_secs;
                 self.phase += self.freq * dt;
                 let osc = wave_sample(self.phase, wave);
-                let amp = if t < 0.10 {
-                    (t / 0.10) as f32
+                let amp = if t < 0.090 {
+                    smoothstep((t / 0.090) as f32)
                 } else if t < sus {
-                    1.0f32
-                } else if t < sus + 0.20 {
-                    (1.0 - (t - sus) / 0.20).max(0.0) as f32
+                    1.0
+                } else if t < sus + 0.35 {
+                    smoothstep((1.0 - (t - sus) / 0.35) as f32)
                 } else {
                     0.0
                 };
-                (osc, amp, t > sus + 0.25)
+                (osc, amp, t > sus + 0.40)
             }
             VoiceKind::MelodyFm => {
                 let sus = self.sustain_secs;
@@ -257,11 +281,13 @@ impl Voice {
 
         let gain: f32 = self.gain_override.unwrap_or(match self.kind {
             VoiceKind::FloorTom => 0.65,
+            VoiceKind::HiHat => 0.16,
+            VoiceKind::Kick => 0.38,
             VoiceKind::Snare => 0.28,
             VoiceKind::Crash => 0.42,
             VoiceKind::PhraseChange => 0.50,
+            VoiceKind::Bass => 0.10,
             VoiceKind::MelodyFm => 0.20,
-            VoiceKind::SubBass => 0.50,
         });
         (osc * amp * gain * release_gain).clamp(-1.0, 1.0)
     }
@@ -271,6 +297,11 @@ impl Voice {
 fn wave_sample(phase: f64, wave: Option<VcoWave>) -> f32 {
     wave.map(|wave| wave.sample(phase))
         .unwrap_or_else(|| (phase * std::f64::consts::TAU).sin() as f32)
+}
+
+fn smoothstep(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
 }
 
 // ── Milestone ─────────────────────────────────────────────────────────────────
@@ -287,6 +318,8 @@ pub enum Milestone {
 
 // ── Voice spawning ────────────────────────────────────────────────────────────
 
+const BASS_TEST_OCTAVES_UP: i32 = 0;
+
 fn snap_to_scale(hz: f64, scale: &[f64]) -> f64 {
     if scale.is_empty() {
         return hz;
@@ -294,7 +327,7 @@ fn snap_to_scale(hz: f64, scale: &[f64]) -> f64 {
     let mut best = hz;
     let mut best_dist = f64::MAX;
     for &f in scale {
-        for octave in -2i32..=2 {
+        for octave in -8i32..=4 {
             let candidate = f * 2f64.powi(octave);
             let dist = (candidate / hz).log2().abs();
             if dist < best_dist {
@@ -324,13 +357,6 @@ pub fn spawn_voices(
             let mut tom2 = Voice::mk(VoiceKind::FloorTom, 35.0, 0.2);
             tom2.pan = 0.0;
             voices.push(tom2);
-            // Yeden ... use a fourth down
-            let lt_hz = root_hz * 0.5 * 3.0 / 4.0;
-            // we should never be using absolute time units. it must be in terms of ticks
-            let mut lt = Voice::mk(VoiceKind::SubBass, lt_hz, subdiv_secs * 0.5);
-            lt.gain_override = Some(0.45);
-            lt.pan = 0.0;
-            voices.push(lt);
         }
         Milestone::CrossPhraseWarning => {
             // repeat
@@ -353,21 +379,12 @@ pub fn spawn_voices(
 
     match event {
         SubdivEvent::Kick(hz) => {
-            let mut tom = Voice::mk(VoiceKind::FloorTom, 40.0, 0.25);
-            tom.pan = 0.0;
-            voices.push(tom);
+            let mut kick = Voice::mk(VoiceKind::Kick, 55.0, 0.0);
+            kick.pan = 0.0;
+            voices.push(kick);
+            voices.push(panned(Voice::mk(VoiceKind::HiHat, 8_000.0, 0.0)));
             voices.push(panned(Voice::melody(hz, sustain)));
-            let octave2 = snap_to_scale(root_hz / 8.0, scale);
-            let octave = snap_to_scale(root_hz / 4.0, scale);
-            voices.push(panned(Voice::melody_gain(octave2, sustain * 0.85, 0.1)));
-            voices.push(panned(Voice::melody_gain(octave, sustain * 0.20, 0.1)));
-            // Root bass on every kick, one octave down, held one subdivision
-            let bass_freq = root_hz * 0.5;
-            // again... no absolute time should be used. we must use ticks
-            let mut bass = Voice::mk(VoiceKind::SubBass, bass_freq, subdiv_secs * 0.95);
-            bass.gain_override = Some(0.15);
-            bass.pan = 0.0;
-            voices.push(bass);
+            spawn_bass(root_hz, subdiv_secs, voices);
         }
         SubdivEvent::Snare(hz) => {
             voices.push(panned(Voice::snare()));
@@ -376,6 +393,24 @@ pub fn spawn_voices(
             voices.push(panned(Voice::melody_gain(fifth, sustain * 0.50, 0.06)));
         }
     }
+}
+
+fn spawn_bass(root_hz: f64, subdiv_secs: f64, voices: &mut Vec<Voice>) {
+    let freq = bass_register(root_hz) * 2f64.powi(BASS_TEST_OCTAVES_UP);
+    let mut bass = Voice::mk(VoiceKind::Bass, freq, subdiv_secs * 0.90);
+    bass.pan = 0.0;
+    voices.push(bass);
+}
+
+fn bass_register(root_hz: f64) -> f64 {
+    let mut hz = root_hz;
+    while hz > 140.0 {
+        hz *= 0.5;
+    }
+    while hz < 70.0 {
+        hz *= 2.0;
+    }
+    hz
 }
 
 fn panned(mut v: Voice) -> Voice {
@@ -388,22 +423,65 @@ pub fn spawn_phrase_start(hz: f64, sustain: f64, voices: &mut Vec<Voice>) {
     voices.push(Voice::melody_gain(hz * 0.5, sustain * 2.0, 0.14));
 }
 
-pub fn spawn_sub_bass(root_hz: f64, phrase_secs: f64, voices: &mut Vec<Voice>) {
-    let octaves: &[(f64, f32)] = &[
-        (1.0, 0.04),
-        (0.5, 0.10),
-        (0.25, 0.15),
-        (0.125, 0.11),
-        (0.0625, 0.06),
-        (0.03125, 0.02),
-    ];
-    for &(factor, gain) in octaves {
-        let freq = root_hz * factor;
-        if freq < 8.0 {
-            break;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kick_spawns_one_pitched_voice() {
+        let mut voices = Vec::new();
+        spawn_voices(
+            SubdivEvent::Kick(440.0),
+            1.0,
+            &mut voices,
+            Milestone::None,
+            &[440.0],
+            440.0,
+            0.25,
+        );
+
+        let pitched = voices
+            .iter()
+            .filter(|voice| voice.kind == VoiceKind::MelodyFm)
+            .count();
+        assert_eq!(pitched, 1);
+        assert!(
+            voices.iter().all(|voice| voice.kind != VoiceKind::FloorTom),
+            "ordinary kicks should not add a fixed low tom transient"
+        );
+        assert!(
+            voices.iter().any(|voice| voice.kind == VoiceKind::Kick),
+            "ordinary kicks should include an audible kick thump"
+        );
+        assert!(
+            voices.iter().any(|voice| voice.kind == VoiceKind::HiHat),
+            "ordinary kicks should keep a short high hat transient"
+        );
+        let bass = voices
+            .iter()
+            .find(|voice| voice.kind == VoiceKind::Bass)
+            .expect("kick should include bass");
+        assert!((70.0..=140.0).contains(&bass.freq));
+    }
+
+    #[test]
+    fn bass_register_folds_root_above_ultra_sub_bass() {
+        assert!((70.0..=140.0).contains(&bass_register(293.66)));
+        assert!((70.0..=140.0).contains(&bass_register(2_349.28)));
+    }
+
+    #[test]
+    fn bass_honors_wave_override() {
+        let mut sine = Voice::mk(VoiceKind::Bass, 55.0, 1.0);
+        let mut saw = Voice::mk(VoiceKind::Bass, 55.0, 1.0);
+        let mut difference = 0.0f32;
+
+        for _ in 0..8_000 {
+            difference += (sine.sample_with_wave(48_000.0, None)
+                - saw.sample_with_wave(48_000.0, Some(VcoWave::Saw)))
+            .abs();
         }
-        let mut v = Voice::mk(VoiceKind::SubBass, freq, phrase_secs);
-        v.gain_override = Some(gain);
-        voices.push(v);
+
+        assert!(difference > 1.0);
     }
 }

@@ -1,12 +1,10 @@
 MAQAM_SESSION_V3
-# Mesa/Boogie Mark IIC+ Gain 6: deliberately driven hard so NAM A2 is unmistakable.
-# https://www.tone3000.com/tones/mesa-boogie-iic-gain-at-6-45896
 N|13|nam tone3000 45896 as nama2
 N|14|nam gain 6
 N|15|nam input right
 B|4|120
-V|8|vcf bass cut 100 res 0.98 drive 2
-V|9|vcf kanun cut 500 res 0.98 drive 1 wave saw
+V|8|vcf bass cut 10 res 0.98 drive 2 wave saw
+V|9|vcf kanun cut 10 res 0.98 drive 1 wave saw
 Y|1|sym mic decay 0.999 drive 2 amount 1
 Y|10|sym kanun decay 0.99 drive 0.5 amount 0.25
 Y|11|sym on

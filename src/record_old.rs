@@ -8,9 +8,7 @@ use std::process::{Command, Stdio};
 
 use crate::fx::{FxProcessor, FxSettings};
 use crate::sequencer::{ControlSpec, Phrase};
-use crate::synth::{
-    evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Milestone, Voice, VoiceKind,
-};
+use crate::synth::{evolve_bar, spawn_phrase_start, spawn_voices, Milestone, Voice, VoiceKind};
 use crate::vcf::{MoogLadder, VcfBank, VcfSettings, VcfTarget};
 
 const SR: f64 = 44100.0;
@@ -590,11 +588,7 @@ pub fn record_cycle(
         }
         if is_first {
             let root_hz = phrases_v[phrase_idx].bar.root_hz;
-            let phrase_secs =
-                (phrases_v[phrase_idx].bar.total_subdivs as f64 * subdiv_secs * repeats as f64)
-                    .min(3.0);
             spawn_phrase_start(root_hz, sustain, &mut voices);
-            spawn_sub_bass(root_hz, phrase_secs, &mut voices);
         }
         let total_subdivs = phrases_v[phrase_idx].bar.total_subdivs;
         let mut bar_pos = 0usize;
@@ -780,7 +774,6 @@ pub fn record_cycle(
     if let Some(first) = full_seq.first() {
         let root_hz = phrases_v[first.phrase_idx].bar.root_hz;
         spawn_phrase_start(root_hz, first.sustain, &mut voices);
-        spawn_sub_bass(root_hz, first.sustain.min(2.0), &mut voices);
     }
     for _ in 0..tail_samples {
         yield_to_audio_thread(left_buf.len());
@@ -1486,9 +1479,9 @@ pub fn record_cycle(
 
 fn vcf_target_for_kind(kind: VoiceKind) -> Option<VcfTarget> {
     match kind {
-        VoiceKind::SubBass => Some(VcfTarget::Bass),
+        VoiceKind::Bass => Some(VcfTarget::Bass),
         VoiceKind::MelodyFm => Some(VcfTarget::Kanun),
-        VoiceKind::FloorTom => Some(VcfTarget::Kick),
+        VoiceKind::FloorTom | VoiceKind::HiHat | VoiceKind::Kick => Some(VcfTarget::Kick),
         _ => None,
     }
 }

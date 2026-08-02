@@ -15,9 +15,7 @@ use crate::command::{
 use crate::fx::{FxProcessor, FxSettings};
 use crate::sequencer::{AudioCmd, ControlSpec, Phrase, SubdivEvent};
 use crate::sympathetics::SympatheticStrings;
-use crate::synth::{
-    evolve_bar, spawn_phrase_start, spawn_sub_bass, spawn_voices, Milestone, Voice, VoiceKind,
-};
+use crate::synth::{evolve_bar, spawn_phrase_start, spawn_voices, Milestone, Voice, VoiceKind};
 
 use crate::vcf::{MoogLadder, VcfBank, VcfSettings, VcfTarget};
 
@@ -574,6 +572,7 @@ pub fn start_audio_with_preferred_sample_rate(
     let mut nam_fault_samples = 0usize;
     let mut latency_test: Option<crossbeam_channel::Sender<Result<f64, String>>> = None;
     let mut latency_ms_ema: Option<f64> = None;
+    let mut smoothed_input = [0.0f32, 0.0f32];
     let mut meter_peaks = [0.0f32; 3];
     let mut last_metrics_publish = std::time::Instant::now();
 
@@ -857,12 +856,6 @@ pub fn start_audio_with_preferred_sample_rate(
                     if let Some(pp) = phrases.get(cur_phrase) {
                         let root_hz = pp.phrase.bar.root_hz;
                         spawn_phrase_start(root_hz, sustain, &mut voices);
-                        let subdiv_secs = 60.0 / (bpm * 2.0);
-                        let phrase_secs = (pp.phrase.bar.total_subdivs as f64
-                            * subdiv_secs
-                            * pp.phrase.repeat as f64)
-                            .min(3.0);
-                        spawn_sub_bass(root_hz, phrase_secs, &mut voices);
                     }
                 }
 
@@ -894,10 +887,13 @@ pub fn start_audio_with_preferred_sample_rate(
                 }
 
                 voices.retain(|v| !v.done);
-                let input = [
+                let target_input = [
                     f32::from_bits(latest_input[0].load(std::sync::atomic::Ordering::Relaxed)),
                     f32::from_bits(latest_input[1].load(std::sync::atomic::Ordering::Relaxed)),
                 ];
+                smoothed_input[0] += (target_input[0] - smoothed_input[0]) * 0.02;
+                smoothed_input[1] += (target_input[1] - smoothed_input[1]) * 0.02;
+                let input = smoothed_input;
                 meter_peaks[0] = meter_peaks[0].max(input[0].abs());
                 meter_peaks[1] = meter_peaks[1].max(input[1].abs());
                 if let Ok(captured_at) = input_time_rx.try_recv() {
@@ -993,7 +989,6 @@ pub fn start_audio_with_preferred_sample_rate(
                 let (mut bass_left, mut bass_right) = (0f32, 0f32);
                 let (mut kanun_left, mut kanun_right) = (0f32, 0f32);
                 let (mut kick_left, mut kick_right) = (0f32, 0f32);
-                let (mut tanbura_left, mut tanbura_right) = (0f32, 0f32);
                 let mut sym_bass_input = 0.0f32;
                 let mut sym_kanun_input = 0.0f32;
                 let mut sym_drums_input = 0.0f32;
@@ -1019,22 +1014,26 @@ pub fn start_audio_with_preferred_sample_rate(
                     let right = s * angle.sin();
                     let mono = (left + right) * 0.5;
                     match v.kind {
-                        VoiceKind::SubBass => sym_bass_input += mono,
+                        VoiceKind::Bass => sym_bass_input += mono,
                         VoiceKind::MelodyFm => sym_kanun_input += mono,
-                        VoiceKind::FloorTom | VoiceKind::Snare | VoiceKind::Crash => {
+                        VoiceKind::FloorTom
+                        | VoiceKind::HiHat
+                        | VoiceKind::Kick
+                        | VoiceKind::Snare
+                        | VoiceKind::Crash => {
                             sym_drums_input += mono
                         }
                         VoiceKind::PhraseChange => {}
                     }
                     match setting.map(|setting| setting.target) {
                         Some(VcfTarget::All) => unreachable!("master VCF is applied after mix"),
-                        Some(VcfTarget::Mic) => {
-                            dry_left += left;
-                            dry_right += right;
-                        }
                         Some(VcfTarget::Bass) => {
                             bass_left += left;
                             bass_right += right;
+                        }
+                        Some(VcfTarget::Mic) => {
+                            dry_left += left;
+                            dry_right += right;
                         }
                         Some(VcfTarget::Kanun) => {
                             kanun_left += left;
@@ -1054,19 +1053,7 @@ pub fn start_audio_with_preferred_sample_rate(
                         }
                     }
                 }
-                let sympathetic = if sympathetics_enabled {
-                    sympathetics.process(
-                        true,
-                        live_input,
-                        sym_kanun_input,
-                        sym_bass_input,
-                        sym_drums_input,
-                    )
-                } else {
-                    // Disabling sym closes the bridge to new energy; already
-                    // ringing strings still decay into the output.
-                    sympathetics.process(false, 0.0, 0.0, 0.0, 0.0)
-                };
+                let mut sym_mic_input = live_input;
                 if vcf.all.enabled {
                     dry_left += live_input;
                     dry_right += live_input;
@@ -1077,43 +1064,56 @@ pub fn start_audio_with_preferred_sample_rate(
                     dry_left += live_input;
                     dry_right += live_input;
                 }
-                if vcf.all.enabled {
-                    dry_left += sympathetic;
-                    dry_right += sympathetic;
-                } else if vcf.tanbura.enabled {
-                    tanbura_left += sympathetic;
-                    tanbura_right += sympathetic;
-                } else {
-                    dry_left += sympathetic;
-                    dry_right += sympathetic;
-                }
                 let (mut left, mut right) = (dry_left, dry_right);
                 if !vcf.all.enabled {
                     if vcf.mic.enabled {
                         let filtered = vcf_filters.mic.process(mic_left, mic_right);
                         left += filtered.0;
                         right += filtered.1;
+                        sym_mic_input = (filtered.0 + filtered.1) * 0.5;
                     }
                     if vcf.bass.enabled {
                         let filtered = vcf_filters.bass.process(bass_left, bass_right);
                         left += filtered.0;
                         right += filtered.1;
+                        sym_bass_input = (filtered.0 + filtered.1) * 0.5;
                     }
                     if vcf.kanun.enabled {
                         let filtered = vcf_filters.kanun.process(kanun_left, kanun_right);
                         left += filtered.0;
                         right += filtered.1;
+                        sym_kanun_input = (filtered.0 + filtered.1) * 0.5;
                     }
                     if vcf.kick.enabled {
                         let filtered = vcf_filters.kick.process(kick_left, kick_right);
                         left += filtered.0;
                         right += filtered.1;
+                        sym_drums_input = (filtered.0 + filtered.1) * 0.5;
                     }
-                    if vcf.tanbura.enabled {
-                        let filtered = vcf_filters.tanbura.process(tanbura_left, tanbura_right);
-                        left += filtered.0;
-                        right += filtered.1;
-                    }
+                }
+                let sympathetic = if sympathetics_enabled {
+                    sympathetics.process(
+                        true,
+                        sym_mic_input,
+                        sym_kanun_input,
+                        sym_bass_input,
+                        sym_drums_input,
+                    )
+                } else {
+                    // Disabling sym closes the bridge to new energy; already
+                    // ringing strings still decay into the output.
+                    sympathetics.process(false, 0.0, 0.0, 0.0, 0.0)
+                };
+                if vcf.all.enabled {
+                    left += sympathetic;
+                    right += sympathetic;
+                } else if vcf.tanbura.enabled {
+                    let filtered = vcf_filters.tanbura.process(sympathetic, sympathetic);
+                    left += filtered.0;
+                    right += filtered.1;
+                } else {
+                    left += sympathetic;
+                    right += sympathetic;
                 }
                 if fx.active() {
                     let processed = fx_processor.process(left, right);
@@ -1346,9 +1346,9 @@ fn tick_sequencer(
 
 fn vcf_target_for_kind(kind: VoiceKind) -> Option<VcfTarget> {
     match kind {
-        VoiceKind::SubBass => Some(VcfTarget::Bass),
+        VoiceKind::Bass => Some(VcfTarget::Bass),
         VoiceKind::MelodyFm => Some(VcfTarget::Kanun),
-        VoiceKind::FloorTom => Some(VcfTarget::Kick),
+        VoiceKind::FloorTom | VoiceKind::HiHat | VoiceKind::Kick => Some(VcfTarget::Kick),
         _ => None,
     }
 }
