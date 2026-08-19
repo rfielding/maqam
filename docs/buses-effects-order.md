@@ -21,14 +21,15 @@ The important split is this:
 - `vcf` is the routing/filter stage before FX and final output
 
 ```mermaid
-flowchart LR
+%%{init: {"theme":"dark","themeVariables":{"background":"#000000","primaryColor":"#000000","primaryTextColor":"#ffffff","primaryBorderColor":"#ffffff","secondaryColor":"#000000","tertiaryColor":"#000000","lineColor":"#ffffff","fontFamily":"monospace"}}}%%
+flowchart UD
   in[Hardware input] --> nam[NAM]
   nam --> micbus[vcf mic bus]
   nam --> dry[Dry mix]
   dry --> symin[Sympathetic input]
-  dry --> vcfall[vcf all]
   symin --> sym[Sym bus]
   sym --> symbus[vcf sym bus]
+  dry --> vcfall[vcf all]
   micbus --> mix[Mix]
   symbus --> mix
   vcfall --> fx[FX]
