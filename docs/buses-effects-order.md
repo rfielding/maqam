@@ -20,6 +20,8 @@ The important split is this:
 input -> bus_fanout[b] -> nam[b] -> sym[b] -> vcf[b] -> vol[b]
 ```
 
+Here `b` ranges over `all`, `mic`, `kick`, `bass`, and `kanun`.
+
 That is the worst-case work path when the score is driving all active buses at
 once.
 
