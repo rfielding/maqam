@@ -17,7 +17,7 @@ At runtime, the callback processes sound in this order:
 The important split is this:
 
 ```text
-input -> bus_fanout[b] -> nam[b] -> sym[b] -> vcf[b] -> mix -> vcf[all] -> vol[all]
+input -> bus -> mic[b] -> sym[b] -> vcf[b] -> mix -> vcf[all] -> vol[all]
 ```
 
 Here `b` ranges over `all`, `mic`, `kick`, `bass`, and `kanun`.
