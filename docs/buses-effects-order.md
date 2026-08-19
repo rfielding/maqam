@@ -50,6 +50,11 @@ flanger, chorus, delay, reverb, `vol[all]`, and `vcf[all]`.
   - `kanun`
   - `bass`
   - `drums`
+- `sym decay` is the damping control for this bank:
+  - higher values ring longer
+  - lower values die away faster
+  - it is kept very close to `1.0` so the strings can sustain without becoming
+    effectively endless
 
 The parser accepts `sym` and `sympathetics` as the control noun. Internally, the
 VCF target name for this bus is `sym`, while the sympathetic engine still keeps
@@ -102,6 +107,9 @@ Rules:
 - Enabling a per-target filter disables `all` but leaves the other per-target
   filters alone.
 - The `sym` target filters the sympathetic-string bus.
+- `vcf res` is a separate resonance control, not the same thing as `sym decay`.
+  It is capped below `1.0` because resonance at or above unity can turn the
+  filter into unstable feedback or self-oscillation.
 
 Order inside the mix:
 
