@@ -22,6 +22,14 @@ The important split is this:
 
 ![Bus and effects order](./buses-effects-order.png)
 
+## Worst Case
+
+This is the loaded case: score fans out to all the active buses at once, the
+mix stage pulls them back together, and the post-mix FX stack keeps going with
+chorus, flanger, echo, and reverb.
+
+![Mix and score worst case](./mix-score-worst-case.png)
+
 ## `sym`
 
 `sym` stands for sympathetic strings.
