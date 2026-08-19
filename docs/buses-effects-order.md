@@ -17,15 +17,14 @@ At runtime, the callback processes sound in this order:
 The important split is this:
 
 ```text
-input -> bus_fanout[b] -> nam[b] -> sym[b] -> vcf[b] -> vol[b]
+input -> bus_fanout[b] -> nam[b] -> sym[b] -> vcf[b] -> mix -> vcf[all] -> vol[all]
 ```
 
 Here `b` ranges over `all`, `mic`, `kick`, `bass`, and `kanun`.
+The per-b `vcf` boxes run first. The master `vcf[all]` runs after fan-in.
 
 That is the worst-case work path when the score is driving all active buses at
 once.
-
-![Bus and effects order](./mix-score-pipeline.png)
 
 ## Worst Case
 
