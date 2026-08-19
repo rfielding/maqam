@@ -17,11 +17,12 @@ At runtime, the callback processes sound in this order:
 The important split is this:
 
 ```text
-input -> bus -> mic[b] -> sym[b] -> vcf[b] -> mix -> vcf[all] -> vol[all]
+input -> bus -> mic[b] -> sym[b] -> vcf[b] -> mix -> flanger -> chorus -> delay -> reverb -> vol[all] -> vcf[all] -> output
 ```
 
 Here `b` ranges over `all`, `mic`, `kick`, `bass`, and `kanun`.
-The per-b `vcf` boxes run first. The master `vcf[all]` runs after fan-in.
+The per-b `vcf` boxes run first. The shared FX stack runs after fan-in.
+The master `vcf[all]` runs after `vol[all]`.
 
 That is the worst-case work path when the score is driving all active buses at
 once.
@@ -30,7 +31,7 @@ once.
 
 This is the loaded case: score fans out to all the active buses at once, the
 mix stage pulls them back together, and the post-mix FX stack keeps going with
-chorus, flanger, echo, and reverb.
+flanger, chorus, delay, reverb, `vol[all]`, and `vcf[all]`.
 
 ![Mix and score worst case](./mix-score-worst-case.png)
 
