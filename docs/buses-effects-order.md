@@ -22,7 +22,7 @@ The important split is this:
 
 ```mermaid
 %%{init: {"theme":"dark","themeVariables":{"background":"#000000","primaryColor":"#000000","primaryTextColor":"#ffffff","primaryBorderColor":"#ffffff","secondaryColor":"#000000","tertiaryColor":"#000000","lineColor":"#ffffff","fontFamily":"monospace"}}}%%
-flowchart UD
+flowchart TB
   in[Hardware input] --> nam[NAM]
   nam --> micbus[vcf mic bus]
   nam --> dry[Dry mix]
