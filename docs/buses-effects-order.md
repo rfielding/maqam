@@ -21,7 +21,7 @@ The important split is this:
 - `vcf` is the routing/filter stage before FX and final output
 
 ```mermaid
-%%{init: {"theme":"dark","themeVariables":{"background":"#000000","primaryColor":"#000000","primaryTextColor":"#ffffff","primaryBorderColor":"#ffffff","secondaryColor":"#000000","tertiaryColor":"#000000","lineColor":"#ffffff","fontFamily":"monospace"}}}%%
+%%{init: {"theme":"base","themeVariables":{"background":"#000000","primaryColor":"#000000","primaryTextColor":"#ffffff","primaryBorderColor":"#ffffff","secondaryColor":"#000000","secondaryTextColor":"#ffffff","secondaryBorderColor":"#ffffff","tertiaryColor":"#000000","tertiaryTextColor":"#ffffff","tertiaryBorderColor":"#ffffff","lineColor":"#ffffff","fontFamily":"monospace"}}}%%
 flowchart TB
   in[Hardware input] --> nam[NAM]
   nam --> micbus[vcf mic bus]
@@ -35,6 +35,17 @@ flowchart TB
   vcfall --> fx[FX]
   mix --> fx
   fx --> out[Output]
+  style in fill:#000000,stroke:#ffffff,color:#ffffff
+  style nam fill:#000000,stroke:#ffffff,color:#ffffff
+  style micbus fill:#000000,stroke:#ffffff,color:#ffffff
+  style dry fill:#000000,stroke:#ffffff,color:#ffffff
+  style symin fill:#000000,stroke:#ffffff,color:#ffffff
+  style sym fill:#000000,stroke:#ffffff,color:#ffffff
+  style symbus fill:#000000,stroke:#ffffff,color:#ffffff
+  style vcfall fill:#000000,stroke:#ffffff,color:#ffffff
+  style mix fill:#000000,stroke:#ffffff,color:#ffffff
+  style fx fill:#000000,stroke:#ffffff,color:#ffffff
+  style out fill:#000000,stroke:#ffffff,color:#ffffff
 ```
 
 ## `sym`
