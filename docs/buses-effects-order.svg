@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="860" viewBox="0 0 1200 860" role="img" aria-label="Bus and effects order diagram">
+  <rect width="1200" height="860" fill="#000000"/>
+  <defs>
+    <style>
+      .box { fill: #000000; stroke: #ffffff; stroke-width: 3; rx: 12; ry: 12; }
+      .text { fill: #ffffff; font-family: monospace; font-size: 26px; text-anchor: middle; dominant-baseline: middle; }
+      .small { fill: #ffffff; font-family: monospace; font-size: 22px; text-anchor: middle; dominant-baseline: middle; }
+      .line { stroke: #ffffff; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .label { fill: #ffffff; font-family: monospace; font-size: 20px; text-anchor: middle; dominant-baseline: middle; }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ffffff"/>
+    </marker>
+  </defs>
+
+  <text x="600" y="44" class="text">Bus and effects order</text>
+
+  <rect x="450" y="80" width="300" height="64" class="box"/>
+  <text x="600" y="112" class="text">Hardware input</text>
+
+  <rect x="450" y="180" width="300" height="64" class="box"/>
+  <text x="600" y="212" class="text">NAM</text>
+
+  <rect x="450" y="280" width="300" height="64" class="box"/>
+  <text x="600" y="312" class="text">Dry mix</text>
+
+  <rect x="140" y="280" width="220" height="64" class="box"/>
+  <text x="250" y="312" class="small">Sympathetic input</text>
+
+  <rect x="140" y="380" width="220" height="64" class="box"/>
+  <text x="250" y="412" class="text">sym</text>
+
+  <rect x="140" y="480" width="220" height="64" class="box"/>
+  <text x="250" y="512" class="small">vcf sym bus</text>
+
+  <rect x="840" y="280" width="220" height="64" class="box"/>
+  <text x="950" y="312" class="small">vcf mic bus</text>
+
+  <rect x="450" y="400" width="300" height="64" class="box"/>
+  <text x="600" y="432" class="text">Mix</text>
+
+  <rect x="450" y="520" width="300" height="64" class="box"/>
+  <text x="600" y="552" class="text">FX</text>
+
+  <rect x="450" y="640" width="300" height="64" class="box"/>
+  <text x="600" y="672" class="text">Output</text>
+
+  <rect x="840" y="520" width="220" height="64" class="box"/>
+  <text x="950" y="552" class="text">vcf all</text>
+
+  <path class="line" d="M 600 144 L 600 180"/>
+  <path class="line" d="M 600 244 L 600 280"/>
+  <path class="line" d="M 600 344 L 600 400"/>
+  <path class="line" d="M 600 464 L 600 520"/>
+  <path class="line" d="M 600 584 L 600 640"/>
+
+  <path class="line" d="M 360 312 L 450 312"/>
+  <path class="line" d="M 250 344 L 250 380"/>
+  <path class="line" d="M 250 444 L 250 480"/>
+  <path class="line" d="M 360 412 L 450 432"/>
+  <path class="line" d="M 360 512 L 450 430"/>
+
+  <path class="line" d="M 750 312 L 840 312"/>
+  <path class="line" d="M 950 344 L 950 520"/>
+  <path class="line" d="M 840 552 L 750 552"/>
+
+  <text x="965" y="382" class="label">route live mic</text>
+  <text x="965" y="582" class="label">master filter</text>
+</svg>
