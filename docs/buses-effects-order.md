@@ -20,7 +20,7 @@ The important split is this:
 - `sym` is a generated bus that listens to live and internal musical energy
 - `vcf` is the routing/filter stage before FX and final output
 
-![Bus and effects order](./buses-effects-order.svg)
+![Bus and effects order](./buses-effects-order.png)
 
 ## `sym`
 
