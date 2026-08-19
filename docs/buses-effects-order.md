@@ -20,6 +20,22 @@ The important split is this:
 - `sym` is a generated bus that listens to live and internal musical energy
 - `vcf` is the routing/filter stage before FX and final output
 
+```mermaid
+flowchart LR
+  in[Hardware input] --> nam[NAM]
+  nam --> micbus[vcf mic bus]
+  nam --> dry[Dry mix]
+  dry --> symin[Sympathetic input]
+  dry --> vcfall[vcf all]
+  symin --> sym[Sym bus]
+  sym --> symbus[vcf sym bus]
+  micbus --> mix[Mix]
+  symbus --> mix
+  vcfall --> fx[FX]
+  mix --> fx
+  fx --> out[Output]
+```
+
 ## `sym`
 
 `sym` stands for sympathetic strings.
