@@ -16,11 +16,14 @@ At runtime, the callback processes sound in this order:
 
 The important split is this:
 
-- `nam` is a live-input stage
-- `sym` is a generated bus that listens to live and internal musical energy
-- `vcf` is the routing/filter stage before FX and final output
+```text
+input -> bus_fanout[b] -> nam[b] -> sym[b] -> vcf[b] -> vol[b]
+```
 
-![Bus and effects order](./buses-effects-order.png)
+That is the worst-case work path when the score is driving all active buses at
+once.
+
+![Bus and effects order](./mix-score-pipeline.png)
 
 ## Worst Case
 
