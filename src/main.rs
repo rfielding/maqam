@@ -80,10 +80,10 @@ fn cli_commands(args: &[String]) -> Vec<String> {
     commands
 }
 
-fn run_cli(commands: Vec<String>) -> anyhow::Result<()> {
+fn run_cli(commands: Vec<String>, bufsize: u32) -> anyhow::Result<()> {
     let (tx, rx) = bounded::<sequencer::AudioCmd>(512);
     let rx_guard = rx.clone();
-    let _stream = match audio::start_audio(rx) {
+    let _stream = match audio::start_audio(rx, bufsize) {
         Ok(stream) => Some(stream),
         Err(err) => {
             eprintln!(
@@ -131,15 +131,32 @@ fn main() -> anyhow::Result<()> {
     std::env::remove_var("NO_COLOR");
     crossterm::style::force_color_output(true);
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+
+    let mut audio_bufsize = 256;
+
+    for arg in &args {
+        // println!("arg is: '{}'", arg);
+        if arg.starts_with("--bufsize=") {
+            if let Some((_key, value)) = arg.split_once('=') {
+                match value.trim().parse::<u32>() {
+                   Ok(num) => audio_bufsize = num,
+                   Err(e) => println!("Failed to parse: {}", e),
+                }
+            }
+        }
+    }
+
+    args.retain(|x| !x.starts_with("--bufsize="));
+
     if !args.is_empty() {
-        return run_cli(cli_commands(&args));
+        return run_cli(cli_commands(&args), audio_bufsize);
     }
 
     let (tx, rx) = bounded::<sequencer::AudioCmd>(512);
 
     // Keep the stream alive for the lifetime of the app.
-    let _stream = audio::start_audio(rx)?;
+    let _stream = audio::start_audio(rx, audio_bufsize)?;
 
     let mut app = app::App::new(tx);
     ui::run(&mut app)?;

@@ -20,6 +20,8 @@ use crate::synth::{
 
 use crate::vcf::{MoogLadder, VcfBank, VcfSettings, VcfTarget};
 
+use cpal::{BufferSize, StreamConfig};
+
 // ── Playback state ────────────────────────────────────────────────────────────
 
 struct BarState {
@@ -389,14 +391,35 @@ pub struct AudioStreams {
     _input: Option<cpal::Stream>,
 }
 
-pub fn start_audio(rx: Receiver<AudioCmd>) -> anyhow::Result<AudioStreams> {
+pub fn start_audio(rx: Receiver<AudioCmd>, bufsize: u32) -> anyhow::Result<AudioStreams> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
         .ok_or_else(|| anyhow::anyhow!("no audio output device"))?;
-    let cfg = device.default_output_config()?;
-    let sr = cfg.sample_rate().0 as f64;
-    let ch = cfg.channels() as usize;
+    let defcfg = device.default_output_config()?;
+    let sr = defcfg.sample_rate().0 as f64;
+    let ch = defcfg.channels() as usize;
+
+    // Inspect the hardware's supported buffer limits
+    let supported_range = defcfg.buffer_size();
+
+    // Clamp the target size so it stays within safe hardware boundaries
+    let chosen_size = match supported_range {
+        cpal::SupportedBufferSize::Range { min, max } => {
+            bufsize.clamp(*min, *max)
+        }
+        cpal::SupportedBufferSize::Unknown => bufsize,
+    };
+
+    // Build the configuration
+    let cfg = StreamConfig {
+        channels: defcfg.channels(),
+        sample_rate: defcfg.sample_rate(),
+        buffer_size: BufferSize::Fixed(chosen_size),
+    };
+
+    println!("Requested buffer size: {:?}", cfg.buffer_size);
+
     let (input_tx, input_rx) =
         crossbeam_channel::bounded::<(cpal::StreamInstant, [f32; 2])>(16_384);
     let input_stream = host.default_input_device().and_then(|input_device| {
