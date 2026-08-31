@@ -3,18 +3,19 @@ create bayati2 8/9 1/1 12/11 32/27 4/3 3/2
 create hijaz2 8/9 1/1 15/14 6/5 4/3 3/2
 create saba2 8/9 1/1 13/12 6/5 5/4 11/8 3/2
 N|26|nam tone3000 41179 as jcm800_2203x
-N|14|nam gain 1
+N|14|nam gain 0.25
 N|15|nam input right
 B|0|180
 S|1|2
 Y|8|sym on
 Y|12|sym harmony root 0.50 third 0.25 fifth 0.10 octave 0.15
 Y|9|sym kanun decay 0.995 drive 2
-Y|20|sym mic decay 0.999 drive 2
-V|19|vcf cut 3000 res 0.98 drive 3
+Y|20|sym mic decay 0.999 drive 1
+V|19|vcf cut 5000 res 0.98 drive 2
 F|22|flanger rate 0.2 depth 0.15 delay 2 feedback 0.4 mix 0.25
 L|18|vol kanun 2
-L|23|vol mic 0.2
+L|23|vol mic 0.1
+D|27|dry 10
 P|2|3|d hijaz 4444
 P|4|1|d bayati 332332
 P|5|1|d saba, b- saba 664
