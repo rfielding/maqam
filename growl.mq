@@ -5,6 +5,7 @@ create saba2 8/9 1/1 13/12 6/5 5/4 11/8 3/2
 N|13|nam tone3000 1577 as marshall_jcm800
 N|14|nam gain 1
 N|15|nam input right
+F|16|cab vintage mix 1
 B|0|180
 Y|8|sym on
 Y|12|sym harmony root 0.50 third 0.25 fifth 0.10 octave 0.15

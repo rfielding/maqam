@@ -1,3 +1,29 @@
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CabinetModel {
+    Vintage,
+    Modern,
+    Open,
+}
+
+impl CabinetModel {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "vintage" | "4x12" => Some(Self::Vintage),
+            "modern" | "tight" => Some(Self::Modern),
+            "open" | "1x12" | "open-back" => Some(Self::Open),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Vintage => "vintage",
+            Self::Modern => "modern",
+            Self::Open => "open",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct FxSettings {
     pub flanger_enabled: bool,
@@ -32,6 +58,9 @@ pub struct FxSettings {
     pub delay_time_step_per_tick: f32,
     pub delay_feedback_step_per_tick: f32,
     pub delay_mix_step_per_tick: f32,
+    pub cabinet_enabled: bool,
+    pub cabinet_model: CabinetModel,
+    pub cabinet_mix: f32,
 }
 
 impl Default for FxSettings {
@@ -69,8 +98,78 @@ impl Default for FxSettings {
             delay_time_step_per_tick: 0.0,
             delay_feedback_step_per_tick: 0.0,
             delay_mix_step_per_tick: 0.0,
+            cabinet_enabled: false,
+            cabinet_model: CabinetModel::Vintage,
+            cabinet_mix: 1.0,
         }
     }
+}
+
+/// A short, zero-allocation FIR cabinet stage intended for the live NAM input.
+/// The bundled responses make scores portable; they are deliberately short to
+/// keep the per-sample audio callback predictable.
+pub struct CabinetProcessor {
+    impulse: Vec<f32>,
+    history: Vec<f32>,
+    pos: usize,
+    model: CabinetModel,
+}
+
+impl CabinetProcessor {
+    pub fn new(sample_rate: f32) -> Self {
+        let model = CabinetModel::Vintage;
+        let impulse = cabinet_impulse(model, sample_rate);
+        Self { history: vec![0.0; impulse.len()], impulse, pos: 0, model }
+    }
+
+    pub fn set_model(&mut self, model: CabinetModel, sample_rate: f32) {
+        if self.model == model { return; }
+        self.model = model;
+        self.impulse = cabinet_impulse(model, sample_rate);
+        self.history.resize(self.impulse.len(), 0.0);
+        self.history.fill(0.0);
+        self.pos = 0;
+    }
+
+    pub fn process(&mut self, input: f32, settings: FxSettings) -> f32 {
+        if !settings.cabinet_enabled { return input; }
+        self.history[self.pos] = input;
+        let mut wet = 0.0;
+        let mut read = self.pos;
+        for coefficient in &self.impulse {
+            wet += self.history[read] * coefficient;
+            read = if read == 0 { self.history.len() - 1 } else { read - 1 };
+        }
+        self.pos = (self.pos + 1) % self.history.len();
+        input * (1.0 - settings.cabinet_mix) + wet * settings.cabinet_mix
+    }
+}
+
+fn cabinet_impulse(model: CabinetModel, sample_rate: f32) -> Vec<f32> {
+    let (low_hz, high_hz, resonance, damping) = match model {
+        CabinetModel::Vintage => (85.0, 5_200.0, 115.0, 32.0),
+        CabinetModel::Modern => (105.0, 6_400.0, 145.0, 42.0),
+        CabinetModel::Open => (70.0, 7_200.0, 92.0, 25.0),
+    };
+    let sr = sample_rate.max(8_000.0);
+    let len = ((sr * 0.006).round() as usize).clamp(64, 384);
+    let mut out = Vec::with_capacity(len);
+    let mut previous_lp = 0.0;
+    let lp_alpha = 1.0 - (-2.0 * std::f32::consts::PI * high_hz / sr).exp();
+    let hp_decay = (-2.0 * std::f32::consts::PI * low_hz / sr).exp();
+    let mut hp_state = 0.0;
+    for n in 0..len {
+        let t = n as f32 / sr;
+        let excitation = if n == 0 { 1.0 } else { 0.0 }
+            + (2.0 * std::f32::consts::PI * resonance * t).sin() * (-damping * t).exp() * 0.22;
+        previous_lp += lp_alpha * (excitation - previous_lp);
+        let high_passed = previous_lp - hp_state;
+        hp_state = previous_lp + hp_decay * high_passed;
+        out.push(high_passed * (-70.0 * t).exp());
+    }
+    let peak = out.iter().fold(0.0f32, |p, value| p.max(value.abs())).max(1e-6);
+    for value in &mut out { *value /= peak; }
+    out
 }
 
 impl FxSettings {
@@ -333,5 +432,19 @@ mod tests {
         }
 
         assert!(peak > 0.001);
+    }
+
+    #[test]
+    fn cabinet_is_bypassed_or_convolves_without_allocating() {
+        let mut cabinet = CabinetProcessor::new(48_000.0);
+        let mut settings = FxSettings::default();
+        assert_eq!(cabinet.process(0.25, settings), 0.25);
+
+        settings.cabinet_enabled = true;
+        settings.cabinet_mix = 1.0;
+        let first = cabinet.process(1.0, settings);
+        let tail = cabinet.process(0.0, settings);
+        assert!(first.is_finite() && first.abs() > 0.01);
+        assert!(tail.is_finite() && tail.abs() > 0.0001);
     }
 }

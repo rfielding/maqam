@@ -2,6 +2,7 @@ MAQAM_SESSION_V3
 N|13|nam tone3000 57838 as deizel_high_gain
 N|14|nam gain 1
 N|15|nam input right
+F|18|cab modern mix 1
 F|16|flanger rate 0.28 depth 0.8 delay 2.5 feedback 0.55 mix 0.1
 B|4|120
 V|8|vcf bass cut 100 res 0.98 drive 2

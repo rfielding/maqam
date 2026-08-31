@@ -11,7 +11,7 @@ use crossbeam_channel::Receiver;
 use crate::command::{
     NamInput, SympatheticChange, SympatheticHarmony, SympatheticTarget, VcfChange,
 };
-use crate::fx::{FxProcessor, FxSettings};
+use crate::fx::{CabinetProcessor, FxProcessor, FxSettings};
 use crate::sequencer::{AudioCmd, ControlSpec, Phrase, SubdivEvent};
 use crate::sympathetics::SympatheticStrings;
 use crate::synth::{
@@ -459,6 +459,7 @@ pub fn start_audio(rx: Receiver<AudioCmd>, bufsize: u32) -> anyhow::Result<Audio
     let mut vcf_filters = FilterBank::new(sr as f32);
     let mut fx = FxSettings::default();
     let mut fx_processor = FxProcessor::new(sr as f32);
+    let mut cabinet_processor = CabinetProcessor::new(sr as f32);
     let mut paused = false;
     let mut jump_counters: std::collections::HashMap<usize, usize> =
         std::collections::HashMap::new();
@@ -518,11 +519,13 @@ pub fn start_audio(rx: Receiver<AudioCmd>, bufsize: u32) -> anyhow::Result<Audio
                     AudioCmd::SetFxSettings(v) => {
                         fx = v;
                         fx_processor.set_settings(v);
+                        cabinet_processor.set_model(v.cabinet_model, sr as f32);
                     }
                     AudioCmd::SetFx(change) => {
                         if let Ok(setting) = crate::command::apply_fx_change(fx, change) {
                             fx = setting;
                             fx_processor.set_settings(setting);
+                            cabinet_processor.set_model(setting.cabinet_model, sr as f32);
                         }
                     }
                     AudioCmd::SetNamModel(model) => {
@@ -848,6 +851,7 @@ pub fn start_audio(rx: Receiver<AudioCmd>, bufsize: u32) -> anyhow::Result<Audio
                     .clamp(-1.0, 1.0);
                 let live_input =
                     select_nam_output(dry_input, modeled_input, nam_enabled && nam_model.is_some());
+                let live_input = cabinet_processor.process(live_input, fx).clamp(-1.0, 1.0);
                 meter_peaks[2] = meter_peaks[2].max(live_input.abs());
                 if last_metrics_publish.elapsed() >= std::time::Duration::from_secs(10) {
                     if let Some(latency_ms) = latency_ms_ema {

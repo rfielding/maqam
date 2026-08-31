@@ -694,6 +694,9 @@ fn format_fx_status(fx: crate::fx::FxSettings) -> String {
             fx.delay_time_secs, fx.delay_feedback, fx.delay_mix
         ));
     }
+    if fx.cabinet_enabled {
+        parts.push(format!("cab:{}/{:.2}", fx.cabinet_model.name(), fx.cabinet_mix));
+    }
     if parts.is_empty() {
         "off".to_string()
     } else {

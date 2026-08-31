@@ -135,8 +135,8 @@ cache and loads it; `nam import FILENAME.nam as name` imports explicitly;
 `nam import https://.../amp.nam as amp` downloads into the cache with progress;
 and `nam <name>` loads a cached capture on live mic input. `nam https://...`
 downloads, caches, and loads. NAM is live state, not score state, and is not
-written back to `.mq` files. The NAM stage runs before `vcf mic` and before the
-final `vcf all` master filter. The cache lives in `./.nam` unless
+written back to `.mq` files. The NAM stage runs before the optional cabinet IR,
+`vcf mic`, and the final `vcf all` master filter. The cache lives in `./.nam` unless
 `MAQAM_NAM_CACHE_DIR` is set, and the directory is created automatically. The
 host currently does not resample for NAM; use a model whose expected sample
 rate matches the audio device if the tone sounds wrong.

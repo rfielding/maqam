@@ -296,7 +296,7 @@ refreshed automatically; `nam logout` removes it. `TONE3000_ACCESS_TOKEN` remain
 available for headless use, and `TONE3000_CLIENT_ID` can override the bundled
 publishable client ID during development. An authenticated maqam-live resolves and downloads its A2 model via
 the authenticated TONE3000 API.
-The input chain is selected input -> NAM -> `vcf mic` or `vcf all`. `stereo`
+The input chain is selected input -> NAM -> cabinet IR -> `vcf mic` or `vcf all`. `stereo`
 mixes both hardware channels equally before the mono NAM model. Referenced
 captures are cached in `./.nam` by default, or in `MAQAM_NAM_CACHE_DIR` when
 set. The cache directory is created automatically when listing, importing, or
@@ -391,7 +391,7 @@ Relative changes only affect the parameter named. Tick changes such as
 
 ### FX
 
-Flanger, chorus, reverb, and ping-pong delay use the same named-parameter and
+Flanger, chorus, reverb, ping-pong delay, and cabinet IR use the same named-parameter and
 relative-change rules as VCF. They are off by default.
 
 ```text
@@ -408,6 +408,8 @@ delay on
 delay off
 delay time=<0.01..2> feedback=<0..0.95> mix=<0..1>
 pingpong time=<0.01..2> feedback=<0..0.95> mix=<0..1>
+cab <vintage|modern|open> mix=<0..1>
+cab off
 fx off
 ```
 
@@ -417,6 +419,10 @@ Examples:
 flanger rate=0.18 depth=0.8 delay=2.5 feedback=0.55 mix=0.35
 chorus rate=0.7 depth=0.55 delay=18 mix=0.32
 reverb mix=0.25 decay=0.7
+cab vintage
+cab modern mix=0.85
+cab open mix=1
+cab off
 pingpong time=0.33 feedback=0.45 mix=0.2
 delay mix=+0.1
 delay feedback=+0.01t
@@ -424,7 +430,9 @@ delay feedback=+0
 fx off
 ```
 
-Modulation, delay, and reverb are more expensive than the VCF in the real-time callback.
+The three built-in cabinet responses are short FIRs, so `.mq` files remain portable
+without separate IR assets. Modulation, delay, reverb, and cabinet convolution are
+more expensive than the VCF in the real-time callback.
 For heavy sessions, prefer `cargo run --release` or a built release binary.
 
 ### Sessions

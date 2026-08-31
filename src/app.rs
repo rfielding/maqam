@@ -5692,6 +5692,7 @@ fn fx_change_src(change: command::FxChange) -> String {
         && change.chorus_enabled == Some(false)
         && change.reverb_enabled == Some(false)
         && change.delay_enabled == Some(false)
+        && change.cabinet_enabled == Some(false)
     {
         return "fx off".to_string();
     }
@@ -5772,7 +5773,11 @@ fn fx_change_src(change: command::FxChange) -> String {
             parts.push("decay".to_string());
             parts.push(value_change_src(decay));
         }
-    } else {
+    } else if change.delay_enabled.is_some()
+        || change.delay_time_secs.is_some()
+        || change.delay_feedback.is_some()
+        || change.delay_mix.is_some()
+    {
         parts.push("delay".to_string());
         if change.delay_enabled == Some(false) {
             parts.push("off".to_string());
@@ -5787,6 +5792,19 @@ fn fx_change_src(change: command::FxChange) -> String {
             parts.push(value_change_src(feedback));
         }
         if let Some(mix) = change.delay_mix {
+            parts.push("mix".to_string());
+            parts.push(value_change_src(mix));
+        }
+    } else {
+        parts.push("cab".to_string());
+        if change.cabinet_enabled == Some(false) {
+            parts.push("off".to_string());
+            return parts.join(" ");
+        }
+        if let Some(model) = change.cabinet_model {
+            parts.push(model.name().to_string());
+        }
+        if let Some(mix) = change.cabinet_mix {
             parts.push("mix".to_string());
             parts.push(value_change_src(mix));
         }
@@ -5828,7 +5846,12 @@ fn describe_fx(fx: FxSettings) -> String {
     } else {
         "delay off".to_string()
     };
-    format!("{flanger} {chorus} {rev} {delay}")
+    let cabinet = if fx.cabinet_enabled {
+        format!("cab {} {:.2}", fx.cabinet_model.name(), fx.cabinet_mix)
+    } else {
+        "cab off".to_string()
+    };
+    format!("{flanger} {chorus} {rev} {delay} {cabinet}")
 }
 
 fn describe_vcf(v: VcfSettings) -> String {
@@ -5872,7 +5895,7 @@ fn is_plain_fx_control_line(line: &str) -> bool {
     let first = line.split_whitespace().next().unwrap_or("");
     matches!(
         first.to_ascii_lowercase().as_str(),
-        "fx" | "flanger" | "flange" | "chorus" | "choir" | "reverb" | "rev" | "delay" | "pingpong"
+        "fx" | "flanger" | "flange" | "chorus" | "choir" | "reverb" | "rev" | "delay" | "pingpong" | "cab" | "cabinet"
     )
 }
 
@@ -6794,6 +6817,18 @@ mod tests {
         assert!(!app.fx.chorus_enabled);
         assert!(!app.fx.reverb_enabled);
         assert!(!app.fx.delay_enabled);
+    }
+
+    #[test]
+    fn cabinet_commands_select_portable_impulse_responses() {
+        let Cmd::SetFx(change) = command::parse("cab modern mix=0.85").unwrap() else {
+            panic!("expected cabinet effect command");
+        };
+        let settings = command::apply_fx_change(FxSettings::default(), change).unwrap();
+        assert!(settings.cabinet_enabled);
+        assert_eq!(settings.cabinet_model, crate::fx::CabinetModel::Modern);
+        assert_eq!(settings.cabinet_mix, 0.85);
+        assert_eq!(fx_change_src(change), "cab modern mix 0.85");
     }
 
     #[test]
