@@ -14,9 +14,9 @@ terminal HUD.
 
 ## Demo
 
-[![Play the maqam-live demo](maqam-demo-v2.png)](https://cdn.jsdelivr.net/gh/rfielding/maqam@main/maqam-demo-v2.mp4)
+[![View the maqam-live demo on Instagram](maqam-demo-v2.png)](https://www.instagram.com/p/DcMV6ffxtca/)
 
-[Play the demo MP4](https://cdn.jsdelivr.net/gh/rfielding/maqam@main/maqam-demo-v2.mp4)
+[View the demo on Instagram](https://www.instagram.com/p/DcMV6ffxtca/)
 
 ## Build
 
