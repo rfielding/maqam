@@ -13,5 +13,5 @@ Y|10|sym kanun decay 0.99 drive 0.5 amount 1
 Y|11|sym on
 Y|12|sym harmony root 0.25 third 0.25 fifth 0.25 octave 0.25
 L|20|vol mic 1
-D|25|dry 25
+D|25|dry 0
 P|24|1|d minor, d bayati 44332
