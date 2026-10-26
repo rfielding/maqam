@@ -133,7 +133,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut args: Vec<String> = std::env::args().skip(1).collect();
 
-    let mut audio_bufsize = 256;
+    let mut audio_bufsize = 64;
 
     for arg in &args {
         // println!("arg is: '{}'", arg);

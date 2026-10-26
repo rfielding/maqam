@@ -422,26 +422,89 @@ pub fn start_audio(rx: Receiver<AudioCmd>, bufsize: u32) -> anyhow::Result<Audio
 
     let (input_tx, input_rx) =
         crossbeam_channel::bounded::<(cpal::StreamInstant, [f32; 2])>(16_384);
+    // Largest input callback seen, in frames. If the hardware ignores the
+    // requested buffer and delivers bigger chunks, the backlog limit grows to
+    // match so trimming never starves the output.
+    let input_chunk_frames = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let input_chunk_frames_writer = input_chunk_frames.clone();
     let input_stream = host.default_input_device().and_then(|input_device| {
         let input_config = input_device.default_input_config().ok()?;
         if input_config.sample_format() != cpal::SampleFormat::F32 {
             return None;
         }
         let input_channels = input_config.channels() as usize;
-        let stream = input_device
-            .build_input_stream(
-                &input_config.into(),
-                move |data: &[f32], info| {
+        // Run the input at the output's sample rate and the same small buffer.
+        // The default input config uses the system's (large) default buffer and
+        // may run at a different rate, which makes the input queue grow.
+        let input_bufsize = match input_config.buffer_size() {
+            cpal::SupportedBufferSize::Range { min, max } => chosen_size.clamp(*min, *max),
+            cpal::SupportedBufferSize::Unknown => chosen_size,
+        };
+        let rate_supported = input_device
+            .supported_input_configs()
+            .map(|mut ranges| {
+                ranges.any(|r| {
+                    r.channels() == input_config.channels()
+                        && r.sample_format() == cpal::SampleFormat::F32
+                        && r.min_sample_rate() <= defcfg.sample_rate()
+                        && r.max_sample_rate() >= defcfg.sample_rate()
+                })
+            })
+            .unwrap_or(false);
+        let input_rate = if rate_supported {
+            defcfg.sample_rate()
+        } else {
+            input_config.sample_rate()
+        };
+        if input_rate != defcfg.sample_rate() {
+            eprintln!(
+                "warning: input runs at {} Hz but output at {} Hz; use the same \
+                 interface for input and output, at the same rate in Audio MIDI Setup",
+                input_rate.0,
+                defcfg.sample_rate().0
+            );
+        }
+        let input_cfg = StreamConfig {
+            channels: input_config.channels(),
+            sample_rate: input_rate,
+            buffer_size: BufferSize::Fixed(input_bufsize),
+        };
+        let make_callback = {
+            let input_tx = input_tx.clone();
+            let writer = input_chunk_frames_writer.clone();
+            move || {
+                let input_tx = input_tx.clone();
+                let writer = writer.clone();
+                move |data: &[f32], info: &cpal::InputCallbackInfo| {
                     let captured_at = info.timestamp().capture;
+                    writer.store(
+                        data.len() / input_channels.max(1),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                     for frame in data.chunks(input_channels.max(1)) {
                         let left = frame.first().copied().unwrap_or(0.0);
                         let right = frame.get(1).copied().unwrap_or(left);
                         let _ = input_tx.try_send((captured_at, [left, right]));
                     }
-                },
-                |_error| {},
-                None,
-            )
+                }
+            }
+        };
+        // Prefer the small fixed buffer; if the device refuses it, fall back to
+        // its default config rather than losing input entirely.
+        let stream = input_device
+            .build_input_stream(&input_cfg, make_callback(), |_error| {}, None)
+            .or_else(|err| {
+                eprintln!(
+                    "warning: input rejected {} frames at {} Hz ({err}); using device default",
+                    input_bufsize, input_rate.0
+                );
+                input_device.build_input_stream(
+                    &input_config.config(),
+                    make_callback(),
+                    |_error| {},
+                    None,
+                )
+            })
             .ok()?;
         stream.play().ok()?;
         Some(stream)
@@ -481,6 +544,16 @@ pub fn start_audio(rx: Receiver<AudioCmd>, bufsize: u32) -> anyhow::Result<Audio
         &cfg.into(),
         move |data: &mut [f32], info| {
             let playback_at = info.timestamp().playback;
+            // ── keep live input latency bounded ────────────────────────────
+            // If input frames pile up (startup, a slow callback, clock drift),
+            // drop the oldest so the guitar never lags by more than a few
+            // buffers instead of up to the queue's full capacity.
+            let out_frames = data.len() / ch.max(1);
+            let in_frames = input_chunk_frames.load(std::sync::atomic::Ordering::Relaxed);
+            let max_input_backlog = (out_frames * 3).max(in_frames + out_frames);
+            while input_rx.len() > max_input_backlog {
+                let _ = input_rx.try_recv();
+            }
             // ── drain commands ─────────────────────────────────────────────
             while let Ok(cmd) = rx.try_recv() {
                 match cmd {
