@@ -14,7 +14,8 @@ Y|20|sym mic decay 0.999 drive 3
 V|19|vcf cut 3000 res 0.98 drive 1
 F|22|flanger rate 0.2 depth 0.15 delay 2 feedback 0.4 mix 0.25
 L|18|vol kanun 2
-L|23|vol mic 0.0125
+L|23|vol mic 1
+D|31|dry 10
 P|28|1|d bayati 44422
 J|27|28|3
 P|5|1|d saba, b- saba 664
